@@ -1,0 +1,8 @@
+/books
+node_modules
+/example/data
+coverage/
+/data/
+/test-data-edge-singleton/
+/nonexistent-cold-dir/
+.DS_Store

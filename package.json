@@ -1,0 +1,25 @@
+{
+  "name": "bri",
+  "version": "1.0.0",
+  "description": "BRI - Bigdata Repository of Intelligence - A simple, intuitive database framework",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client/index.js",
+    "./engine": "./engine/index.js",
+    "./storage": "./storage/index.js",
+    "./utils/jss": "./utils/jss/index.js",
+    "./utils/diff": "./utils/diff/index.js"
+  },
+  "scripts": {
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage"
+  },
+  "dependencies": {
+    "rfc6902": "^5.1.2"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  }
+}
