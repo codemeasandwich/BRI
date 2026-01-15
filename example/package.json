@@ -1,0 +1,13 @@
+{
+  "name": "bri-example",
+  "version": "1.0.0",
+  "description": "Example project demonstrating BRI database framework with Bun",
+  "type": "module",
+  "scripts": {
+    "start": "bun run index.js",
+    "clean": "rm -rf data"
+  },
+  "dependencies": {
+    "bri": "file:.."
+  }
+}
