@@ -1,11 +1,12 @@
 /**
- * Cold Tier File Storage
+ * @file Cold Tier File Storage
  *
  * Structure: /data/cold/{TYPE}/{id}.jss
  * - TYPE extracted from $ID (e.g., POST_fu352dp → POST)
  * - Uses JSS (JsonSuperSet) for proper type serialization
  * - ONLY stores documents evicted due to memory pressure
  * - No sets storage (sets are always in-memory)
+ * - No encryption needed: cold tier stores compressed WAL data that's already encrypted
  */
 
 import fs from 'fs/promises';
@@ -13,7 +14,13 @@ import { existsSync, mkdirSync } from 'fs';
 import path from 'path';
 import JSS from '../../utils/jss/index.js';
 
+/**
+ * Cold tier file storage for evicted documents
+ */
 export class ColdTierFiles {
+  /**
+   * @param {string} dataDir - Base data directory
+   */
   constructor(dataDir) {
     this.dataDir = dataDir;
     this.coldDir = path.join(dataDir, 'cold');
@@ -23,7 +30,11 @@ export class ColdTierFiles {
     }
   }
 
-  // Extract TYPE from key (e.g., "POST_fu352dp" → "POST", "X:POST_fu352dp:X" → "POST")
+  /**
+   * Extract TYPE from key (e.g., "POST_fu352dp" → "POST", "X:POST_fu352dp:X" → "POST")
+   * @param {string} key - Document key
+   * @returns {string} Type portion of key
+   */
   extractType(key) {
     // Handle soft-deleted keys like "X:POST_fu352dp:X"
     const cleanKey = key.replace(/^X:|:X$/g, '');
@@ -34,7 +45,11 @@ export class ColdTierFiles {
     return cleanKey;
   }
 
-  // Extract ID from key (e.g., "POST_fu352dp" → "fu352dp")
+  /**
+   * Extract ID from key (e.g., "POST_fu352dp" → "fu352dp")
+   * @param {string} key - Document key
+   * @returns {string} ID portion of key
+   */
   extractId(key) {
     const cleanKey = key.replace(/^X:|:X$/g, '');
     const underscoreIdx = cleanKey.indexOf('_');
@@ -44,6 +59,11 @@ export class ColdTierFiles {
     return cleanKey;
   }
 
+  /**
+   * Get file path for a document
+   * @param {string} key - Document key
+   * @returns {string} Full file path
+   */
   getDocPath(key) {
     const type = this.extractType(key);
     const id = this.extractId(key);
@@ -56,6 +76,11 @@ export class ColdTierFiles {
     return path.join(typeDir, `${id}.jss`);
   }
 
+  /**
+   * Write document to cold storage
+   * @param {string} key - Document key
+   * @param {string} value - JSON string value
+   */
   async writeDoc(key, value) {
     const filePath = this.getDocPath(key);
     const tempPath = filePath + '.tmp';
@@ -68,10 +93,17 @@ export class ColdTierFiles {
       data = value;
     }
 
-    await fs.writeFile(tempPath, JSS.stringify(data), 'utf8');
+    const content = JSS.stringify(data);
+
+    await fs.writeFile(tempPath, content, 'utf8');
     await fs.rename(tempPath, filePath);
   }
 
+  /**
+   * Read document from cold storage
+   * @param {string} key - Document key
+   * @returns {Promise<string|null>} JSON string or null if not found
+   */
   async readDoc(key) {
     const filePath = this.getDocPath(key);
     try {
@@ -86,6 +118,10 @@ export class ColdTierFiles {
     }
   }
 
+  /**
+   * Delete document from cold storage
+   * @param {string} key - Document key
+   */
   async deleteDoc(key) {
     const filePath = this.getDocPath(key);
     try {
@@ -97,6 +133,11 @@ export class ColdTierFiles {
     }
   }
 
+  /**
+   * Check if document exists in cold storage
+   * @param {string} key - Document key
+   * @returns {Promise<boolean>} True if exists
+   */
   async docExists(key) {
     const filePath = this.getDocPath(key);
     try {
@@ -107,6 +148,10 @@ export class ColdTierFiles {
     }
   }
 
+  /**
+   * List all documents in cold storage
+   * @returns {Promise<string[]>} Array of document keys
+   */
   async listDocs() {
     const docs = [];
 
@@ -135,6 +180,10 @@ export class ColdTierFiles {
     return docs;
   }
 
+  /**
+   * Get cold storage statistics
+   * @returns {Promise<{coldDocuments: number, totalSizeMB: number}>} Stats object
+   */
   async getStats() {
     const docFiles = await this.listDocs();
 
