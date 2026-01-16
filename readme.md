@@ -1,5 +1,7 @@
 # Bri: Bigdata Repository of Intelligence
 
+![Bri Cover](assets/cover.jpg)
+
 This Bri database provides an easy-to-use interface for performing CRUD (Create, Read, Update, Delete) operations on documents. It also includes additional features such as subscribing to document changes and populating attributes with IDs.
 
 **Note**: All documents, when created, are assigned a unique `$ID` in the form of four capitalized letters, representing the first two and last two characters of the document type name, followed by an underscore and then 7 base 32 characters (in Crockford encoding format). There is also a `createdAt` and `updatedAt` timestamp managed by the database that cannot be modified by the client.
@@ -12,7 +14,8 @@ This Bri database provides an easy-to-use interface for performing CRUD (Create,
 - [Usage](#usage)
   - [Action Functions](#action-functions)
   - [Document Retrieval Behavior](#document-retrieval-behavior)
-  - [Additional Properties for Retrieved Records](#additional-properties-for-retrieved-records)
+  - [Query Filtering](#query-filtering)
+  - [Reactive Entity Methods](#reactive-entity-methods)
 - [Examples](#examples)
   - [Adding a Document](#adding-a-document)
   - [Retrieving a Document](#retrieving-a-document)
@@ -22,6 +25,13 @@ This Bri database provides an easy-to-use interface for performing CRUD (Create,
   - [Populating Attributes](#populating-attributes)
   - [Transactions](#transactions)
   - [Middleware (Plugins)](#middleware-plugins)
+  - [Schema Validation](#schema-validation)
+  - [JSS (JsonSuperSet) Serialization](#jss-jsonsuperset-serialization)
+- [TypeScript Support](#typescript-support)
+- [Environment Variables](#environment-variables)
+- [Architecture](#architecture)
+- [Running Tests](#running-tests)
+- [Example Project](#example-project)
 
 ## Installation
 
@@ -143,12 +153,36 @@ There are nine action functions for interacting with the database:
 - If a capital "S" is appended to the action function (e.g., `db.get.fooS()`), all matching documents are returned.
 - Otherwise, only the first matching document is returned.
 
-### Additional Properties for Retrieved Records
+### Query Filtering
 
-Retrieved records have two additional properties:
+BRI supports multiple ways to filter documents when retrieving:
 
-- `save()`: Persist any changes made to the current document.
-- `.and.`: Populate an attribute with IDs, e.g., `const userWithPopulatedFriendsList = await user.and.friends()`.
+```javascript
+// By ID
+const user = await db.get.user('USER_abc1234');
+
+// By query object (partial match)
+const admin = await db.get.user({ role: 'admin' });
+
+// By filter function
+const adults = await db.get.userS(user => user.age >= 18);
+
+// By array of IDs
+const specificUsers = await db.get.userS(['USER_abc1234', 'USER_def5678']);
+
+// Get all documents in a collection
+const allUsers = await db.get.userS();
+```
+
+### Reactive Entity Methods
+
+Retrieved documents are reactive entities with automatic change tracking. They provide the following methods:
+
+- `save(saveBy?, tag?)`: Persist changes to the database
+- `toObject()`: Convert to a plain JavaScript object
+- `toJSON()`: Convert to a JSON-serializable object
+- `toJSS()`: Convert to JSS format (preserves Date, RegExp, Map, Set, etc.)
+- `.and.{field}`: Chainable population proxy for resolving references
 
 ## Examples
 
@@ -202,10 +236,23 @@ db.sub
 
 ### Populating Attributes
 
+BRI supports chainable population of referenced documents using the `.and` proxy:
+
 ```javascript
-const userWithPopulatedFriendsList = await user.and.friends();
-console.log(userWithPopulatedFriendsList);
+// Single population
+const postWithAuthor = await post.and.author;
+
+// Chained population (deeply nested)
+const postWithAuthorAndFriends = await post.and.author.and.friends;
+
+// Multiple fields can be populated in sequence
+const fullPost = await post.and.author.and.comments.and.tags;
+
+// Explicit populate method (alternative syntax)
+const result = await db.get.post(postId).populate('author').populate('comments');
 ```
+
+Note: The `.and` accessor returns a Promise that resolves to the entity with the specified field populated.
 
 ### Transactions
 
@@ -289,12 +336,12 @@ const status = db.txnStatus();
 BRI supports a middleware system for intercepting and extending CRUD operations:
 
 ```javascript
-// Add custom middleware
+// Add custom middleware (chainable)
 db.use(async (ctx, next) => {
   console.log(`${ctx.operation}.${ctx.type}`, ctx.args);
   await next();
   console.log('Result:', ctx.result);
-});
+}).use(anotherMiddleware);
 
 // Middleware context includes:
 // - ctx.operation: 'get', 'add', 'set', 'del'
@@ -305,13 +352,196 @@ db.use(async (ctx, next) => {
 // - ctx.result: operation result (after next())
 ```
 
-Built-in middleware:
-- **transactionMiddleware**: Auto-injects `txnId` from `db._activeTxnId`
+#### Middleware Manager
 
-Example plugins available in `engine/middleware.js`:
-- `loggingMiddleware()`: Log all operations
-- `validationMiddleware(validators)`: Validate data before writes
-- `hooksMiddleware()`: Before/after hooks per operation type
+Access the middleware manager directly for more control:
+
+```javascript
+// Add middleware
+db.middleware.use(fn);
+
+// Remove specific middleware
+db.middleware.remove(fn);
+
+// Clear all middleware
+db.middleware.clear();
+
+// Check middleware count
+console.log(db.middleware.count);
+```
+
+#### Built-in Middleware Plugins
+
+Available in `engine/middleware.js`:
+
+```javascript
+import {
+  transactionMiddleware,
+  loggingMiddleware,
+  validationMiddleware,
+  hooksMiddleware
+} from 'bri/engine';
+
+// Transaction middleware (enabled by default)
+// Auto-injects txnId from db._activeTxnId
+
+// Logging middleware
+db.use(loggingMiddleware({ verbose: true }));
+
+// Validation middleware
+db.use(validationMiddleware({
+  user: (data) => {
+    if (!data.email) throw new Error('Email required');
+  }
+}));
+
+// Hooks middleware
+const hooks = hooksMiddleware();
+hooks.before('add', 'user', async (ctx) => {
+  ctx.args[0].createdBy = 'system';
+});
+hooks.after('add', 'user', async (ctx) => {
+  console.log('User created:', ctx.result.$ID);
+});
+db.use(hooks.middleware);
+```
+
+### Schema Validation
+
+BRI includes a schema validation utility for validating document structure:
+
+```javascript
+import validate from 'bri/utils/schema';
+
+const userSchema = {
+  name: { type: String, required: true },
+  email: { type: 'email', required: true },
+  age: { type: Number, required: false },
+  role: { type: String, enum: ['admin', 'user', 'guest'] },
+  profile: {
+    type: Object,
+    properties: {
+      bio: { type: String, required: false },
+      avatar: { type: String, required: false }
+    }
+  },
+  tags: { type: Array, items: String }
+};
+
+const userData = { name: 'Alice', email: 'alice@example.com' };
+const error = validate(userSchema, userData);
+
+if (error) {
+  console.error('Validation failed:', error);
+} else {
+  await db.add.user(userData);
+}
+```
+
+#### Supported Types
+
+- `String`, `Number`, `Boolean`, `Date`, `Object`, `Array`
+- `'email'` - String with email format validation
+- `'ref'` - String reference (document ID)
+
+#### Schema Options
+
+- `type`: The data type (required)
+- `required`: Whether the field is required (default: `true`)
+- `enum`: Array of allowed values
+- `get`: Transform function when reading
+- `set`: Transform function when writing
+- `properties`: Nested schema for Object types
+- `items`: Type for Array items
+
+### JSS (JsonSuperSet) Serialization
+
+BRI uses JSS for extended JSON serialization that preserves JavaScript types not supported by standard JSON:
+
+```javascript
+import jss from 'bri/utils/jss';
+
+const data = {
+  date: new Date(),
+  pattern: /^hello/i,
+  error: new Error('Something went wrong'),
+  map: new Map([['key', 'value']]),
+  set: new Set([1, 2, 3]),
+  undef: undefined
+};
+
+// Serialize
+const encoded = jss.stringify(data);
+
+// Parse back (types are preserved)
+const decoded = jss.parse(encoded);
+console.log(decoded.date instanceof Date);  // true
+console.log(decoded.pattern instanceof RegExp);  // true
+```
+
+#### Supported Types
+
+- `Date` - Preserved as Date objects
+- `RegExp` - Preserved with flags
+- `Error` - Preserved with message and stack
+- `Map` - Preserved as Map objects
+- `Set` - Preserved as Set objects
+- `undefined` - Explicitly preserved (unlike JSON)
+- Circular references - Handled via pointer paths
+
+#### Entity Conversion
+
+Retrieved entities support JSS conversion:
+
+```javascript
+const user = await db.get.user(userId);
+
+// Standard JSON (loses Date precision)
+const json = user.toJSON();
+
+// JSS format (preserves all types)
+const jssData = user.toJSS();
+```
+
+## TypeScript Support
+
+BRI includes complete TypeScript definitions in `index.d.ts`:
+
+```typescript
+import { createDB, Database, ReactiveEntity, StoreConfig } from 'bri';
+
+// Full type safety for database operations
+const db: Database = await createDB({
+  storeConfig: {
+    dataDir: './data',
+    maxMemoryMB: 256
+  }
+});
+
+// Typed entity access
+const user: ReactiveEntity = await db.add.user({ name: 'Alice' });
+```
+
+Key interfaces:
+- `Database` - Main database interface with CRUD operations
+- `ReactiveEntity` - Entity with save(), toObject(), toJSON(), toJSS()
+- `StoreConfig` - Storage configuration options
+- `MiddlewareContext` - Context passed to middleware functions
+- `TransactionStatus` - Transaction state information
+
+## Environment Variables
+
+BRI respects the following environment variables:
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `BRI_DATA_DIR` | Data directory path | `./data` |
+| `BRI_MAX_MEMORY_MB` | Maximum memory for hot tier cache | `256` |
+
+```bash
+# Example usage
+BRI_DATA_DIR=/var/lib/bri BRI_MAX_MEMORY_MB=512 node app.js
+```
 
 ## Architecture
 
@@ -363,10 +593,52 @@ BRI is organized into four main modules:
 
 ## Running Tests
 
+BRI uses Jest for testing with 15 comprehensive e2e test suites:
+
 ```bash
-# Test the storage layer
+# Run all tests
+npm test
+
+# Run tests with coverage report
+npm run test:coverage
+
+# Run specific test file
+npm test -- tests/e2e/crud.test.js
+```
+
+### Test Suites
+
+| Suite | Description |
+|-------|-------------|
+| `crud.test.js` | Create, read, update, delete operations |
+| `transactions.test.js` | Transaction API (rec, fin, nop, pop) |
+| `middleware.test.js` | Middleware system and plugins |
+| `reactive.test.js` | Reactive proxy and change tracking |
+| `pubsub.test.js` | Publish/subscribe functionality |
+| `schema.test.js` | Schema validation |
+| `jss.test.js` | JSS serialization |
+| `sets.test.js` | Set operations (sAdd, sRem, sMembers) |
+| `memory.test.js` | Memory management and eviction |
+| `persistence.test.js` | WAL, snapshots, recovery |
+
+### Legacy Test Scripts
+
+```bash
+# Test the storage layer directly
 node storage/test.js
 
-# Test transactions
+# Test transactions directly
 node storage/transaction/test.js
 ```
+
+## Example Project
+
+A complete working example is available in the `example/` directory:
+
+```bash
+cd example
+bun install
+bun run start
+```
+
+The example demonstrates all major BRI features including database initialization, CRUD operations, relationships, subscriptions, and graceful shutdown. See `example/README.md` for details.
