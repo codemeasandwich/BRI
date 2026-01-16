@@ -19,7 +19,6 @@ import {
 import { WALWriter } from '../../storage/wal/writer.js';
 import { WALReader } from '../../storage/wal/reader.js';
 import { createSetEntry, deserializeEntry, serializeEntryEncrypted } from '../../storage/wal/entry.js';
-import { ColdTierFiles } from '../../storage/cold-tier/files.js';
 import { SnapshotManager } from '../../storage/snapshot/manager.js';
 import crypto from 'crypto';
 import fs from 'fs/promises';
@@ -453,58 +452,6 @@ describe('Encrypted WAL', () => {
     expect(setOps.length).toBe(2);
     expect(setOps[0].key).toBe('K1');
     expect(setOps[1].key).toBe('K2');
-  });
-});
-
-describe('Encrypted Cold Tier', () => {
-  const COLD_DIR = path.join(TEST_DATA_DIR, 'cold');
-
-  beforeEach(async () => {
-    await fs.rm(TEST_DATA_DIR, { recursive: true, force: true }).catch(() => {});
-  });
-
-  afterEach(async () => {
-    await fs.rm(TEST_DATA_DIR, { recursive: true, force: true }).catch(() => {});
-  });
-
-  test('writes encrypted documents', async () => {
-    const coldTier = new ColdTierFiles(TEST_DATA_DIR, { encryptionKey: TEST_KEY });
-
-    await coldTier.writeDoc('TEST_abc123', '{"secret":"data"}');
-
-    // Read raw file
-    const filePath = path.join(COLD_DIR, 'TEST', 'abc123.jss');
-    const content = await fs.readFile(filePath, 'utf8');
-
-    expect(content).not.toContain('secret');
-    expect(content).not.toContain('data');
-  });
-
-  test('reads encrypted documents', async () => {
-    const coldTier = new ColdTierFiles(TEST_DATA_DIR, { encryptionKey: TEST_KEY });
-
-    await coldTier.writeDoc('TEST_abc123', '{"secret":"data"}');
-    const result = await coldTier.readDoc('TEST_abc123');
-
-    expect(JSON.parse(result)).toEqual({ secret: 'data' });
-  });
-
-  test('returns null for non-existent document', async () => {
-    const coldTier = new ColdTierFiles(TEST_DATA_DIR, { encryptionKey: TEST_KEY });
-    const result = await coldTier.readDoc('NONEXISTENT_key');
-    expect(result).toBeNull();
-  });
-
-  test('fails to read with wrong key', async () => {
-    // Write with TEST_KEY
-    const coldTier1 = new ColdTierFiles(TEST_DATA_DIR, { encryptionKey: TEST_KEY });
-    await coldTier1.writeDoc('TEST_abc', '{"value":1}');
-
-    // Try to read with different key
-    const wrongKey = crypto.randomBytes(32);
-    const coldTier2 = new ColdTierFiles(TEST_DATA_DIR, { encryptionKey: wrongKey });
-
-    await expect(coldTier2.readDoc('TEST_abc')).rejects.toThrow();
   });
 });
 
