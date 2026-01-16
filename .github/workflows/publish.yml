@@ -3,6 +3,11 @@ name: Publish to npm with Provenance
 on:
   release:
     types: [published]
+  workflow_dispatch:  # Allow manual triggers for hotfixes
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false  # Don't cancel in-progress publishes
 
 jobs:
   publish:
@@ -19,15 +24,13 @@ jobs:
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
+          cache: 'npm'  # Cache npm dependencies for faster builds
 
       - name: Install dependencies
         run: npm ci
 
       - name: Run tests
         run: npm test
-
-      - name: Build browser bundle
-        run: npx esbuild index.js --bundle --minify --sourcemap --outfile=dist/bri.js
 
       - name: Publish to npm with provenance
         run: npm publish --provenance --access public

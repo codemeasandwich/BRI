@@ -18,7 +18,8 @@ function hasReturnValue(body) {
     .replace(/`(?:[^`\\]|\\.)*`/g, '""');
 
   // Check for return with a value (not just "return;" or "return}")
-  return /return\s+[^;\s}]/.test(cleaned);
+  // Handles: return value; return\n  value; return {obj}; return [arr];
+  return /return[\s\n]+[^;\s}]/.test(cleaned);
 }
 
 /**

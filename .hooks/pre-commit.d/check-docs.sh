@@ -85,7 +85,10 @@ check_file_documented() {
 }
 
 # Get list of staged files (added or modified)
-STAGED_FILES=$(git diff --cached --name-only --diff-filter=AM 2>/dev/null || true)
+if ! STAGED_FILES=$(git diff --cached --name-only --diff-filter=AM 2>&1); then
+    echo "❌ Failed to get staged files from git"
+    exit 1
+fi
 
 # Exit early if no staged files
 if [ -z "$STAGED_FILES" ]; then
@@ -105,7 +108,7 @@ for file in $STAGED_FILES; do
     dir=$(dirname "$file")
     while [ "$dir" != "." ] && [ "$dir" != "/" ]; do
         # Check if this directory is being newly created (not in HEAD)
-        if ! git ls-tree -d HEAD "$dir" &>/dev/null 2>&1; then
+        if ! git ls-tree -d HEAD "$dir" >/dev/null 2>&1; then
             # Add to array if not already present
             if ! array_contains "$dir" "${NEW_DIRS[@]}"; then
                 NEW_DIRS+=("$dir")

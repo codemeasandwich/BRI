@@ -37,6 +37,10 @@ array_contains() {
 }
 
 # Get list of staged files (added or modified)
+# Returns 1 if git command fails, 0 otherwise (even if no files)
 get_staged_files() {
-    git diff --cached --name-only --diff-filter=AM 2>/dev/null || true
+    if ! git diff --cached --name-only --diff-filter=AM 2>&1; then
+        return 1
+    fi
+    return 0
 }
