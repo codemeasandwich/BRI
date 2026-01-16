@@ -1338,18 +1338,18 @@ describe('Final Coverage - Operations.js Remaining Lines', () => {
     await fs.rm(OPS_DIR + '-db', { recursive: true, force: true }).catch(() => {});
   });
 
-  // Line 89: debugger; - triggered when save() called with zero changes
-  test('line 89: save() with zero changes triggers debugger path', async () => {
-    const doc = await db.add.zerochange({ name: 'Original', count: 1 });
+  // Line 100: debugger; - triggered when update() called with zero changes
+  // Note: The reactive proxy's save() returns early if no changes, so we must
+  // call wrapper.update() directly to hit this defensive code path
+  test('line 100: update() with empty changes array triggers debugger path', async () => {
+    const doc = await wrapper.create('zerochange', { name: 'Original', count: 1 });
 
-    // Read it fresh, don't modify, call save
-    const loaded = await db.get.zerochange(doc.$ID);
+    // Call update directly with empty changes array
+    // This hits line 99-100 in operations.js (the defensive debugger check)
+    await wrapper.update(doc, []);
 
-    // save() with no changes - triggers line 88-89 (changes2save.length === 0)
-    await loaded.save();
-
-    // Should still work, doc unchanged
-    const reloaded = await db.get.zerochange(doc.$ID);
+    // Should still work, doc unchanged (empty changes = no-op)
+    const reloaded = await wrapper.get('zerochange', doc.$ID);
     expect(reloaded.name).toBe('Original');
   });
 
