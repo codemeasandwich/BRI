@@ -4,6 +4,10 @@
   "description": "BRI - Bigdata Repository of Intelligence - A simple, intuitive database framework",
   "type": "module",
   "main": "index.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/codemeasandwich/BRI"
+  },
   "exports": {
     ".": "./index.js",
     "./client": "./client/index.js",
