@@ -15,3 +15,6 @@ export { flattenToPathValues, isPlainObject } from './src/traverse.js';
 
 // Matching utilities
 export { isPartialMatch, isDeepEqual } from './src/match.js';
+
+// Patch generation
+export { createPatch } from './src/patch.js';

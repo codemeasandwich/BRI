@@ -1,5 +1,5 @@
 {
-  "name": "bri",
+  "name": "bri-db",
   "version": "1.0.0",
   "description": "BRI - Bigdata Repository of Intelligence - A simple, intuitive database framework",
   "type": "module",
@@ -15,9 +15,6 @@
   "scripts": {
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage"
-  },
-  "dependencies": {
-    "rfc6902": "^5.1.2"
   },
   "devDependencies": {
     "jest": "^29.7.0"

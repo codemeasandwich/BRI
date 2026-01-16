@@ -2,7 +2,7 @@
  * Type utilities and change publishing
  */
 
-import { createPatch } from 'rfc6902';
+import { createPatch } from '../utils/diff';
 import JSS from '../utils/jss/index.js';
 
 /**
