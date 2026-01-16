@@ -40,7 +40,8 @@ export function createRecoveryMethods() {
 
       await this.wal.init();
 
-      const walReader = new WALReader(path.join(this.config.dataDir, 'wal'));
+      const encryptionKey = this.keyManager?.getKey() || null;
+      const walReader = new WALReader(path.join(this.config.dataDir, 'wal'), { encryptionKey });
       await walReader.replay(startLine, {
         onSet: (key, value) => {
           this.hotTier.set(key, value, false);
@@ -106,7 +107,8 @@ export function createRecoveryMethods() {
      * @returns {Object} Snapshot state
      */
     async getSnapshotState() {
-      const walReader = new WALReader(path.join(this.config.dataDir, 'wal'));
+      const encryptionKey = this.keyManager?.getKey() || null;
+      const walReader = new WALReader(path.join(this.config.dataDir, 'wal'), { encryptionKey });
       const walLine = await walReader.getLineCount();
       return {
         version: 2,

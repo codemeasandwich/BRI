@@ -49,6 +49,7 @@ A self-contained persistent store with no external dependencies. Features:
 - **Write-Ahead Log (WAL)**: Durability and crash recovery
 - **Snapshots**: Periodic full-state dumps (default: every 30 minutes)
 - **Cold Tier**: JSON file storage for data that doesn't fit in memory
+- **Encryption at Rest**: Optional AES-256-GCM encryption for all stored data
 
 #### Configuration
 
@@ -64,7 +65,14 @@ const store = await createStore({
     snapshotIntervalMs: 1800000, // Snapshot every 30 minutes
     keepSnapshots: 3,            // Keep last 3 snapshots
     fsyncMode: 'batched',        // WAL sync mode: 'always', 'batched', 'os'
-    fsyncIntervalMs: 100         // Batch sync interval
+    fsyncIntervalMs: 100,        // Batch sync interval
+    encryption: {                // Optional encryption at rest
+      enabled: true,
+      keyProvider: 'env',        // 'env', 'file', or 'remote'
+      keyProviderConfig: {
+        envVar: 'BRI_ENCRYPTION_KEY'  // 64 hex chars (32 bytes)
+      }
+    }
   }
 });
 ```
@@ -537,10 +545,14 @@ BRI respects the following environment variables:
 |----------|-------------|---------|
 | `BRI_DATA_DIR` | Data directory path | `./data` |
 | `BRI_MAX_MEMORY_MB` | Maximum memory for hot tier cache | `256` |
+| `BRI_ENCRYPTION_KEY` | Encryption key (64 hex chars = 32 bytes) | *none* |
 
 ```bash
 # Example usage
 BRI_DATA_DIR=/var/lib/bri BRI_MAX_MEMORY_MB=512 node app.js
+
+# With encryption enabled
+BRI_ENCRYPTION_KEY=$(openssl rand -hex 32) node app.js
 ```
 
 ## Architecture
@@ -620,6 +632,7 @@ npm test -- tests/e2e/crud.test.js
 | `sets.test.js` | Set operations (sAdd, sRem, sMembers) |
 | `memory.test.js` | Memory management and eviction |
 | `persistence.test.js` | WAL, snapshots, recovery |
+| `encryption.test.js` | Encryption at rest, key providers |
 
 ### Legacy Test Scripts
 

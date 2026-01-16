@@ -1,5 +1,5 @@
 /**
- * WAL Writer - Append-only Write-Ahead Log
+ * @file WAL Writer - Append-only Write-Ahead Log
  *
  * Line format: {timestamp}|{pointer}|{entry}
  * Pointer = hash(prevPointer, entry) for chain integrity
@@ -8,14 +8,27 @@
 import fs from 'fs/promises';
 import { existsSync, mkdirSync, readFileSync } from 'fs';
 import path from 'path';
-import { serializeEntry, deserializeEntry } from './entry.js';
+import { serializeEntry, serializeEntryEncrypted, deserializeEntry } from './entry.js';
 
+/**
+ * Writes WAL entries with pointer chain integrity
+ */
 export class WALWriter {
+  /**
+   * Create a WAL writer
+   * @param {string} walDir - WAL directory path
+   * @param {Object} [options={}] - Configuration options
+   * @param {string} [options.fsyncMode='batched'] - Sync mode: 'always' or 'batched'
+   * @param {number} [options.fsyncIntervalMs=100] - Batched sync interval
+   * @param {number} [options.segmentSize=10485760] - Segment size in bytes
+   * @param {Buffer} [options.encryptionKey=null] - 32-byte encryption key
+   */
   constructor(walDir, options = {}) {
     this.walDir = walDir;
     this.fsyncMode = options.fsyncMode || 'batched';
     this.fsyncIntervalMs = options.fsyncIntervalMs || 100;
     this.segmentSize = options.segmentSize || 10 * 1024 * 1024;
+    this.encryptionKey = options.encryptionKey || null; // 32-byte key or null
 
     this.currentSegment = 0;
     this.currentSize = 0;
@@ -29,6 +42,10 @@ export class WALWriter {
     }
   }
 
+  /**
+   * Initialize the writer and open current segment
+   * @returns {Promise<void>}
+   */
   async init() {
     const files = await fs.readdir(this.walDir).catch(() => []);
     const segments = files
@@ -47,6 +64,10 @@ export class WALWriter {
     }
   }
 
+  /**
+   * Open a WAL segment for writing
+   * @returns {Promise<void>}
+   */
   async openSegment() {
     const segmentPath = this.getSegmentPath(this.currentSegment);
 
@@ -59,7 +80,10 @@ export class WALWriter {
     this.currentSize = stats.size;
   }
 
-  // Get pointer from last line across all segments for chain continuity
+  /**
+   * Get pointer from last line across all segments for chain continuity
+   * @returns {Promise<string|null>} Last pointer or null if no entries
+   */
   async getLastPointer() {
     const segments = await this.getSegments();
     if (segments.length === 0) return null;
@@ -71,7 +95,7 @@ export class WALWriter {
         const lines = content.trim().split('\n').filter(l => l.trim());
         if (lines.length > 0) {
           const lastLine = lines[lines.length - 1];
-          const entry = deserializeEntry(lastLine);
+          const entry = deserializeEntry(lastLine, this.encryptionKey);
           return entry._pointer;
         }
       } catch (err) {
@@ -81,21 +105,40 @@ export class WALWriter {
     return null;
   }
 
+  /**
+   * Get path for a segment number
+   * @param {number} segmentNum - Segment number
+   * @returns {string} Full path to segment file
+   */
   getSegmentPath(segmentNum) {
     const padded = String(segmentNum).padStart(6, '0');
     return path.join(this.walDir, `${padded}.wal`);
   }
 
+  /**
+   * Append an entry to the WAL
+   * @param {Object} entry - Entry to append
+   * @returns {Promise<void>}
+   */
   append(entry) {
     // Queue writes to maintain pointer chain integrity
     this.writeQueue = this.writeQueue.then(() => this._doAppend(entry));
     return this.writeQueue;
   }
 
+  /**
+   * Internal append implementation
+   * @param {Object} entry - Entry to append
+   * @returns {Promise<void>}
+   * @private
+   */
   async _doAppend(entry) {
     // Serialize: {timestamp}|{pointer}|{entry}
     // pointer = hash(lastPointer, entryJson)
-    const line = serializeEntry(entry, this.lastPointer);
+    // If encryption enabled, entry portion is encrypted with AAD = timestamp|pointer
+    const line = this.encryptionKey
+      ? serializeEntryEncrypted(entry, this.lastPointer, this.encryptionKey)
+      : serializeEntry(entry, this.lastPointer);
     const lineWithNewline = line + '\n';
     const bytes = Buffer.byteLength(lineWithNewline, 'utf8');
 
@@ -115,6 +158,10 @@ export class WALWriter {
     }
   }
 
+  /**
+   * Rotate to a new segment
+   * @returns {Promise<void>}
+   */
   async rotate() {
     if (this.fileHandle) {
       await this.fileHandle.sync();
@@ -124,6 +171,9 @@ export class WALWriter {
     await this.openSegment();
   }
 
+  /**
+   * Start batched fsync timer
+   */
   startFsyncTimer() {
     this.fsyncTimer = setInterval(async () => {
       if (this.fileHandle) {
@@ -136,12 +186,20 @@ export class WALWriter {
     }, this.fsyncIntervalMs);
   }
 
+  /**
+   * Force sync to disk
+   * @returns {Promise<void>}
+   */
   async sync() {
     if (this.fileHandle) {
       await this.fileHandle.sync();
     }
   }
 
+  /**
+   * Get all WAL segment file paths
+   * @returns {Promise<string[]>} Sorted array of segment paths
+   */
   async getSegments() {
     const files = await fs.readdir(this.walDir).catch(() => []);
     return files
@@ -150,6 +208,10 @@ export class WALWriter {
       .map(f => path.join(this.walDir, f));
   }
 
+  /**
+   * Archive current segment and start a new one
+   * @returns {Promise<number>} Archived segment number
+   */
   async archive() {
     await this.sync();
 
@@ -168,6 +230,10 @@ export class WALWriter {
     return archivedSegment;
   }
 
+  /**
+   * Close the writer and cleanup
+   * @returns {Promise<void>}
+   */
   async close() {
     if (this.fsyncTimer) {
       clearInterval(this.fsyncTimer);

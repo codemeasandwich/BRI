@@ -12,6 +12,7 @@
 |----------|--------|---------|
 | **Redis Replacement** | COMPLETE | Zero Redis dependencies - fully file-based |
 | **Core Storage** | COMPLETE | WAL + Hot/Cold tiers + Snapshots |
+| **Encryption at Rest** | COMPLETE | AES-256-GCM for WAL, snapshots, cold tier |
 | **Transactions** | COMPLETE | `rec/fin/nop/pop` fully working |
 | **CRUD + Pub/Sub** | COMPLETE | Full API with change tracking |
 | **Graph Relationships** | NOT STARTED | See [graph-relationships.md](graph-relationships.md) |
@@ -23,6 +24,8 @@
 | **Remote Configuration** | DESIGNED | See [remote-configuration.md](remote-configuration.md) |
 | **Docker Deployment** | DESIGNED | See [deployment.md](deployment.md) |
 | **Enum Support** | DESIGNED | See [enum-support.md](enum-support.md) |
+| **Scribbles Logging** | DESIGNED | Remote endpoint for microservices log integration |
+| **CLI Admin Dashboard** | DESIGNED | See [cli-admin-dashboard.md](cli-admin-dashboard.md) |
 
 ### Architecture Decisions (from archived plan.md)
 
@@ -53,7 +56,7 @@ The following architectural choices were made and fully implemented:
 - Objects and Arrays as first-class citizens
 - Easy leaf node replacement/movement
 - Reference-aware for building graph networks (nodes & edges)
-- Serialization via JSS or RFC6902 patches
+- Serialization via JSS or Diff patches
 
 ---
 
@@ -88,6 +91,8 @@ Detailed specifications for unimplemented features are in separate task files:
 - **[Remote Configuration](remote-configuration.md)** - Centralized config management
 - **[Docker Deployment](deployment.md)** - Container deployment with API-Ape
 - **[Enum Support](enum-support.md)** - Type-safe constrained values
+- **Scribbles Logging** - Remote endpoint for BRI to push string/object logs to microservices logging systems
+- **[CLI Admin Dashboard](cli-admin-dashboard.md)** - Terminal-based monitoring UI (Priority: MEDIUM)
 
 ---
 
@@ -101,7 +106,7 @@ Detailed specifications for unimplemented features are in separate task files:
 - [x] Proxy-based change tracking
 - [x] Basic `.populate()` for relationships
 - [x] JSS serialization
-- [x] RFC6902 patch generation for changes
+- [x] /utils/Diff patch generation for changes
 
 #### In-House Storage (storage/*) - **REDIS FULLY REPLACED**
 > Redis has been completely removed. All storage is now file-based with in-memory caching.
@@ -112,6 +117,7 @@ Detailed specifications for unimplemented features are in separate task files:
 - [x] Periodic snapshots (30min default) for fast recovery ([storage/snapshot/](../storage/snapshot/))
 - [x] Set operations (`sAdd`, `sMembers`, `sRem`) for collection indexing
 - [x] Full crash recovery (snapshot + WAL replay)
+- [x] Encryption at rest - AES-256-GCM with pluggable key providers ([crypto/](../crypto/), see [encryption-at-rest.md](encryption-at-rest.md))
 
 #### Transaction System (storage/transaction/*)
 > **Note:** Implementation uses `rec/fin/nop/pop` instead of the `PREP/DUMP/PUSH/MORE` naming in the Vision section above.
@@ -145,6 +151,7 @@ See the "Planned Features" section above for links to detailed task specificatio
 1. **[Graph Relationships](graph-relationships.md)** - Core differentiator (HIGH)
 2. **[Memoization Cache](memoization-cache.md)** - Performance optimization (MEDIUM)
 3. **[Archive & Restore](archive-and-restore.md)** - Production hardening (MEDIUM)
-4. **[Bootstrap Data](bootstrap-data.md)** - Deployment convenience (MEDIUM)
-5. **[Enum Support](enum-support.md)** - Type safety (LOW)
-6. **[Query Optimization](query-optimization.md)** - Nice-to-have (LOW)
+4. **[CLI Admin Dashboard](cli-admin-dashboard.md)** - Operations monitoring (MEDIUM)
+5. **[Bootstrap Data](bootstrap-data.md)** - Deployment convenience (MEDIUM)
+6. **[Enum Support](enum-support.md)** - Type safety (LOW)
+7. **[Query Optimization](query-optimization.md)** - Nice-to-have (LOW)

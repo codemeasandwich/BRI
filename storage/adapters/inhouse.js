@@ -11,6 +11,7 @@ import { ColdTierFiles } from '../cold-tier/files.js';
 import { SnapshotManager } from '../snapshot/manager.js';
 import { LocalPubSub } from '../pubsub/local.js';
 import { TransactionManager } from '../transaction/manager.js';
+import { KeyManager } from '../../crypto/key-manager.js';
 import { createCrudMethods } from './inhouse-crud.js';
 import { createTxnMethods } from './inhouse-txn.js';
 import { createRecoveryMethods } from './inhouse-recovery.js';
@@ -33,15 +34,26 @@ export class InHouseAdapter {
     this.snapshots = null;
     this.pubsub = null;
     this.txnManager = null;
+    this.keyManager = null;
   }
 
   /**
    * Connect and initialize all subsystems
+   * @returns {Promise<void>}
    */
   async connect() {
     if (this.initialized) return;
 
-    const { dataDir, maxMemoryMB, evictionThreshold } = this.config;
+    const { dataDir, maxMemoryMB, evictionThreshold, encryption } = this.config;
+
+    // Initialize encryption if enabled
+    let encryptionKey = null;
+    if (encryption?.enabled) {
+      this.keyManager = new KeyManager(encryption);
+      await this.keyManager.initialize(); // Fails fast if key unavailable
+      encryptionKey = this.keyManager.getKey();
+      console.log('InHouse Store: Encryption enabled');
+    }
 
     this.coldTier = new ColdTierFiles(dataDir);
 
@@ -63,12 +75,14 @@ export class InHouseAdapter {
     this.wal = new WALWriter(path.join(dataDir, 'wal'), {
       fsyncMode: this.config.fsyncMode,
       fsyncIntervalMs: this.config.fsyncIntervalMs,
-      segmentSize: this.config.walSegmentSize
+      segmentSize: this.config.walSegmentSize,
+      encryptionKey
     });
 
     this.snapshots = new SnapshotManager(dataDir, {
       intervalMs: this.config.snapshotIntervalMs,
-      keepCount: this.config.keepSnapshots
+      keepCount: this.config.keepSnapshots,
+      encryptionKey
     });
 
     this.pubsub = new LocalPubSub();
@@ -136,6 +150,10 @@ export class InHouseAdapter {
 
     await this.wal.close();
     this.pubsub.clear();
+
+    if (this.keyManager) {
+      await this.keyManager.close();
+    }
 
     this.initialized = false;
     console.log('InHouse Store: Disconnected');

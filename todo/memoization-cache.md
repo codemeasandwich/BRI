@@ -10,7 +10,7 @@ BRI currently:
 - Has a stub at [engine/operations.js:89](../engine/operations.js#L89) that throws "not yet implemented"
 - Re-serializes objects on every request
 - Has no caching layer for JSS output
-- Regenerates RFC6902 patches every time
+- Regenerates Diff patches every time
 
 ## Use Cases
 
@@ -231,7 +231,7 @@ export class JSSCache {
 
 ```javascript
 import { MemoizationCache } from './cache.js';
-import { generatePatch } from '../patch/rfc6902.js';
+import { generatePatch } from '../utils/diff';
 
 export class PatchCache {
   constructor(options = {}) {

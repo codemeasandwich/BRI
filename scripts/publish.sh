@@ -265,7 +265,7 @@ if git rev-parse "$TAG" >/dev/null 2>&1; then
     
     # Rebuild the client bundle (validation only)
     echo "   🔨 Rebuilding client bundle (validation)..."
-    npx esbuild client/index.js --bundle --minify --sourcemap --outfile=dist/api-ape.min.js
+    npx esbuild client/index.js --bundle --minify --sourcemap --platform=node --outfile=dist/api-ape.min.js
     echo "   ✅ Client bundle rebuilt"
     
     # Cleanup: Remove validation build files (CI builds its own)

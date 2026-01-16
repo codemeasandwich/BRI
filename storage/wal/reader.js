@@ -1,5 +1,5 @@
 /**
- * WAL Reader - Read and replay Write-Ahead Log
+ * @file WAL Reader - Read and replay Write-Ahead Log
  *
  * Line format: {timestamp}|{pointer}|{entry}
  * Line position is the sequence number (no LSN needed).
@@ -11,11 +11,25 @@ import { createReadStream, readFileSync } from 'fs';
 import readline from 'readline';
 import { deserializeEntry, hashPointer, WALOp } from './entry.js';
 
+/**
+ * Reads and replays WAL entries for recovery
+ */
 export class WALReader {
-  constructor(walDir) {
+  /**
+   * Create a WAL reader
+   * @param {string} walDir - WAL directory path
+   * @param {Object} [options={}] - Configuration options
+   * @param {Buffer} [options.encryptionKey=null] - 32-byte decryption key
+   */
+  constructor(walDir, options = {}) {
     this.walDir = walDir;
+    this.encryptionKey = options.encryptionKey || null; // 32-byte key or null
   }
 
+  /**
+   * Get all WAL segment file paths
+   * @returns {Promise<string[]>} Sorted array of segment paths
+   */
   async getSegments() {
     const files = await fs.readdir(this.walDir).catch(() => []);
     return files
@@ -43,7 +57,7 @@ export class WALReader {
           if (!line || !line.trim()) return;
           if (lineNumber <= afterLine) return;
           try {
-            const entry = deserializeEntry(line);
+            const entry = deserializeEntry(line, this.encryptionKey);
             entry._line = lineNumber;
             results.push(entry);
           } catch (err) {
@@ -60,6 +74,17 @@ export class WALReader {
     }
   }
 
+  /**
+   * Replay WAL entries through handlers
+   * @param {number} afterLine - Start replaying after this line number
+   * @param {Object} handlers - Operation handlers
+   * @param {Function} handlers.onSet - Called for SET operations
+   * @param {Function} handlers.onDelete - Called for DELETE operations
+   * @param {Function} handlers.onRename - Called for RENAME operations
+   * @param {Function} handlers.onSAdd - Called for SADD operations
+   * @param {Function} handlers.onSRem - Called for SREM operations
+   * @returns {Promise<number>} Last replayed line number
+   */
   async replay(afterLine, handlers) {
     let count = 0;
     let lastLine = afterLine;
@@ -96,6 +121,10 @@ export class WALReader {
     return lastLine;
   }
 
+  /**
+   * Get total line count across all segments
+   * @returns {Promise<number>} Total line count
+   */
   async getLineCount() {
     let count = 0;
     for await (const entry of this.readEntries(0)) {
@@ -104,7 +133,10 @@ export class WALReader {
     return count;
   }
 
-  // Verify pointer chain integrity across all WAL segments
+  /**
+   * Verify pointer chain integrity across all WAL segments
+   * @returns {Promise<{valid: boolean, totalLines: number, errors: Array}>} Integrity result
+   */
   async verifyIntegrity() {
     const segments = await this.getSegments();
     let prevPointer = null;
@@ -119,7 +151,7 @@ export class WALReader {
         for (const line of lines) {
           lineNumber++;
           try {
-            const entry = deserializeEntry(line);
+            const entry = deserializeEntry(line, this.encryptionKey);
 
             // Verify pointer = hash(prevPointer, entryJson)
             const expectedPointer = hashPointer(prevPointer, entry._entryJson);

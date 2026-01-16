@@ -1,6 +1,6 @@
 {
   "name": "bri-db",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "BRI - Bigdata Repository of Intelligence - A simple, intuitive database framework",
   "type": "module",
   "main": "index.js",
