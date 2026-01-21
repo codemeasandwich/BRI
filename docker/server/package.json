@@ -1,0 +1,18 @@
+{
+  "name": "bri-server",
+  "version": "1.0.0",
+  "description": "BRI database server with api-ape WebSocket RPC interface",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "bun run index.js",
+    "dev": "bun --watch run index.js"
+  },
+  "dependencies": {
+    "bri": "^1.1.1",
+    "api-ape": "^4.0.0"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  }
+}

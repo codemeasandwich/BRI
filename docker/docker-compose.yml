@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  bri:
+    build: .
+    ports:
+      - "${PORT:-3000}:3000"
+    volumes:
+      - bri-data:/data
+    environment:
+      - PORT=3000
+      - DATA_DIR=/data
+      - MAX_MEMORY_MB=${MAX_MEMORY_MB:-256}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
+      - AUTH_REQUIRED=${AUTH_REQUIRED:-false}
+    restart: unless-stopped
+
+volumes:
+  bri-data:
+    driver: local
