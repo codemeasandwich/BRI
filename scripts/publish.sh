@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -e
 
+# Optional version argument: npm run release [version]
+# Example: npm run release 2.0.0
+if [[ -n "$1" ]]; then
+  TARGET_VERSION="$1"
+  # Validate semver format
+  if [[ ! "$TARGET_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "❌ Error: Invalid version format. Use semantic versioning (e.g., 1.2.3)"
+    exit 1
+  fi
+  echo "🎯 Target version specified: $TARGET_VERSION"
+fi
+
 PACKAGE_NAME=$(node -p "require('./package.json').name")
 
 # Step 1: Push all committed changes to origin first
@@ -77,6 +89,46 @@ if [[ $ORIGIN_VERSION_CMP -eq 1 ]]; then
   echo "✅ Step 3 complete: Version $LOCAL_VERSION synced to origin"
 else
   echo "✅ Step 3: Local version matches origin, no sync needed"
+fi
+
+# Handle explicit version argument
+if [[ -n "$TARGET_VERSION" ]]; then
+  echo "📝 Using specified version: $TARGET_VERSION"
+
+  # Check if target version is higher than npm
+  TARGET_CMP=$(compare_versions "$TARGET_VERSION" "$NPM_VERSION")
+  if [[ $TARGET_CMP -ne 1 ]]; then
+    echo "❌ Error: Target version ($TARGET_VERSION) must be higher than npm version ($NPM_VERSION)"
+    exit 1
+  fi
+
+  # Update package.json with target version
+  node -e "
+    const fs = require('fs');
+    const pkg = require('./package.json');
+    pkg.version = '$TARGET_VERSION';
+    fs.writeFileSync('./package.json', JSON.stringify(pkg, null, 2) + '\n');
+  "
+
+  # Update package-lock.json
+  if [[ -f "package-lock.json" ]]; then
+    node -e "
+      const fs = require('fs');
+      const lockfile = require('./package-lock.json');
+      lockfile.version = '$TARGET_VERSION';
+      if (lockfile.packages && lockfile.packages['']) {
+        lockfile.packages[''].version = '$TARGET_VERSION';
+      }
+      fs.writeFileSync('./package-lock.json', JSON.stringify(lockfile, null, 2) + '\n');
+    "
+  fi
+
+  git add package.json package-lock.json 2>/dev/null || git add package.json
+  git commit -m "chore: bump version to $TARGET_VERSION"
+  git push origin HEAD
+
+  LOCAL_VERSION="$TARGET_VERSION"
+  echo "✅ Version set to $TARGET_VERSION"
 fi
 
 # Check version relationship against npm
