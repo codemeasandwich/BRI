@@ -24,6 +24,7 @@
 
 import validate from '../utils/schema/index.js';
 import { VectorIndex } from './vector-index.js';
+import SecondaryIndexManager from './secondary-index.js';
 
 /**
  * Create a schema registry instance.
@@ -42,6 +43,22 @@ export function createSchemaRegistry(store) {
   const vectorIndices = new Map();
   // collection name → vector field name (cached for fast middleware lookup)
   const vectorFields = new Map();
+  // Per-database secondary-index manager. Populated lazily when a schema
+  // declares $indexes; the registry hands out a single shared instance so
+  // middleware and the query planner observe consistent state.
+  const secondaryIndexes = new SecondaryIndexManager();
+  // Restore persisted secondary indexes from the store before any declare()
+  // runs — keeps the spec-validation path consistent with vector indices.
+  if (store && typeof store.getSecondaryIndexState === 'function') {
+    const persisted = store.getSecondaryIndexState();
+    if (persisted) secondaryIndexes.load(persisted);
+  }
+  // Bind the manager back to the store so the next snapshot serializes it.
+  // The store keeps a reference; on disconnect / scheduled snapshot,
+  // getSnapshotState calls manager.serialize() on this same instance.
+  if (store && typeof store.bindSecondaryIndexManager === 'function') {
+    store.bindSecondaryIndexManager(secondaryIndexes);
+  }
 
   /**
    * Walk a schema definition and pick out the vector field, if any.
@@ -89,6 +106,33 @@ export function createSchemaRegistry(store) {
      */
     declare(collection, schemaDef) {
       schemas.set(collection, schemaDef);
+
+      // Process $indexes first — declaration order is independent of vector
+      // wiring, but a malformed $indexes spec must throw BEFORE we touch the
+      // vector index. Each entry is an array of field names; every field
+      // referenced must be declared on the collection.
+      const indexSpecs = Array.isArray(schemaDef.$indexes) ? schemaDef.$indexes : null;
+      if (indexSpecs) {
+        for (const spec of indexSpecs) {
+          if (!Array.isArray(spec) || spec.length === 0) {
+            throw new Error(
+              `Schema '${collection}' has malformed $indexes entry — ` +
+              `expected an array of field names, got ${JSON.stringify(spec)}.`
+            );
+          }
+          for (const field of spec) {
+            if (!Object.prototype.hasOwnProperty.call(schemaDef, field)) {
+              throw new Error(
+                `Schema '${collection}' declares index on field '${field}' ` +
+                `which is not declared on the collection. Available fields: ` +
+                `${Object.keys(schemaDef).filter(k => !k.startsWith('$')).join(', ')}.`
+              );
+            }
+          }
+          secondaryIndexes.declare(collection, spec);
+        }
+      }
+
       const vec = findVectorField(schemaDef);
       if (!vec) return;
       vectorFields.set(collection, vec.name);
@@ -173,6 +217,15 @@ export function createSchemaRegistry(store) {
       const schema = schemas.get(collection);
       if (!schema) return null;
       return validate(schema, doc);
+    },
+
+    /**
+     * Access the SecondaryIndexManager instance shared across the database.
+     * Used by the query planner and the index-sync middleware.
+     * @returns {SecondaryIndexManager}
+     */
+    secondaryIndexManager() {
+      return secondaryIndexes;
     }
   };
 }

@@ -92,6 +92,47 @@ export class InHouseAdapter {
   }
 
   /**
+   * Bind the SecondaryIndexManager owned by the schema registry to this
+   * store so snapshots can persist its state and recovery can hand its
+   * pre-loaded state back to a future registry instance.
+   *
+   * Why a one-shot bind (instead of per-collection registration like
+   * vectors): the manager is a single shared object, not one-per-
+   * collection. The store treats it as opaque — serialize() / load() are
+   * the only entry points it cares about.
+   *
+   * @param {Object} mgr - SecondaryIndexManager instance
+   */
+  bindSecondaryIndexManager(mgr) {
+    this._secondaryIndexManager = mgr;
+    if (this._pendingSecondaryState) {
+      mgr.load(this._pendingSecondaryState);
+      this._pendingSecondaryState = null;
+    }
+  }
+
+  /**
+   * Pre-loaded secondary index state from snapshot, surfaced to the registry
+   * via createSchemaRegistry's first call. Returns null when no state was
+   * loaded (fresh database or v2 snapshot).
+   *
+   * @returns {Object|null}
+   */
+  getSecondaryIndexState() {
+    return this._pendingSecondaryState || null;
+  }
+
+  /**
+   * Capture secondary index state during recovery so the registry can pick
+   * it up on its first secondaryIndexManager() use. Used by inhouse-recovery.
+   *
+   * @param {Object} state - serialize() output, or null/undefined for none
+   */
+  setPendingSecondaryState(state) {
+    this._pendingSecondaryState = state || null;
+  }
+
+  /**
    * Connect and initialize all subsystems
    * @returns {Promise<void>}
    */

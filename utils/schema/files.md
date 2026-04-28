@@ -23,3 +23,4 @@ Schema validation module.
 - Recursive nested object validation
 - Array item type validation
 - Vector deep validation (dimensionality, finite-numeric elements)
+- Collection-level options ($-prefixed keys like $indexes, $supersession) are skipped during per-document validation — they configure engine behavior, not field shape

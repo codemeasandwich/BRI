@@ -6,13 +6,16 @@
  *   v2 - same as v1 but with reattached toString/$ID prototypes
  *   v3 - adds vectorIndices (base64 of VectorIndex.serialize()) and
  *        vectorSchemas ({ collection -> { field, dims, metric } }) so a
- *        process restart restores vector capability without re-embedding
+ *        process restart restores vector capability without re-embedding;
+ *        also carries secondaryIndexes (POJO from SecondaryIndexManager.
+ *        serialize()) so declared $indexes survive restart
  *
  * Backwards compatibility:
  *   v1/v2 snapshots load as before. The first snapshot written after
  *   startup is v3 (no migration step required). Reading a v3 snapshot in a
  *   build that doesn't know v3 would still work for the documents/collections
- *   keys; the vectorIndices key would simply be ignored by older code.
+ *   keys; the vectorIndices and secondaryIndexes keys would simply be
+ *   ignored by older code.
  */
 
 import path from 'path';
@@ -39,6 +42,9 @@ export function createRecoveryMethods() {
         if (snapshot.version === 3) {
           this.loadSnapshotV2(snapshot.documents || {}, snapshot.collections || {});
           this.loadVectorState(snapshot.vectorIndices || {}, snapshot.vectorSchemas || {});
+          // Stash secondary-index state for the registry to pick up on its
+          // first declare() — the manager isn't constructed until then.
+          this.setPendingSecondaryState(snapshot.secondaryIndexes || null);
         } else if (snapshot.version === 2) {
           this.loadSnapshotV2(snapshot.documents || {}, snapshot.collections || {});
         } else {
@@ -209,8 +215,17 @@ export function createRecoveryMethods() {
       const walReader = new WALReader(path.join(this.config.dataDir, 'wal'), { encryptionKey });
       const walLine = await walReader.getLineCount();
       const hasVectorState = this._vectorRegistry.size > 0;
+      // Secondary state is captured if the manager is bound and has any
+      // declared specs. We snapshot proactively so future restarts don't
+      // re-declare against an empty manager and silently lose persistence.
+      let secondaryState = null;
+      if (this._secondaryIndexManager) {
+        const ser = this._secondaryIndexManager.serialize();
+        if (ser && Object.keys(ser).length > 0) secondaryState = ser;
+      }
+      const hasV3Payload = hasVectorState || !!secondaryState;
       const base = {
-        version: hasVectorState ? 3 : 2,
+        version: hasV3Payload ? 3 : 2,
         walLine,
         documents: this.hotTier.getAllDocumentsForSnapshot(JSS.parse),
         collections: this.hotTier.getAllCollections()
@@ -224,6 +239,9 @@ export function createRecoveryMethods() {
         }
         base.vectorIndices = vectorIndices;
         base.vectorSchemas = vectorSchemas;
+      }
+      if (secondaryState) {
+        base.secondaryIndexes = secondaryState;
       }
       return base;
     },

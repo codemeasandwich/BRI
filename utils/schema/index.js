@@ -98,6 +98,10 @@ const validateVector = (field, value, schemaField) => {
  */
 export default function validate(schemaObj, pojoObj){
     for (const key in schemaObj) {
+        // Collection-level options ($indexes, $supersession, etc.) are not
+        // per-document fields — they configure engine behavior. Skip them here
+        // so the validator only inspects field declarations.
+        if (key.startsWith('$')) continue;
         const schemaField = schemaObj[key];
         const pojoField = pojoObj[key];
 
