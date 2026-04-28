@@ -47,13 +47,16 @@ export function vectorIndexMiddleware(registry) {
       }
     }
 
-    // PRE: capture the pre-state for set/del so secondary-index removal can
-    // target the OLD compound keys. Vector index doesn't need this (its
-    // remove is keyed by $ID, not field values).
+    // PRE: capture the pre-state for set/del so secondary-index removal
+    // and graph-index cleanup can target the OLD field values. Vector
+    // index doesn't need this (its remove is keyed by $ID, not values).
     let preDoc = null;
     const idxMgr = registry.secondaryIndexManager?.();
     const hasSecondary = idxMgr && hasIndexesFor(idxMgr, ctx.type);
-    if (hasSecondary && (ctx.operation === 'set' || ctx.operation === 'del')) {
+    const isEdge = !!registry.edgeSpec?.(ctx.type);
+    const needsPreFetch = (hasSecondary || isEdge) &&
+                          (ctx.operation === 'set' || ctx.operation === 'del');
+    if (needsPreFetch) {
       const target = ctx.args[0];
       const targetId = typeof target === 'string' ? target : target?.$ID;
       if (targetId) {
@@ -106,6 +109,27 @@ export function vectorIndexMiddleware(registry) {
         }
       } else if (ctx.operation === 'del') {
         if (preDoc && preDoc.$ID) idxMgr.remove(ctx.type, preDoc);
+      }
+    }
+
+    // POST: sync the graph index for edge collections. The collection has
+    // an edge spec iff its schema declared $edge; non-edge collections
+    // are no-ops here. Insert on add, replace on set (remove old then
+    // insert new), remove on delete.
+    const graph = registry.graphIndex();
+    const edgeSpec = registry.edgeSpec(ctx.type);
+    if (edgeSpec) {
+      if (ctx.operation === 'add') {
+        const entity = ctx.result;
+        if (entity && entity.$ID) graph.insertEdge(ctx.type, entity);
+      } else if (ctx.operation === 'set') {
+        const entity = ctx.result;
+        if (entity && entity.$ID) {
+          if (preDoc) graph.removeEdge(ctx.type, preDoc);
+          graph.insertEdge(ctx.type, entity);
+        }
+      } else if (ctx.operation === 'del') {
+        if (preDoc && preDoc.$ID) graph.removeEdge(ctx.type, preDoc);
       }
     }
   };

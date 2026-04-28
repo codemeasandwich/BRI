@@ -25,6 +25,9 @@
 import validate from '../utils/schema/index.js';
 import { VectorIndex } from './vector-index.js';
 import SecondaryIndexManager from './secondary-index.js';
+import { GraphIndex } from './graph-index.js';
+import { type2Short } from './types.js';
+import { buildEdgeSpec, registerPredicateRouting } from './schema-edge-declare.js';
 
 /**
  * Create a schema registry instance.
@@ -43,6 +46,25 @@ export function createSchemaRegistry(store) {
   const vectorIndices = new Map();
   // collection name → vector field name (cached for fast middleware lookup)
   const vectorFields = new Map();
+  // Per-database graph index. Populated lazily as edge collections
+  // declare themselves via $edge in their schema. Shared across the whole
+  // database — predicate proxy and middleware consume the same instance.
+  const graphIndex = new GraphIndex();
+  // Reverse map: $ID prefix (e.g. 'KGEN') -> collection name. Used by the
+  // predicate proxy to resolve an entity's collection from its $ID at
+  // property-access time. Populated alongside declare().
+  const collectionByPrefix = new Map();
+  // collection -> { from, to, predicate, predicates } registered for the
+  // edge — kept in the registry (in addition to graphIndex.edgeSpecFor) so
+  // collisions across edge schemas can be detected without round-tripping
+  // through the index layer.
+  const edgeCollections = new Map();
+  // Subject collection -> Map<predicate, edgeCollection>. Used by the
+  // predicate proxy to find the right edge collection when alice.works_at
+  // is accessed: alice's collection is kgEntity, predicate is works_at,
+  // so the edge collection is whatever was registered with that pair.
+  const predicatesBySubject = new Map();
+
   // Per-database secondary-index manager. Populated lazily when a schema
   // declares $indexes; the registry hands out a single shared instance so
   // middleware and the query planner observe consistent state.
@@ -107,10 +129,31 @@ export function createSchemaRegistry(store) {
     declare(collection, schemaDef) {
       schemas.set(collection, schemaDef);
 
-      // Process $indexes first — declaration order is independent of vector
-      // wiring, but a malformed $indexes spec must throw BEFORE we touch the
-      // vector index. Each entry is an array of field names; every field
-      // referenced must be declared on the collection.
+      // Build the prefix → collection lookup for this collection so the
+      // predicate proxy can resolve an entity's collection from its $ID.
+      // Done lazily here (not at first read) so reading happens off the
+      // hot path.
+      const prefix = type2Short(collection);
+      collectionByPrefix.set(prefix, collection);
+
+      // Process $edge first — collisions and reserved-name checks must
+      // throw before any other state mutation. $edge declares the
+      // collection as an edge collection; predicate names are validated
+      // against the reserved list and against subject-collection
+      // ambiguities.
+      const edge = schemaDef.$edge;
+      if (edge) {
+        // Resolve concrete field names + reserved-name check, then register
+        // routing. See engine/schema-edge-declare.js for the rules.
+        const { enrichedSpec, predicates } = buildEdgeSpec(collection, schemaDef);
+        edgeCollections.set(collection, enrichedSpec);
+        graphIndex.declareEdge(collection, enrichedSpec);
+        registerPredicateRouting(predicatesBySubject, edge, collection, predicates);
+      }
+
+      // Process $indexes — a malformed $indexes spec must throw BEFORE we
+      // touch the vector index. Each entry is an array of field names;
+      // every field referenced must be declared on the collection.
       const indexSpecs = Array.isArray(schemaDef.$indexes) ? schemaDef.$indexes : null;
       if (indexSpecs) {
         for (const spec of indexSpecs) {
@@ -236,6 +279,46 @@ export function createSchemaRegistry(store) {
      */
     vectorIndices() {
       return vectorIndices.entries();
+    },
+
+    /**
+     * Access the shared GraphIndex instance.
+     * @returns {GraphIndex}
+     */
+    graphIndex() {
+      return graphIndex;
+    },
+
+    /**
+     * Look up the edge spec for a collection, or undefined if not an edge.
+     * @param {string} collection
+     * @returns {Object|undefined}
+     */
+    edgeSpec(collection) {
+      return edgeCollections.get(collection);
+    },
+
+    /**
+     * Resolve the collection name for an entity given its $ID prefix.
+     * Used by the predicate proxy at property-access time.
+     * @param {string} prefix - Four-letter $ID prefix (uppercase)
+     * @returns {string|undefined}
+     */
+    collectionForPrefix(prefix) {
+      return collectionByPrefix.get(prefix);
+    },
+
+    /**
+     * Look up the edge collection for (subjectCollection, predicate). Used
+     * by the predicate proxy: alice.works_at → predicateEdge('kgEntity', 'works_at')
+     * returns 'kgTriple'.
+     * @param {string} subjectCollection
+     * @param {string} predicate
+     * @returns {string|undefined}
+     */
+    predicateEdge(subjectCollection, predicate) {
+      const map = predicatesBySubject.get(subjectCollection);
+      return map ? map.get(predicate) : undefined;
     }
   };
 }
