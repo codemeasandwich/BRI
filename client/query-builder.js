@@ -41,42 +41,11 @@
  */
 
 import { QueryPlanner } from '../engine/query-planner.js';
+import { GroupedQueryBuilder } from './grouped-query-builder.js';
 
-/**
- * Compile a filter spec to a predicate function.
- *
- * Accepts a function (passed through) or an object with the equality-form
- * filters used by the existing helpers.checkMatch / isMatch. We don't reach
- * for those modules here to keep the v1 builder self-contained; if filter
- * semantics drift, this is the single place to extend.
- *
- * Supported object form (v1):
- *   { field: value }                  - equality
- *   { field: null }                   - explicit null
- *
- * Future operators ($ne, $in, $gte, etc.) live in the spec but are deferred
- * past this slice. Throwing on an unrecognised operator would be safer; for
- * now we keep object filters strict equality so wrong assumptions surface
- * loudly during the next slice's tests.
- *
- * @param {Object|Function|undefined} filter
- * @returns {(doc:Object)=>boolean}
- */
-function compileFilter(filter) {
-  if (filter === undefined || filter === null) return () => true;
-  if (typeof filter === 'function') return filter;
-  if (typeof filter === 'object') {
-    const keys = Object.keys(filter);
-    return (doc) => {
-      if (!doc) return false;
-      for (const k of keys) {
-        if (doc[k] !== filter[k]) return false;
-      }
-      return true;
-    };
-  }
-  throw new Error(`QueryBuilder.where: unsupported filter type ${typeof filter}`);
-}
+// compileFilter lives in engine/filter-compiler.js — shared with the
+// query planner and the GroupedQueryBuilder so .where, .having, and the
+// planner's residual filter all agree on operator semantics.
 
 /**
  * Attach $cosine and $score as non-enumerable metadata on a result entity.
@@ -328,6 +297,55 @@ export class QueryBuilder {
   }
 
   /**
+   * Terminal: returns the count of matching docs. Composes with .where but
+   * not with .near (count-of-similar isn't well-defined as a primitive yet).
+   * @returns {Promise<number>}
+   */
+  async count() {
+    if (this._state.near) {
+      throw new Error('QueryBuilder.count() does not compose with .near (yet)');
+    }
+    const arr = await this.toArray();
+    return arr.length;
+  }
+
+  /**
+   * Terminal: returns the distinct values of a field across matching docs.
+   * @param {string} field
+   * @returns {Promise<Array>} distinct values, in insertion order
+   */
+  async distinct(field) {
+    if (this._state.near) {
+      throw new Error('QueryBuilder.distinct() does not compose with .near (yet)');
+    }
+    const arr = await this.toArray();
+    const seen = new Set();
+    const out = [];
+    for (const doc of arr) {
+      if (!doc) continue;
+      const v = doc[field];
+      if (v === undefined || v === null) continue;
+      if (!seen.has(v)) {
+        seen.add(v);
+        out.push(v);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Build a GroupedQueryBuilder for the given grouping field. The grouped
+   * builder takes additional terminals (.count, .sum) and an optional
+   * .having filter applied to aggregated rows.
+   *
+   * @param {string} field
+   * @returns {GroupedQueryBuilder}
+   */
+  groupBy(field) {
+    return new GroupedQueryBuilder(this, field);
+  }
+
+  /**
    * Thenable: makes `await builder` work without an explicit .toArray().
    * @param {Function} onResolve - Forwarded to the underlying Promise
    * @param {Function} onReject - Forwarded to the underlying Promise
@@ -337,5 +355,10 @@ export class QueryBuilder {
     return this.toArray().then(onResolve, onReject);
   }
 }
+
+// GroupedQueryBuilder lives in client/grouped-query-builder.js — extracted
+// to keep this file under the 260-source-line gate. Re-exported here so
+// callers that imported it from query-builder.js still resolve correctly.
+export { GroupedQueryBuilder };
 
 export default QueryBuilder;

@@ -5,6 +5,7 @@ client/
 ├── index.js
 ├── proxy.js
 ├── query-builder.js
+├── grouped-query-builder.js
 └── txn-lifecycle.js
 ```
 
@@ -68,8 +69,16 @@ Transaction lifecycle bindings (rec/fin/nop/pop/txnStatus) for the public db int
 
 ### `query-builder.js`
 
-Chainable query builder used by the new `db.get.{collection}S.where(...).near(...)` surface. Immutable per-link chain (each chain method returns a new builder). Composes attribute filters with vector search by feeding `.where` predicates into the `VectorIndex.searchFiltered` traversal so filtering happens before k-truncation. Honors active transactions: when `db._activeTxnId` is set, `.near` calls `searchInTxn` (committed + pending merge) and propagates `txnId` to hydration. `.near` accepts an optional opts object (`{txnId: null}` to force-bypass the active txn, `{txnId: '<id>'}` to target a specific txn) for advanced query routing.
+Chainable query builder used by the new `db.get.{collection}S.where(...).near(...)` surface. Immutable per-link chain (each chain method returns a new builder). Composes attribute filters with vector search by feeding `.where` predicates into the `VectorIndex.searchFiltered` traversal so filtering happens before k-truncation. Honors active transactions: when `db._activeTxnId` is set, `.near` calls `searchInTxn` (committed + pending merge) and propagates `txnId` to hydration. `.near` accepts an optional opts object (`{txnId: null}` to force-bypass the active txn, `{txnId: '<id>'}` to target a specific txn) for advanced query routing. `.count()`, `.distinct(field)`, and `.groupBy(field)` (UC-X3) provide aggregation primitives; the GroupedQueryBuilder it returns supports `.count()`, `.sum(field)`, `.having(filter)` with the shared filter compiler.
 
 **Exports:**
-- `QueryBuilder` class - chain methods: `where`, `near`, `limit`, `toArray`, `first`; thenable so `await builder` works.
+- `QueryBuilder` class - chain methods: `where`, `near`, `limit`, `toArray`, `first`, `count`, `distinct`, `groupBy`; thenable so `await builder` works.
 - `default` - Same as QueryBuilder
+
+### `grouped-query-builder.js`
+
+GroupedQueryBuilder produced by `QueryBuilder.groupBy(field)`. Supports `.count()` / `.sum(field)` aggregation terminals plus `.having(filter)` post-aggregation filter (uses the same shared `compileFilter` so $gte / $in etc. work on the synthesized count/sum field). Thenable so `await builder.groupBy('x').count()` resolves to grouped rows directly.
+
+**Exports:**
+- `GroupedQueryBuilder` class - chain methods: `count`, `sum`, `having`, `toArray`; thenable
+- `default` - Same as GroupedQueryBuilder

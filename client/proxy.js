@@ -160,7 +160,8 @@ function createGetProxy(wrapper, registry, middleware, getDb) {
   // Names that should construct a QueryBuilder when accessed on a group
   // collection (one ending with 'S'). This is the only chainable surface.
   const CHAIN_METHODS = new Set([
-    'where', 'near', 'limit', 'toArray', 'first', 'then'
+    'where', 'near', 'limit', 'toArray', 'first', 'then',
+    'count', 'distinct', 'groupBy'
   ]);
 
   return new Proxy(function() {}, {
