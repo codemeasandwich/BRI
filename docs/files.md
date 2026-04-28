@@ -4,6 +4,7 @@
 docs/
 ├── README.md
 ├── files.md
+├── cascade.md
 ├── graph.md
 ├── indexes.md
 └── vector.md
@@ -26,6 +27,10 @@ End-user walkthrough of the vector-search surface (UC-V1 slice). Covers schema d
 ### `indexes.md`
 
 End-user walkthrough of secondary indexes. Covers the `$indexes` schema option (single-field and compound), how the QueryPlanner picks indexes, prefix matching semantics, bounded-hydration guarantees when combining `.where` with `.near`, mutation consistency, persistence behavior, and v1 limitations.
+
+### `cascade.md`
+
+End-user walkthrough of the cancellation cascade (UC-X2, §10 non-negotiable). Covers the cascadeOn schema flag, the two-store invariant (knowledge tier immunity), the API (db.cascade.{scope}, db.cascade.byField, opts.atomic, opts.txnId), composition with V4 transactions for idiomatic session cancellation, idempotence, return shape, and v1 limitations.
 
 ### `graph.md`
 

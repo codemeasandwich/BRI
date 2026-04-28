@@ -9,5 +9,6 @@ Capability-area documentation for Bri features. Implementation reference lives n
 | [vector.md](vector.md) | Vector search — schema declaration, chainable query builder (`.where().near()`), result metadata, errors, v1 limitations |
 | [indexes.md](indexes.md) | Secondary indexes — `$indexes` schema option, planner behavior, bounded hydration when combined with `.near` |
 | [graph.md](graph.md) | Knowledge graph — `$edge` schema, predicate proxy (`alice.works_at`), reserved-name collision detection, GraphIndex adjacency lookup |
+| [cascade.md](cascade.md) | Cancellation cascade (§10 non-negotiable) — `cascadeOn` schema flag, `db.cascade.{scope}` API, two-store invariant, composition with V4 transactions |
 
 More capability-area docs (graph, transactions, cascade, aggregation, FTS, proxy conventions, migration, observability) land alongside their respective implementation slices.
