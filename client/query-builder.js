@@ -3,6 +3,15 @@
  *
  * Backs the new chainable form `db.get.{collection}S.where(...).near(...)`.
  *
+ * Index-aware execution:
+ *   When a `.where(filter)` is present, the builder consults the schema
+ *   registry's QueryPlanner. If a declared $indexes spec covers (some of)
+ *   the filter's fields, the candidate ID set is bounded by that index —
+ *   hydration cost becomes O(matches), not O(collection). Residual filter
+ *   fields (those not covered by the chosen index) run as a JS predicate
+ *   after hydration. When no index applies, behavior matches the previous
+ *   full-scan path so collections without $indexes are unaffected.
+ *
  * Design:
  *   - Immutable per-link chain: every chain method returns a NEW builder so
  *     that intermediate references don't leak state across two parallel
@@ -30,6 +39,8 @@
  *
  * @implements UC-V1 (subset: .where + .near + .limit + .toArray + .first)
  */
+
+import { QueryPlanner } from '../engine/query-planner.js';
 
 /**
  * Compile a filter spec to a predicate function.
@@ -175,73 +186,103 @@ export class QueryBuilder {
   async toArray() {
     const { collection, wrapper, registry } = this._ctx;
     const { filter, near, limit } = this._state;
-    const filterFn = compileFilter(filter);
+    const planner = new QueryPlanner(registry);
+    const plan = planner.planWhere(collection, filter);
 
     if (near) {
-      const index = registry.vectorIndex(collection);
-      if (!index) {
-        throw new Error(
-          `QueryBuilder.near: collection '${collection}' has no vector field ` +
-          `declared. Call db.schema('${collection}', { ...embedding: { type: 'vector', dims: N } }).`
-        );
-      }
+      return this._executeVectorPlan(plan, near, limit);
+    }
+    return this._executeWherePlan(plan, limit);
+  }
 
-      // Two-phase: first get a candidate-passing predicate over the doc body.
-      // The vector index only knows IDs, so we hydrate when the predicate
-      // needs to inspect document content. To keep this O(candidates) and
-      // not O(collection), we cache hydrated docs across the predicate calls
-      // performed by a single search.
-      const docCache = new Map();
-      const predicate = filter
-        ? (id) => {
-            // Caller predicate runs against doc body — hydrate-then-filter.
-            // Cache means each id is read at most once per search.
-            if (!docCache.has(id)) {
-              // We can't await inside the synchronous search loop; so we
-              // pre-hydrate below. See the shortcut path.
-              return false;
-            }
-            return filterFn(docCache.get(id));
-          }
-        : null;
-
-      // If a filter is provided, pre-hydrate ALL candidate IDs once. At v1
-      // scale (<=10k docs) this is acceptable; v2 will swap to an
-      // index-driven predicate that doesn't need doc bodies.
-      let hits;
-      if (filter) {
-        const allIds = await wrapper.get(`${collection}S`).then(items =>
-          items.map(item => item.$ID)
-        );
-        const docs = await Promise.all(
-          allIds.map(id => wrapper.get(null, id).then(d => [id, d]))
-        );
-        for (const [id, doc] of docs) docCache.set(id, doc);
-        hits = index.searchFiltered(near.vector, near.k, predicate);
-      } else {
-        hits = index.search(near.vector, near.k);
-      }
-
-      // Hydrate hits (we already have docs cached if filter ran; otherwise
-      // fetch each id). Attach score metadata to each entity.
-      const out = [];
-      for (const { id, score } of hits) {
-        let entity;
-        if (docCache.has(id)) {
-          // We have the JSON shape; hydrate via wrapper.get for reactive proxy
-          entity = await wrapper.get(null, id);
-        } else {
-          entity = await wrapper.get(null, id);
-        }
-        if (entity) out.push(attachScore(entity, score));
-      }
-      return typeof limit === 'number' ? out.slice(0, limit) : out;
+  /**
+   * Execute a `.near` (with optional `.where`) using the planner output.
+   *
+   * Two paths:
+   *   1) plan.useIndex true → predicate fed into searchFiltered uses the
+   *      bounded candidate set from the index; hydration is O(k) for ids
+   *      already in the index AND in candidate set; further pruned by the
+   *      residual filter on the doc body.
+   *   2) plan.useIndex false → fallback. If a residual filter exists, we
+   *      pre-hydrate the whole collection (the v1 unindexed path) and run
+   *      filter-during-search; otherwise we just run pure vector search.
+   *
+   * @param {Object} plan - From planner.planWhere
+   * @param {Object} near - Vector clause; {vector: Array<number>, k: number}
+   * @param {number|undefined} limit - Optional cap on result count
+   * @returns {Promise<Array<Object>>}
+   */
+  async _executeVectorPlan(plan, near, limit) {
+    const { collection, wrapper, registry } = this._ctx;
+    const index = registry.vectorIndex(collection);
+    if (!index) {
+      throw new Error(
+        `QueryBuilder.near: collection '${collection}' has no vector field ` +
+        `declared. Call db.schema('${collection}', { ...embedding: { type: 'vector', dims: N } }).`
+      );
     }
 
-    // Non-vector path: use the existing wrapper.get group call.
-    const group = `${collection}S`;
-    const list = await wrapper.get(group);
-    const filtered = filter ? list.filter(filterFn) : list;
+    let hits;
+    const docCache = new Map();
+    if (plan.useIndex) {
+      // Index hit: predicate is the candidate-set membership AND, optionally,
+      // the residual filter run against pre-hydrated docs.
+      const candidates = plan.candidateIds;
+      if (plan.residualFilter) {
+        // Hydrate ONLY the candidate set, not the whole collection.
+        await Promise.all([...candidates].map(async id => {
+          const doc = await wrapper.get(null, id);
+          if (doc) docCache.set(id, doc);
+        }));
+        hits = index.searchFiltered(near.vector, near.k,
+          (id) => candidates.has(id) && plan.residualFilter(docCache.get(id)));
+      } else {
+        hits = index.searchFiltered(near.vector, near.k, (id) => candidates.has(id));
+      }
+    } else if (plan.residualFilter) {
+      // No index covers the filter — fall back to whole-collection hydration
+      // so the residual filter can run during search. v1 scale acceptable.
+      const all = await wrapper.get(`${collection}S`);
+      for (const doc of all) {
+        if (doc && doc.$ID) docCache.set(doc.$ID, doc);
+      }
+      hits = index.searchFiltered(near.vector, near.k, (id) => {
+        const doc = docCache.get(id);
+        return !!doc && plan.residualFilter(doc);
+      });
+    } else {
+      // No filter at all: pure vector search.
+      hits = index.search(near.vector, near.k);
+    }
+
+    const out = [];
+    for (const { id, score } of hits) {
+      const entity = docCache.get(id) || await wrapper.get(null, id);
+      if (entity) out.push(attachScore(entity, score));
+    }
+    return typeof limit === 'number' ? out.slice(0, limit) : out;
+  }
+
+  /**
+   * Execute a `.where`-only plan (no `.near`).
+   *
+   * @param {Object} plan
+   * @param {number|undefined} limit
+   * @returns {Promise<Array<Object>>}
+   */
+  async _executeWherePlan(plan, limit) {
+    const { collection, wrapper } = this._ctx;
+    if (plan.useIndex) {
+      // Hydrate only the candidate set; apply residual filter post-hydration.
+      const ids = [...plan.candidateIds];
+      const docs = await Promise.all(ids.map(id => wrapper.get(null, id)));
+      const filtered = plan.residualFilter
+        ? docs.filter(doc => doc && plan.residualFilter(doc))
+        : docs.filter(Boolean);
+      return typeof limit === 'number' ? filtered.slice(0, limit) : filtered;
+    }
+    const all = await wrapper.get(`${collection}S`);
+    const filtered = plan.residualFilter ? all.filter(plan.residualFilter) : all;
     return typeof limit === 'number' ? filtered.slice(0, limit) : filtered;
   }
 

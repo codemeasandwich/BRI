@@ -1,7 +1,7 @@
 /**
- * @file Middleware that keeps the per-collection VectorIndex in sync with
- * add/set/del operations and enforces schemas registered through the
- * schema registry.
+ * @file Middleware that keeps schema-driven indexes (vector + secondary) in
+ * sync with add/set/del operations and enforces schemas registered through
+ * the schema registry.
  *
  * Why this lives in engine (not client):
  *   The middleware reads the same registry the engine consults internally
@@ -12,6 +12,10 @@
  * Order constraints (binding):
  *   - Validation runs BEFORE next() — invalid writes must short-circuit
  *     before any storage mutation occurs.
+ *   - For 'set' and 'del': the pre-update document is captured BEFORE next()
+ *     because secondary indexes need the OLD field values to remove the
+ *     correct compound key when the field changes. Cost: one extra read per
+ *     write to a collection with secondary indexes.
  *   - Index sync runs AFTER next() — add/set need ctx.result.$ID assigned
  *     by the engine before the index can record the slot.
  */
@@ -43,26 +47,76 @@ export function vectorIndexMiddleware(registry) {
       }
     }
 
+    // PRE: capture the pre-state for set/del so secondary-index removal can
+    // target the OLD compound keys. Vector index doesn't need this (its
+    // remove is keyed by $ID, not field values).
+    let preDoc = null;
+    const idxMgr = registry.secondaryIndexManager?.();
+    const hasSecondary = idxMgr && hasIndexesFor(idxMgr, ctx.type);
+    if (hasSecondary && (ctx.operation === 'set' || ctx.operation === 'del')) {
+      const target = ctx.args[0];
+      const targetId = typeof target === 'string' ? target : target?.$ID;
+      if (targetId) {
+        try {
+          preDoc = await ctx.db.get[ctx.type.replace(/S$/, '')](targetId);
+          if (preDoc && preDoc.toObject) preDoc = preDoc.toObject();
+        } catch (_) {
+          // Pre-fetch failure is not fatal — the secondary-index sync will
+          // be a best-effort skip on this op rather than blocking the write.
+          preDoc = null;
+        }
+      }
+    }
+
     await next();
 
-    // POST: sync the vector index. ctx.result holds the persisted entity for
-    // add/set. For del we use the supplied $ID from args.
+    // POST: sync the vector index.
     const fieldName = registry.vectorFieldOf(ctx.type);
-    if (!fieldName) return; // collection has no vector field; nothing to do
-    const index = registry.vectorIndex(ctx.type);
-    if (!index) return;
-
-    if (ctx.operation === 'add' || ctx.operation === 'set') {
-      const entity = ctx.result;
-      if (entity && entity.$ID && Array.isArray(entity[fieldName])) {
-        index.add(entity.$ID, entity[fieldName]);
+    const vIndex = fieldName ? registry.vectorIndex(ctx.type) : null;
+    if (vIndex) {
+      if (ctx.operation === 'add' || ctx.operation === 'set') {
+        const entity = ctx.result;
+        if (entity && entity.$ID && Array.isArray(entity[fieldName])) {
+          vIndex.add(entity.$ID, entity[fieldName]);
+        }
+      } else if (ctx.operation === 'del') {
+        const id = typeof ctx.args[0] === 'string' ? ctx.args[0]
+                 : (ctx.args[0] && ctx.args[0].$ID);
+        if (id) vIndex.remove(id);
       }
-    } else if (ctx.operation === 'del') {
-      const id = typeof ctx.args[0] === 'string' ? ctx.args[0]
-               : (ctx.args[0] && ctx.args[0].$ID);
-      if (id) index.remove(id);
+    }
+
+    // POST: sync secondary indexes.
+    if (hasSecondary) {
+      if (ctx.operation === 'add') {
+        const entity = ctx.result;
+        if (entity && entity.$ID) idxMgr.insert(ctx.type, entity);
+      } else if (ctx.operation === 'set') {
+        const entity = ctx.result;
+        if (entity && entity.$ID) {
+          if (preDoc) idxMgr.update(ctx.type, preDoc, entity);
+          else idxMgr.insert(ctx.type, entity);
+        }
+      } else if (ctx.operation === 'del') {
+        if (preDoc && preDoc.$ID) idxMgr.remove(ctx.type, preDoc);
+      }
     }
   };
+}
+
+/**
+ * Probe whether the secondary-index manager has any indexes for a given
+ * collection. Used to short-circuit the pre-fetch path when no indexes
+ * apply.
+ * @param {Object} mgr - SecondaryIndexManager
+ * @param {string} collection
+ * @returns {boolean}
+ */
+function hasIndexesFor(mgr, collection) {
+  for (const [c, _specs] of mgr.collections()) {
+    if (c === collection) return true;
+  }
+  return false;
 }
 
 export default vectorIndexMiddleware;
