@@ -19,6 +19,7 @@ e2e/
 ├── vector-tx.test.js
 ├── graph.test.js
 ├── cascade.test.js
+├── aggregation.test.js
 ├── secondary-index.test.js
 ├── coverage-gaps.test.js
 └── final-coverage.test.js
@@ -76,6 +77,9 @@ Predicate proxy + edge collections (UC-G1) - one-hop predicate read returns outg
 
 ### `cascade.test.js`
 Schema-scoped cancellation cascade (UC-X2, §10 non-negotiable) - cascadeOn-flagged collection rows deleted by scope id, knowledge collections (no flag) immune, multi-collection cascade in one call, idempotent re-runs, vector + graph index consistency through cascaded deletes, other-session txn isolation, byField escape hatch, no-op safety on unknown scopes and empty registry.
+
+### `aggregation.test.js`
+Aggregation primitives (UC-X3) - .count() with and without filter, .distinct(field) with and without filter, .groupBy().count() / .sum(field) / .having(filter), and filter operator coverage ($gte/$gt/$lte/$lt/$ne/$in/$exists).
 
 ### `secondary-index.test.js`
 Secondary indexes (engine portion of UC-X1) - SortedIndex unit roundtrips, $indexes schema declaration, compound prefix matching, non-prefix scan fallback, mutation consistency on insert/update/delete, undeclared-field rejection, persistence across restart, bounded hydration when combined with .near.
