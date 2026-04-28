@@ -121,12 +121,49 @@ The legacy call form `db.get.userS(...)` continues to work even on collections w
 
 ---
 
+## Persistence
+
+Vector indices are persisted as part of the standard snapshot format (snapshot version 3). On boot, the index is restored before the user calls `db.schema()`; the schema declaration validates against the persisted shape and reuses the loaded index. WAL records written between snapshots are replayed on top of the restored index, so a crash mid-write loses no data.
+
+### What's persisted
+
+For each collection that declared a vector field, the snapshot contains:
+
+- A binary-packed serialization of the index (cosine + Float32Array slots, base64-wrapped inside the snapshot JSON).
+- The schema metadata: field name, dimensionality, metric.
+
+### Drift detection
+
+If the schema declared on a second boot does not match what's persisted, `db.schema()` throws with a diagnostic message:
+
+| Drift | Behavior |
+|---|---|
+| `dims` mismatch | Throws — refuses to load a 1536-dim index against a `dims: 768` declaration |
+| `metric` mismatch | Throws — same rationale |
+| Vector field renamed | Throws — auto-migration not provided; rename keeps the old persisted index targeting the old field |
+
+Resolution: revert the schema change, or delete the data directory and rebuild the index from a fresh insert pass.
+
+### Encryption parity
+
+When `BRI_ENCRYPTION_KEY` is set, the snapshot is AES-256-GCM-encrypted as a whole. Vector data inherits this encryption automatically — there is no plaintext side-channel for embeddings.
+
+### Snapshot version migration
+
+| Snapshot version | Reader | Writer |
+|---|---|---|
+| v1 / v2 (no vectors) | Loads cleanly; vector path is skipped | Continues to write v2 if no vector schema is registered |
+| v3 (with vectors) | Loads vector indices and schemas | Written automatically when any vector schema exists |
+
+A v2 snapshot does not need migration; the next snapshot that has a vector schema is written as v3.
+
+---
+
 ## Limitations (v1)
 
 - One vector field per collection.
 - Brute-force linear scan; latency is O(N) in collection size. At v1 target scales (≤10k vectors) this is well under the spec's correctness budget. v2 will add an HNSW-style index behind the same interface.
 - No transaction integration yet — vector writes inside a `rec()`/`fin()` boundary update the index immediately. Tombstone-based txn isolation is the next slice.
-- No persistence of the index across reboots — the index is rebuilt from documents on the first insert/query. v2 will persist as part of the snapshot format.
 - No worker-thread offload — search runs on the main thread. Acceptable at v1 scale; v2 moves the index behind a Worker.
 
 ---
