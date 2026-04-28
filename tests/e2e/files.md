@@ -17,6 +17,7 @@ e2e/
 ├── memory.test.js
 ├── vector.test.js
 ├── vector-tx.test.js
+├── graph.test.js
 ├── secondary-index.test.js
 ├── coverage-gaps.test.js
 └── final-coverage.test.js
@@ -68,6 +69,9 @@ Vector search end-to-end (UC-V1) - top-k cosine similarity, filter composition, 
 
 ### `vector-tx.test.js`
 Vector transaction integration (UC-V4) - staged-write isolation (visible inside txn, invisible outside via `.near` opts.txnId override), nop pristine, fin atomic commit, pop undoes last vector write, crash recovery to pre-txn state.
+
+### `graph.test.js`
+Predicate proxy + edge collections (UC-G1) - one-hop predicate read returns outgoing targets, predicate filtering, full reactive-entity hydration, edge document write via `alice.works_at(target, attrs)`, reserved-name collision detection at schema load, .limit(k) bounded read, regression guard for collections without edges.
 
 ### `secondary-index.test.js`
 Secondary indexes (engine portion of UC-X1) - SortedIndex unit roundtrips, $indexes schema declaration, compound prefix matching, non-prefix scan fallback, mutation consistency on insert/update/delete, undeclared-field rejection, persistence across restart, bounded hydration when combined with .near.
