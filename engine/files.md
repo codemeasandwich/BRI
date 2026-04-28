@@ -17,6 +17,8 @@ engine/
 ├── query-planner.js
 ├── filter-compiler.js
 ├── graph-index.js
+├── graph-expand.js
+├── graph-algo.js
 ├── predicate-proxy.js
 ├── schema-edge-declare.js
 ├── cascade.js
@@ -179,12 +181,28 @@ Per-database adjacency index for edge collections. Maintains forward (outgoing) 
 - `GraphIndex` class - `declareEdge`, `insertEdge`, `removeEdge`, `outgoing`, `incoming`, `edgeSpecFor`, `serialize`, `load`
 - `default` - Same as GraphIndex
 
+### `graph-expand.js`
+
+Multi-hop BFS expansion (UC-G6) — the implementation behind `entity.expand({...})`. Walks outward from a seed entity through an edge collection up to a hop budget, collecting reachable nodes, edges, and paths. Cycle detection via per-traversal visited-set on node $IDs; budget enforcement on results count and elapsed milliseconds (checked between hops to avoid measurement overhead on tiny graphs); honors `predicates` whitelist and `direction` ('out' | 'in' | 'both'); skips phantom adjacency entries silently per the resilience contract. Output shape: `{nodes, edges, paths, complete, incompleteReason}`.
+
+**Exports:**
+- `expand(args)` - Run BFS; returns the result object
+- `default` - Same as expand
+
+### `graph-algo.js`
+
+Graph algorithms namespace (UC-G5) — `createAlgo({registry, getDb})` returns `{ degree, ... }`. Degree centrality iterates every node in `collection`, sums incoming + outgoing edges from `via`, optionally weighted by a named edge field; sorts by degree desc with optional top-k cap. PPR is scoped for v3 per spec §6.3.
+
+**Exports:**
+- `createAlgo({registry, getDb})` - Builds the algo namespace
+- `default` - Same as createAlgo
+
 ### `predicate-proxy.js`
 
 Resolves property accesses on reactive entities to predicate-aware accessors when the schema's `$edge` block registered a matching predicate. `resolvePredicateAccess(target, name, registry, wrapper)` returns a PredicateAccessor (callable for writes, thenable for reads, `.limit(n)` for top-k, `.$` for edge documents) when the access is a registered predicate; an InverseProxy when name is `'inverse'`; a RelatedAccessor (thenable + `.$`) when name is `'related'`; or undefined otherwise so the reactive proxy falls through to field access. Writes route through `db.add.{edgeCollection}` so middleware (validation + graph-index sync) fires identically to direct user calls.
 
 **Exports:**
-- `resolvePredicateAccess(target, name, registry, wrapper)` - The resolution algorithm
+- `resolvePredicateAccess(target, name, registry, wrapper)` - The resolution algorithm — also routes `expand` to graph-expand.js for parameterized BFS from the entity
 
 ### `schema-edge-declare.js`
 
