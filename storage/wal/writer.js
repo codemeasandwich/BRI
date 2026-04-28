@@ -184,6 +184,12 @@ export class WALWriter {
         }
       }
     }, this.fsyncIntervalMs);
+    // Unref so this timer never holds the event loop open on its own.
+    // Periodic firing is unaffected — only process-exit semantics change.
+    // Without this, Jest runs trigger "worker failed to exit gracefully"
+    // when a test forgets to call disconnect() and the fsync timer keeps the
+    // process alive past test completion.
+    this.fsyncTimer.unref?.();
   }
 
   /**

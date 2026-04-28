@@ -129,6 +129,10 @@ export class SnapshotManager {
         console.error('Snapshot: Scheduled creation failed:', err);
       }
     }, this.intervalMs);
+    // Unref the scheduler so it never holds the event loop open. The timer
+    // still fires on schedule; clearInterval in stopScheduler() is unaffected.
+    // Same rationale as WAL writer.startFsyncTimer — clean test exit.
+    this.timer.unref?.();
   }
 
   /**
