@@ -41,8 +41,22 @@
  *   compensate by re-emitting deletes — handled by the wiring middleware in
  *   a later slice, NOT here.
  *
+ * Persistence:
+ *   serialize() / static deserialize() pack the index into a compact binary
+ *   wire format (see SERIALIZATION_FORMAT_VERSION below). Snapshots embed the
+ *   buffer base64-encoded inside the snapshot JSON; the existing AES-256-GCM
+ *   at-rest encryption applied to the snapshot covers vector data without
+ *   any extra path. Wire format is independent of in-process JS state, so
+ *   producer and consumer may be different processes / Node versions.
+ *
  * @implements UC-V1
  */
+
+// Magic + version sit at the head of every serialized buffer. Reading them
+// out of band allows us to refuse to deserialize incompatible payloads with a
+// clear error, instead of producing a silently broken index.
+const SERIALIZATION_MAGIC = 0x56494458;          // 'VIDX' as uint32 BE
+const SERIALIZATION_FORMAT_VERSION = 1;
 
 /**
  * Cosine similarity between two equal-length numeric vectors.
@@ -215,6 +229,139 @@ export class VectorIndex {
       metric: this.metric,
       memoryBytes: this._buf.byteLength
     };
+  }
+
+  /**
+   * Pack the index into a compact binary wire format suitable for snapshot
+   * embedding (base64-encode at the snapshot boundary). The format is:
+   *
+   *   [4]  magic 'VIDX' (uint32 BE)
+   *   [4]  format version (uint32 LE)
+   *   [4]  dims (uint32 LE)
+   *   [4]  metric tag length M (uint32 LE)
+   *   [M]  metric tag UTF-8
+   *   [4]  size — number of populated slots (uint32 LE)
+   *   [4]  capacity — total slot count of the buffer (uint32 LE)
+   *   [4]  id-pair count P (uint32 LE)
+   *   for each pair P:
+   *     [4]  id length I (uint32 LE)
+   *     [I]  id UTF-8
+   *     [4]  slot index (uint32 LE)
+   *   [4]  free-slot count F (uint32 LE)
+   *   for each free slot F:
+   *     [4]  slot index (uint32 LE)
+   *   [capacity * dims * 4]  Float32Array buffer (LE)
+   *
+   * Why custom binary (not JSON of typedArray):
+   *   A 10k×1536 Float32Array is 60MB. JSON-stringifying ballooned to 600MB+;
+   *   base64 of binary is ~80MB. Decode is also dramatically faster (no
+   *   number-string parsing). JSS would not preserve Float32 precision.
+   *
+   * @returns {Buffer} packed buffer; caller may base64-encode for transport
+   */
+  serialize() {
+    const enc = new TextEncoder();
+    const metricBytes = enc.encode(this.metric);
+    // Pre-walk the id map to size the id-pair section exactly.
+    const idEntries = [];
+    let idsByteLen = 0;
+    for (const [id, slot] of this._slotOf) {
+      const idBytes = enc.encode(id);
+      idEntries.push({ idBytes, slot });
+      idsByteLen += 4 + idBytes.length + 4;
+    }
+    const headerBytes = 4 + 4 + 4
+                      + 4 + metricBytes.length
+                      + 4 + 4
+                      + 4 + idsByteLen
+                      + 4 + this._freeSlots.length * 4;
+    const dataBytes = this._capacity * this.dims * 4;
+    const out = Buffer.allocUnsafe(headerBytes + dataBytes);
+    let off = 0;
+    out.writeUInt32BE(SERIALIZATION_MAGIC, off); off += 4;
+    out.writeUInt32LE(SERIALIZATION_FORMAT_VERSION, off); off += 4;
+    out.writeUInt32LE(this.dims, off); off += 4;
+    out.writeUInt32LE(metricBytes.length, off); off += 4;
+    out.set(metricBytes, off); off += metricBytes.length;
+    out.writeUInt32LE(this._size, off); off += 4;
+    out.writeUInt32LE(this._capacity, off); off += 4;
+    out.writeUInt32LE(idEntries.length, off); off += 4;
+    for (const { idBytes, slot } of idEntries) {
+      out.writeUInt32LE(idBytes.length, off); off += 4;
+      out.set(idBytes, off); off += idBytes.length;
+      out.writeUInt32LE(slot, off); off += 4;
+    }
+    out.writeUInt32LE(this._freeSlots.length, off); off += 4;
+    for (const slot of this._freeSlots) {
+      out.writeUInt32LE(slot, off); off += 4;
+    }
+    // Copy Float32Array bytes verbatim. ArrayBuffer view honors slot order.
+    const floatBytes = Buffer.from(
+      this._buf.buffer, this._buf.byteOffset, dataBytes
+    );
+    floatBytes.copy(out, off);
+    return out;
+  }
+
+  /**
+   * Reconstruct a VectorIndex from a buffer produced by serialize().
+   *
+   * @param {Buffer} buf - Packed buffer; magic + version validated up front
+   * @returns {VectorIndex} fully restored index, ready for search/add/remove
+   * @throws {Error} on magic mismatch or unsupported format version
+   */
+  static deserialize(buf) {
+    let off = 0;
+    const magic = buf.readUInt32BE(off); off += 4;
+    if (magic !== SERIALIZATION_MAGIC) {
+      throw new Error(
+        `VectorIndex.deserialize: invalid magic 0x${magic.toString(16)}; ` +
+        `expected 'VIDX' (0x${SERIALIZATION_MAGIC.toString(16)}).`
+      );
+    }
+    const version = buf.readUInt32LE(off); off += 4;
+    if (version !== SERIALIZATION_FORMAT_VERSION) {
+      throw new Error(
+        `VectorIndex.deserialize: unsupported format version ${version}; ` +
+        `this binary supports version ${SERIALIZATION_FORMAT_VERSION}. ` +
+        `Rebuild the index by re-running db.schema with the original embeddings.`
+      );
+    }
+    const dims = buf.readUInt32LE(off); off += 4;
+    const metricLen = buf.readUInt32LE(off); off += 4;
+    const metric = buf.slice(off, off + metricLen).toString('utf8'); off += metricLen;
+    const size = buf.readUInt32LE(off); off += 4;
+    const capacity = buf.readUInt32LE(off); off += 4;
+    const idx = new VectorIndex({ dims, metric, initialCapacity: Math.max(8, capacity) });
+    // Replace the freshly-constructed buffer with one of exact requested
+    // capacity — saves a doubling cycle when capacity > 64 default.
+    idx._capacity = capacity;
+    idx._buf = new Float32Array(capacity * dims);
+    idx._idAt = new Array(capacity).fill(null);
+    idx._slotOf = new Map();
+    idx._freeSlots = [];
+    idx._size = size;
+    const dec = new TextDecoder();
+    const pairCount = buf.readUInt32LE(off); off += 4;
+    for (let i = 0; i < pairCount; i++) {
+      const idLen = buf.readUInt32LE(off); off += 4;
+      const id = dec.decode(buf.slice(off, off + idLen)); off += idLen;
+      const slot = buf.readUInt32LE(off); off += 4;
+      idx._slotOf.set(id, slot);
+      idx._idAt[slot] = id;
+    }
+    const freeCount = buf.readUInt32LE(off); off += 4;
+    for (let i = 0; i < freeCount; i++) {
+      idx._freeSlots.push(buf.readUInt32LE(off));
+      off += 4;
+    }
+    // Float32Array view directly into the source buffer's bytes. Use a copy
+    // (not a shared view) so the input Buffer can be GC'd independently.
+    const floatBytes = buf.slice(off, off + capacity * dims * 4);
+    const floats = new Float32Array(capacity * dims);
+    Buffer.from(floats.buffer).set(floatBytes);
+    idx._buf = floats;
+    return idx;
   }
 
   /**

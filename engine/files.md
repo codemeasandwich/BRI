@@ -108,14 +108,14 @@ Middleware plugin system.
 
 ### `schema-registry.js`
 
-Per-database schema registry. Holds schemas declared via `db.schema('name', def)` and instantiates the per-collection VectorIndex when a schema declares a vector field. Single source of truth for schema-driven features (validation, vector indexing, future secondary indexes / refs / cascade scopes).
+Per-database schema registry. Holds schemas declared via `db.schema('name', def)` and instantiates the per-collection VectorIndex when a schema declares a vector field. On startup, consults the storage adapter's persisted vector entries (loaded from snapshot during recovery) and reuses the deserialized index when present, or creates a fresh one otherwise. Validates dims/metric/field drift against persisted state and refuses incompatible re-declarations with a diagnostic error. Single source of truth for schema-driven features (validation, vector indexing, future secondary indexes / refs / cascade scopes).
 
 **Exports:**
-- `createSchemaRegistry()` - Returns registry with `declare`, `get`, `vectorIndex`, `vectorFieldOf`, `validate`
+- `createSchemaRegistry(store)` - Returns registry with `declare`, `get`, `vectorIndex`, `vectorFieldOf`, `validate`. The optional `store` argument enables persistence-aware declares.
 
 ### `vector-index.js`
 
-In-process vector index for k-NN search. v1 uses a brute-force linear scan backed by `Float32Array` storage; the public interface (`add`, `remove`, `search`, `searchFiltered`, `stats`) is pluggable so a v2 HNSW or USearch backend slots in without API changes.
+In-process vector index for k-NN search. v1 uses a brute-force linear scan backed by `Float32Array` storage; the public interface (`add`, `remove`, `search`, `searchFiltered`, `stats`, `serialize`, `deserialize`) is pluggable so a v2 HNSW or USearch backend slots in without API changes. `serialize()` packs the index into a compact binary buffer (custom format with magic 'VIDX' + version) for snapshot embedding; `deserialize()` validates the magic/version and reconstructs the index, including slot-id pairs and the Float32Array buffer.
 
 **Exports:**
 - `VectorIndex` class - One instance per vector-bearing collection
