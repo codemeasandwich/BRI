@@ -22,6 +22,8 @@
 
 import { type2Short } from '../engine/types.js';
 import { expand as runExpand } from './graph-expand.js';
+import { makeChainProxy } from './chain-walk.js';
+import { makeInverseProxy, makeRelatedAccessor } from './predicate-inverse-related.js';
 
 /**
  * Decide whether a property access on an entity should be resolved by the
@@ -73,6 +75,15 @@ export function resolvePredicateAccess(target, name, registry, wrapper) {
     });
   }
 
+  // 'chain' returns a Proxy whose .{field} access walks a self-referential
+  // ref field forward (or backward) until null, a cycle, or maxDepth.
+  // The accessor is awaitable for default behavior or callable with
+  // {maxDepth} for explicit cap.
+  if (name === 'chain') {
+    if (!subjectCollection) return undefined;
+    return makeChainProxy({ target, registry, wrapper, subjectCollection });
+  }
+
   // Declared fields on the entity are not predicates.
   if (name in target) return undefined;
   if (!subjectCollection) return undefined;
@@ -88,6 +99,10 @@ export function resolvePredicateAccess(target, name, registry, wrapper) {
     edgeSpec: registry.edgeSpec(edgeCollection),
     graphIndex: registry.graphIndex(),
     wrapper,
+    // Lifecycle flags drive default-supersession filtering and conditional
+    // chain methods — undefined when the edge collection's schema didn't
+    // declare $supersession / $confidence / $provenance.
+    lifecycle: registry.lifecycleFieldsOf(edgeCollection),
     // Lazy db accessor — required so predicate-proxy writes route through
     // middleware (validation + vector + graph index sync). Without this
     // the writes would hit the raw engine and skip the middleware chain.
@@ -104,27 +119,69 @@ export function resolvePredicateAccess(target, name, registry, wrapper) {
  * @returns {Function} accessor
  */
 function makePredicateAccessor(ctx) {
-  // The shape: a callable function. Function invocation does writes;
-  // attaching .then makes it thenable for reads; .limit returns a
-  // bounded variant; .$ exposes the underlying edge documents.
+  // Default reads filter superseded edges when the edge collection
+  // declared $supersession. Chain methods (.history / .confidence(t) /
+  // .withProvenance) compose by overriding fields on the read-time ctx.
+  const baseReadCtx = { ...ctx, includeSuperseded: false };
+
   const accessor = async function predicateWrite(target, attrs = {}) {
     return writeEdge(ctx, target, attrs);
   };
   accessor.then = (onResolve, onReject) =>
-    readTargets(ctx, undefined).then(onResolve, onReject);
+    readTargets(baseReadCtx, undefined).then(onResolve, onReject);
   accessor.limit = function limit(k) {
     return {
       then: (onResolve, onReject) =>
-        readTargets(ctx, k).then(onResolve, onReject)
+        readTargets(baseReadCtx, k).then(onResolve, onReject)
     };
   };
-  // .$ — thenable that resolves to the edge documents themselves rather
-  // than the hydrated targets. Useful for reading edge attributes
-  // (confidence, provenance, etc.) without a separate edge fetch.
   accessor.$ = {
     then: (onResolve, onReject) =>
-      readEdges(ctx, undefined).then(onResolve, onReject)
+      readEdges(baseReadCtx, undefined).then(onResolve, onReject)
   };
+
+  // Schema-conditional chain methods — only present when the corresponding
+  // field is declared. Per spec §2.2, accessing them on a non-declaring
+  // schema is undefined behavior; here we just leave the property absent
+  // so the access falls through to the proxy's normal undefined.
+  const lc = ctx.lifecycle || {};
+  if (lc.supersession) {
+    /**
+     * History-included read — opts out of the default supersession filter.
+     */
+    accessor.history = {
+      then: (onResolve, onReject) =>
+        readTargets({ ...ctx, includeSuperseded: true }, undefined)
+          .then(onResolve, onReject)
+    };
+  }
+  if (lc.confidence) {
+    /**
+     * Threshold-filtered read — keeps edges whose confidence field is
+     * >= threshold; missing/non-numeric values are filtered out.
+     * @param {number} threshold
+     * @returns {Object} thenable
+     */
+    accessor.confidence = function confidence(threshold) {
+      return {
+        then: (onResolve, onReject) =>
+          readTargets({ ...baseReadCtx, confidenceFloor: threshold }, undefined)
+            .then(onResolve, onReject)
+      };
+    };
+  }
+  if (lc.provenance) {
+    /**
+     * Provenance-attached read — same edges/targets as the default, but
+     * each result entity carries a non-enumerable $provenance metadata
+     * property reflecting the edge's provenance field value.
+     */
+    accessor.withProvenance = {
+      then: (onResolve, onReject) =>
+        readTargets({ ...baseReadCtx, attachProvenance: true }, undefined)
+          .then(onResolve, onReject)
+    };
+  }
   return accessor;
 }
 
@@ -176,45 +233,73 @@ async function writeEdge(ctx, target, attrs) {
  */
 async function readTargets(ctx, k) {
   const edges = await readEdges(ctx, k);
-  return hydrateEndpoints(edges, ctx.edgeSpec.to, ctx.wrapper);
+  const targets = await hydrateEndpoints(edges, ctx.edgeSpec.to, ctx.wrapper);
+  // .withProvenance: attach the provenance field's value as $provenance
+  // (non-enumerable so it stays out of toObject / JSON / persistence).
+  if (ctx.attachProvenance && ctx.lifecycle && ctx.lifecycle.provenance) {
+    const field = ctx.lifecycle.provenance;
+    for (let i = 0; i < edges.length && i < targets.length; i++) {
+      const edge = edges[i];
+      const value = edge && edge[field];
+      if (value !== undefined && targets[i]) {
+        Object.defineProperty(targets[i], '$provenance', {
+          value, enumerable: false, configurable: true, writable: false
+        });
+      }
+    }
+  }
+  return targets;
 }
 
 /**
- * Read outgoing edge documents for a subject + predicate. Used by both the
- * `await alice.works_at` path (to learn the `to` field) and the public
- * `alice.works_at.$` path (which exposes the edges directly so callers can
- * inspect attributes).
+ * Read outgoing edge documents for a subject + predicate, applying the
+ * lifecycle-driven default filters (supersession exclusion, confidence
+ * threshold) declared by the edge collection's schema.
  *
- * @param {Object} ctx - Bound state including subjectId, edgeCollection, predicate
+ * Filter order:
+ *   1. Adjacency lookup gives all edge ids for (subject, predicate)
+ *   2. Hydrate each edge document
+ *   3. Drop superseded edges unless ctx.includeSuperseded
+ *   4. Drop edges below ctx.confidenceFloor (if set)
+ *   5. Apply k truncation AFTER filtering, so a 5-asked-for result that
+ *      finds 7 superseded + 3 valid still returns 3 (not 0).
+ *
+ * @param {Object} ctx - Bound state plus optional includeSuperseded / confidenceFloor / attachProvenance
  * @param {number|undefined} k - Optional top-k cap
  * @returns {Promise<Array<Object>>} edge documents
  */
 async function readEdges(ctx, k) {
-  const { subjectId, edgeCollection, predicate, graphIndex, wrapper } = ctx;
+  const { subjectId, edgeCollection, predicate, graphIndex, wrapper, lifecycle } = ctx;
   const edgeIds = graphIndex.outgoing(subjectId, edgeCollection, predicate);
-  const capped = typeof k === 'number' ? edgeIds.slice(0, k) : edgeIds;
-  const edges = await Promise.all(
-    capped.map(id => wrapper.get(edgeCollection, id))
-  );
-  return edges.filter(Boolean);
+  const edges = (await Promise.all(
+    edgeIds.map(id => wrapper.get(edgeCollection, id))
+  )).filter(Boolean);
+  const filtered = applyLifecycleFilters(edges, ctx, lifecycle);
+  return typeof k === 'number' ? filtered.slice(0, k) : filtered;
 }
 
 /**
- * Read incoming edge documents for an object + predicate. Used by the
- * inverse proxy (`acme.inverse.works_at`) and `acme.inverse.works_at.$`.
+ * Apply the lifecycle-driven default filters in order: supersession,
+ * then confidence threshold.
  *
- * @param {Object} ctx - Bound state including objectId, edgeCollection, predicate
- * @param {number|undefined} k
- * @returns {Promise<Array<Object>>} edge documents
+ * @param {Array<Object>} edges
+ * @param {Object} ctx - Holds includeSuperseded / confidenceFloor flags
+ * @param {Object|undefined} lifecycle - {supersession?, confidence?, provenance?}
+ * @returns {Array<Object>} filtered edges
  */
-async function readInverseEdges(ctx, k) {
-  const { objectId, edgeCollection, predicate, graphIndex, wrapper } = ctx;
-  const edgeIds = graphIndex.incoming(objectId, edgeCollection, predicate);
-  const capped = typeof k === 'number' ? edgeIds.slice(0, k) : edgeIds;
-  const edges = await Promise.all(
-    capped.map(id => wrapper.get(edgeCollection, id))
-  );
-  return edges.filter(Boolean);
+function applyLifecycleFilters(edges, ctx, lifecycle) {
+  if (!lifecycle) return edges;
+  let out = edges;
+  if (lifecycle.supersession && !ctx.includeSuperseded) {
+    const f = lifecycle.supersession;
+    out = out.filter(e => e[f] === undefined || e[f] === null);
+  }
+  if (lifecycle.confidence && typeof ctx.confidenceFloor === 'number') {
+    const f = lifecycle.confidence;
+    const threshold = ctx.confidenceFloor;
+    out = out.filter(e => typeof e[f] === 'number' && e[f] >= threshold);
+  }
+  return out;
 }
 
 /**
@@ -232,133 +317,12 @@ async function hydrateEndpoints(edges, fieldName, wrapper) {
     edges.map(edge => {
       const targetId = edge && edge[fieldName];
       if (!targetId) return null;
-      // wrapper.get(null, $ID) is the type-agnostic single fetch — uses
-      // the $ID prefix to pick the collection internally.
       return wrapper.get(null, targetId);
     })
   );
   return targets.filter(Boolean);
 }
 
-/**
- * Build the InverseProxy returned for `entity.inverse`. Property accesses
- * on the inverse proxy are predicate names; each one reads the inverse
- * adjacency for the entity and hydrates the from-side (subjects).
- *
- * @param {Object} args
- * @param {Object} args.target - The reactive entity body
- * @param {Object} args.registry
- * @param {Object} args.wrapper
- * @param {string} args.objectCollection - Entity's collection (this is the to-side)
- * @returns {Proxy}
- */
-function makeInverseProxy({ target, registry, wrapper, objectCollection }) {
-  return new Proxy({}, {
-    /**
-     * @param {Object} _t
-     * @param {string|symbol} predicate
-     * @returns {Object|undefined}
-     */
-    get(_t, predicate) {
-      if (typeof predicate === 'symbol') return undefined;
-      const edgeCollection = registry.inversePredicateEdge(objectCollection, predicate);
-      if (!edgeCollection) return undefined;
-      const ctx = {
-        objectId: target.$ID,
-        edgeCollection,
-        predicate,
-        edgeSpec: registry.edgeSpec(edgeCollection),
-        graphIndex: registry.graphIndex(),
-        wrapper
-      };
-      const accessor = {
-        then: (onResolve, onReject) =>
-          readInverseEdges(ctx, undefined)
-            .then(edges => hydrateEndpoints(edges, ctx.edgeSpec.from, wrapper))
-            .then(onResolve, onReject)
-      };
-      // .$ exposes the edge docs themselves on the inverse path too.
-      accessor.$ = {
-        then: (onResolve, onReject) =>
-          readInverseEdges(ctx, undefined).then(onResolve, onReject)
-      };
-      return accessor;
-    }
-  });
-}
-
-/**
- * Build the RelatedAccessor returned for `entity.related`. Awaiting it
- * resolves to a flat list of every outgoing target across every registered
- * predicate; `.$` exposes the underlying edge docs.
- *
- * @param {Object} args
- * @param {Object} args.target
- * @param {Object} args.registry
- * @param {Object} args.wrapper
- * @param {string} args.subjectCollection
- * @returns {Object} thenable + .$
- */
-function makeRelatedAccessor({ target, registry, wrapper, subjectCollection }) {
-  const graphIndex = registry.graphIndex();
-  /**
-   * Collect every outgoing edge doc across all registered predicates.
-   * @returns {Promise<Array<Object>>}
-   */
-  const allEdges = async () => {
-    const edges = [];
-    for (const [predicate, edgeCollection] of registry.predicatesForSubject(subjectCollection)) {
-      const edgeIds = graphIndex.outgoing(target.$ID, edgeCollection, predicate);
-      for (const id of edgeIds) {
-        const edge = await wrapper.get(edgeCollection, id);
-        if (edge) edges.push(edge);
-      }
-    }
-    return edges;
-  };
-  /**
-   * Collect every outgoing target across all registered predicates,
-   * grouping edges by edge collection so each collection's to-field can
-   * resolve the right endpoint.
-   * @returns {Promise<Array<Object>>}
-   */
-  const allTargets = async () => {
-    // Group edges by their edge collection so we know which to-field to use
-    // when hydrating endpoints. v1 schemas typically have one edge collection
-    // per subject, but the loop is collection-agnostic.
-    const collectionEdges = new Map();
-    for (const [predicate, edgeCollection] of registry.predicatesForSubject(subjectCollection)) {
-      const edgeIds = graphIndex.outgoing(target.$ID, edgeCollection, predicate);
-      if (edgeIds.length === 0) continue;
-      if (!collectionEdges.has(edgeCollection)) collectionEdges.set(edgeCollection, []);
-      const acc = collectionEdges.get(edgeCollection);
-      for (const id of edgeIds) {
-        const edge = await wrapper.get(edgeCollection, id);
-        if (edge) acc.push(edge);
-      }
-    }
-    const out = [];
-    for (const [edgeCollection, edges] of collectionEdges) {
-      const spec = registry.edgeSpec(edgeCollection);
-      const hydrated = await hydrateEndpoints(edges, spec.to, wrapper);
-      out.push(...hydrated);
-    }
-    return out;
-  };
-  return {
-    /**
-     * @param {Function} onResolve
-     * @param {Function} onReject
-     * @returns {Promise<Array>}
-     */
-    then: (onResolve, onReject) => allTargets().then(onResolve, onReject),
-    $: {
-      /**
-       * @param {Function} onResolve
-       * @param {Function} onReject
-       * @returns {Promise<Array>}
-       */
-      then: (onResolve, onReject) => allEdges().then(onResolve, onReject)
-    }
-  };
-}
+// makeChainProxy + walkChain live in engine/chain-walk.js — extracted to
+// keep this file under the 260-source-line gate. The behavior is the same;
+// resolvePredicateAccess routes 'chain' there at the top of the file.

@@ -19,6 +19,8 @@ engine/
 ├── graph-index.js
 ├── graph-expand.js
 ├── graph-algo.js
+├── chain-walk.js
+├── predicate-inverse-related.js
 ├── predicate-proxy.js
 ├── schema-edge-declare.js
 ├── cascade.js
@@ -196,6 +198,22 @@ Graph algorithms namespace (UC-G5) — `createAlgo({registry, getDb})` returns `
 **Exports:**
 - `createAlgo({registry, getDb})` - Builds the algo namespace
 - `default` - Same as createAlgo
+
+### `chain-walk.js`
+
+Self-ref chain walker (UC-G4) — the implementation behind `entity.chain.{field}`. `makeChainProxy` returns a Proxy whose property access validates the named field is a self-referential ref (refs to other collections throw with a diagnostic recommending `.and.{field}`) and exposes a callable+thenable walker bound to that field. `walkChain` performs the BFS-style hop sequence with cycle detection (visited-set on $ID) and `maxDepth` cap (default 10000); returns flat `Array<entity>` on clean termination at null, or `{chain, cycleDetected:true}` / `{chain, truncated:true}` on early termination.
+
+**Exports:**
+- `makeChainProxy({target, registry, wrapper, subjectCollection})` - Build the Proxy
+- `walkChain({target, field, wrapper, maxDepth?})` - Run a single walk
+
+### `predicate-inverse-related.js`
+
+Inverse + related accessors (UC-G1 read-side) — `makeInverseProxy({target, registry, wrapper, objectCollection})` returns a Proxy whose `.{predicate}` reads incoming adjacency via graphIndex.incoming and hydrates from-side endpoints; `makeRelatedAccessor({target, registry, wrapper, subjectCollection})` flattens outgoing edges across every predicate registered for the subject collection. Both expose `.$` for the underlying edge documents. Extracted from predicate-proxy.js to keep that file under the 260-source-line gate.
+
+**Exports:**
+- `makeInverseProxy(args)` - Build the InverseProxy
+- `makeRelatedAccessor(args)` - Build the RelatedAccessor
 
 ### `predicate-proxy.js`
 
