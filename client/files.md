@@ -39,6 +39,7 @@ Proxy-based API handlers with middleware integration.
 - `db.del.<type>($ID, deletedBy?)` - Delete document
 - `db.pin.<type>(key, val, expire)` - Cache value
 - `db.schema(collection, schemaDef)` - Register a schema; auto-instantiates vector index if schema declares a vector field
+- `db.cascade.{scope}(id, opts?)` - Schema-scoped bulk delete (UC-X2); operates only on collections that declared a field with cascadeOn for the matching scope. `db.cascade.byField({collections, filter})` is the explicit-list escape hatch.
 
 **Transaction Methods:**
 - `db.rec()` - Start transaction, returns txnId

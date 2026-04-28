@@ -19,6 +19,7 @@ import { collectionNamePattern } from '../engine/constants.js';
 import { createMiddleware, transactionMiddleware } from '../engine/middleware.js';
 import { createSchemaRegistry } from '../engine/schema-registry.js';
 import { vectorIndexMiddleware } from '../engine/vector-middleware.js';
+import { createCascade } from '../engine/cascade.js';
 import { QueryBuilder } from './query-builder.js';
 import { createTxnLifecycle } from './txn-lifecycle.js';
 
@@ -352,6 +353,14 @@ export function createDBInterface(wrapper, store) {
       registry.declare(collection, schemaDef);
       return db;
     },
+
+    // ==================== Cascade API (UC-X2) ====================
+    // db.cascade.{scope}(id, opts?) — schema-scoped bulk delete that
+    // operates on collections opted-in via cascadeOn. The proxy here
+    // routes any property access (other than .byField) to a runner for
+    // that scope. Per §10 this surface is non-negotiable; collections
+    // without the matching cascadeOn flag stay invisible to it.
+    cascade: createCascade({ registry, getDb }),
 
     // Expose registry for advanced introspection (vector index stats, etc.)
     _registry: registry,
