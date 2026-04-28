@@ -45,6 +45,21 @@ function compoundKey(values) {
 }
 
 /**
+ * Detect whether a filter value is an operator clause (e.g. `{$gte: 5}`)
+ * rather than a literal equality value. Operator clauses fall back to
+ * residual filtering instead of index lookup.
+ *
+ * @param {*} value
+ * @returns {boolean}
+ */
+function isOperatorClause(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  if (keys.length === 0) return false;
+  return keys.every(k => k.startsWith('$'));
+}
+
+/**
  * One sorted compound index — keys are JSON-encoded value tuples; values are
  * arrays of document $IDs. Multiple docs may share a key.
  */
@@ -290,9 +305,13 @@ export class SecondaryIndexManager {
     let best = null;
     for (const { fields, index } of specs) {
       // Walk the index's fields in order; stop at the first field not in
-      // the filter. The covered prefix length determines selectivity.
+      // the filter OR not an equality-literal value. Operator clauses
+      // (e.g. {$gte:5}) need range/scan handling that this v1 index
+      // doesn't optimize for; treat them as residual filters instead.
       let i = 0;
-      while (i < fields.length && Object.prototype.hasOwnProperty.call(filter, fields[i])) {
+      while (i < fields.length
+             && Object.prototype.hasOwnProperty.call(filter, fields[i])
+             && !isOperatorClause(filter[fields[i]])) {
         i++;
       }
       if (i === 0) continue; // index doesn't cover even the first field

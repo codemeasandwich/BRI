@@ -15,6 +15,7 @@ engine/
 ├── schema-registry.js
 ├── secondary-index.js
 ├── query-planner.js
+├── filter-compiler.js
 ├── graph-index.js
 ├── predicate-proxy.js
 ├── schema-edge-declare.js
@@ -161,6 +162,14 @@ Turns a `.where(filter)` declaration into an execution plan that picks between a
 
 **Exports:**
 - `QueryPlanner` class - `planWhere(collection, filter)` returns the plan
+
+### `filter-compiler.js`
+
+Shared filter compiler used by `.where`, `.having`, and the query planner's residual filter. Compiles object filters (with operators `$ne`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`, `$exists`) into JS predicates. Function filters pass through unchanged. Single source of truth so all three callers agree on operator semantics.
+
+**Exports:**
+- `compileFilter(filter)` - Returns `(doc) => boolean`
+- `default` - Same as compileFilter
 
 ### `graph-index.js`
 

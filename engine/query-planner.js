@@ -26,25 +26,7 @@
  * @implements engine portion of UC-X1 prefilter path
  */
 
-/**
- * Compile an object filter into a JS predicate. Object form does equality
- * matching; function form is passed through unchanged.
- *
- * @param {Object|Function|null|undefined} filter
- * @returns {(doc:Object)=>boolean}
- */
-function compileFilter(filter) {
-  if (filter === undefined || filter === null) return () => true;
-  if (typeof filter === 'function') return filter;
-  const keys = Object.keys(filter);
-  return (doc) => {
-    if (!doc) return false;
-    for (const k of keys) {
-      if (doc[k] !== filter[k]) return false;
-    }
-    return true;
-  };
-}
+import { compileFilter } from './filter-compiler.js';
 
 /**
  * Strip the index-covered fields from an object filter, returning the
