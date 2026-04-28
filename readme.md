@@ -26,6 +26,7 @@ This Bri database provides an easy-to-use interface for performing CRUD (Create,
   - [Transactions](#transactions)
   - [Middleware (Plugins)](#middleware-plugins)
   - [Schema Validation](#schema-validation)
+  - [Vector Search](docs/vector.md)
   - [JSS (JsonSuperSet) Serialization](#jss-jsonsuperset-serialization)
 - [TypeScript Support](#typescript-support)
 - [Environment Variables](#environment-variables)
