@@ -20,6 +20,7 @@ import { createMiddleware, transactionMiddleware } from '../engine/middleware.js
 import { createSchemaRegistry } from '../engine/schema-registry.js';
 import { vectorIndexMiddleware } from '../engine/vector-middleware.js';
 import { QueryBuilder } from './query-builder.js';
+import { createTxnLifecycle } from './txn-lifecycle.js';
 
 /**
  * Create a proxy handler that intercepts collection access
@@ -227,7 +228,7 @@ function createGetProxy(wrapper, registry, middleware, getDb) {
           // Lazily construct a builder; the chain method on it is what the
           // caller actually wanted.
           const builder = new QueryBuilder({
-            collection, wrapper, registry
+            collection, wrapper, registry, getDb
           });
           return builder[builderProp].bind(builder);
         },
@@ -317,58 +318,13 @@ export function createDBInterface(wrapper, store) {
     }),
 
     // ==================== Transaction API ====================
-    // Active transaction ID for this db instance
+    // Active transaction ID for this db instance — read by middleware to
+    // auto-inject txnId into ctx.opts and by lifecycle hooks to clear on fin/nop.
     _activeTxnId: null,
 
-    // rec() - Start recording, returns txnId AND sets it as active
-    rec: () => {
-      const txnId = store.rec();
-      db._activeTxnId = txnId;
-      return txnId;
-    },
-
-    // fin(txnId) - Commit transaction, clears active if matching
-    fin: (txnId) => {
-      txnId = txnId || db._activeTxnId;
-      if (!txnId) {
-        throw new Error('No transaction to commit');
-      }
-      return store.fin(txnId).then(result => {
-        if (db._activeTxnId === txnId) {
-          db._activeTxnId = null;
-        }
-        return result;
-      });
-    },
-
-    // nop(txnId) - Cancel transaction, clears active if matching
-    nop: (txnId) => {
-      txnId = txnId || db._activeTxnId;
-      if (!txnId) {
-        throw new Error('No transaction to cancel');
-      }
-      return store.nop(txnId).then(result => {
-        if (db._activeTxnId === txnId) {
-          db._activeTxnId = null;
-        }
-        return result;
-      });
-    },
-
-    // pop(txnId) - Undo last action
-    pop: (txnId) => {
-      txnId = txnId || db._activeTxnId;
-      if (!txnId) {
-        throw new Error('No transaction to pop from');
-      }
-      return store.pop(txnId);
-    },
-
-    // txnStatus(txnId) - Get transaction status
-    txnStatus: (txnId) => {
-      txnId = txnId || db._activeTxnId;
-      return store.txnStatus(txnId);
-    },
+    // Lifecycle methods (rec/fin/nop/pop/txnStatus) are spread in below from
+    // createTxnLifecycle to keep this file focused on routing + proxies.
+    ...createTxnLifecycle(store, registry, getDb),
 
     // ==================== Schema Registry ====================
     /**

@@ -4,7 +4,8 @@
 client/
 ├── index.js
 ├── proxy.js
-└── query-builder.js
+├── query-builder.js
+└── txn-lifecycle.js
 ```
 
 ## Files
@@ -56,9 +57,17 @@ Proxy-based API handlers with middleware integration.
 - `db._registry` - Schema registry instance (for advanced introspection)
 - `db.disconnect()` - Graceful shutdown
 
+### `txn-lifecycle.js`
+
+Transaction lifecycle bindings (rec/fin/nop/pop/txnStatus) for the public db interface. Bridges the storage-layer transaction lifecycle to the schema registry's vector indexes — fin flushes each index's pending bucket via index.commit(txnId), nop calls rollback, and pop targets popStaged on the matching collection's index when the popped action was a SET on a vector-bearing $ID.
+
+**Exports:**
+- `createTxnLifecycle(store, registry, getDb)` - Returns `{rec, fin, nop, pop, txnStatus}` for spread into the db interface
+- `default` - Same as createTxnLifecycle
+
 ### `query-builder.js`
 
-Chainable query builder used by the new `db.get.{collection}S.where(...).near(...)` surface. Immutable per-link chain (each chain method returns a new builder). Composes attribute filters with vector search by feeding `.where` predicates into the `VectorIndex.searchFiltered` traversal so filtering happens before k-truncation.
+Chainable query builder used by the new `db.get.{collection}S.where(...).near(...)` surface. Immutable per-link chain (each chain method returns a new builder). Composes attribute filters with vector search by feeding `.where` predicates into the `VectorIndex.searchFiltered` traversal so filtering happens before k-truncation. Honors active transactions: when `db._activeTxnId` is set, `.near` calls `searchInTxn` (committed + pending merge) and propagates `txnId` to hydration. `.near` accepts an optional opts object (`{txnId: null}` to force-bypass the active txn, `{txnId: '<id>'}` to target a specific txn) for advanced query routing.
 
 **Exports:**
 - `QueryBuilder` class - chain methods: `where`, `near`, `limit`, `toArray`, `first`; thenable so `await builder` works.

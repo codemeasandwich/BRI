@@ -146,16 +146,21 @@ export class QueryBuilder {
    *
    * @param {Array<number>} vector
    * @param {number} k
+   * @param {Object} [opts] - Optional per-query overrides
+   * @param {string|null} [opts.txnId] - Set to null to force-bypass the
+   *   active transaction (search committed-only state); set to an explicit
+   *   txnId to query a specific transaction's view; omit to use the active
+   *   transaction (default)
    * @returns {QueryBuilder}
    */
-  near(vector, k) {
+  near(vector, k, opts) {
     if (!Array.isArray(vector) && !(vector instanceof Float32Array)) {
       throw new Error('QueryBuilder.near: vector must be an array of numbers');
     }
     if (typeof k !== 'number' || k <= 0) {
       throw new Error(`QueryBuilder.near: k must be a positive number; got ${k}`);
     }
-    return this._next({ near: { vector, k } });
+    return this._next({ near: { vector, k, opts: opts || null } });
   }
 
   /**
@@ -213,7 +218,7 @@ export class QueryBuilder {
    * @returns {Promise<Array<Object>>}
    */
   async _executeVectorPlan(plan, near, limit) {
-    const { collection, wrapper, registry } = this._ctx;
+    const { collection, wrapper, registry, getDb } = this._ctx;
     const index = registry.vectorIndex(collection);
     if (!index) {
       throw new Error(
@@ -222,42 +227,69 @@ export class QueryBuilder {
       );
     }
 
+    // Active txnId (if any) drives both the index merge path and hydration.
+    // Inside a txn, we want searchInTxn (committed + pending) and we want
+    // wrapper.get to read txn-shadow doc bodies. Per-query opts on .near
+    // can override: opts.txnId === null forces committed-only search even
+    // when an active txn is set; opts.txnId === '<id>' targets a specific
+    // (possibly non-active) transaction.
+    const db = getDb ? getDb() : null;
+    let txnId;
+    if (near.opts && 'txnId' in near.opts) {
+      txnId = near.opts.txnId;  // explicit override (may be null)
+    } else {
+      txnId = db && db._activeTxnId;
+    }
+    const getOpts = txnId ? { txnId } : undefined;
+
+    /**
+     * Hydrate a single $ID through the wrapper, respecting the active txn.
+     * @param {string} id
+     * @returns {Promise<Object|null>}
+     */
+    const hydrate = (id) => getOpts ? wrapper.get(null, id, getOpts) : wrapper.get(null, id);
+
+    /**
+     * Run a vector search over the index, picking the committed path or the
+     * txn-merging path based on active txnId.
+     * @param {number} kArg - top-k size
+     * @param {Function|null} pred - optional predicate
+     * @returns {Array<{id:string, score:number}>}
+     */
+    const search = (kArg, pred) => txnId
+      ? index.searchInTxn(near.vector, kArg, txnId, pred)
+      : index.searchFiltered(near.vector, kArg, pred);
+
     let hits;
     const docCache = new Map();
     if (plan.useIndex) {
-      // Index hit: predicate is the candidate-set membership AND, optionally,
-      // the residual filter run against pre-hydrated docs.
       const candidates = plan.candidateIds;
       if (plan.residualFilter) {
-        // Hydrate ONLY the candidate set, not the whole collection.
         await Promise.all([...candidates].map(async id => {
-          const doc = await wrapper.get(null, id);
+          const doc = await hydrate(id);
           if (doc) docCache.set(id, doc);
         }));
-        hits = index.searchFiltered(near.vector, near.k,
+        hits = search(near.k,
           (id) => candidates.has(id) && plan.residualFilter(docCache.get(id)));
       } else {
-        hits = index.searchFiltered(near.vector, near.k, (id) => candidates.has(id));
+        hits = search(near.k, (id) => candidates.has(id));
       }
     } else if (plan.residualFilter) {
-      // No index covers the filter — fall back to whole-collection hydration
-      // so the residual filter can run during search. v1 scale acceptable.
-      const all = await wrapper.get(`${collection}S`);
+      const all = await wrapper.get(`${collection}S`, getOpts);
       for (const doc of all) {
         if (doc && doc.$ID) docCache.set(doc.$ID, doc);
       }
-      hits = index.searchFiltered(near.vector, near.k, (id) => {
+      hits = search(near.k, (id) => {
         const doc = docCache.get(id);
         return !!doc && plan.residualFilter(doc);
       });
     } else {
-      // No filter at all: pure vector search.
-      hits = index.search(near.vector, near.k);
+      hits = search(near.k, null);
     }
 
     const out = [];
     for (const { id, score } of hits) {
-      const entity = docCache.get(id) || await wrapper.get(null, id);
+      const entity = docCache.get(id) || await hydrate(id);
       if (entity) out.push(attachScore(entity, score));
     }
     return typeof limit === 'number' ? out.slice(0, limit) : out;
