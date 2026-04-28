@@ -27,7 +27,11 @@ import { VectorIndex } from './vector-index.js';
 import SecondaryIndexManager from './secondary-index.js';
 import { GraphIndex } from './graph-index.js';
 import { type2Short } from './types.js';
-import { buildEdgeSpec, registerPredicateRouting } from './schema-edge-declare.js';
+import {
+  buildEdgeSpec,
+  registerPredicateRouting,
+  registerInversePredicateRouting
+} from './schema-edge-declare.js';
 
 /**
  * Create a schema registry instance.
@@ -64,6 +68,10 @@ export function createSchemaRegistry(store) {
   // is accessed: alice's collection is kgEntity, predicate is works_at,
   // so the edge collection is whatever was registered with that pair.
   const predicatesBySubject = new Map();
+  // Object collection -> Map<predicate, edgeCollection>. Mirror of the
+  // above used by inverse reads — `acme.inverse.works_at` resolves through
+  // this map because acme is the TO side of the edge, not the FROM.
+  const predicatesByObject = new Map();
 
   // Cascade scope name (e.g. 'session') -> array of {collection, field}.
   // Populated as schemas declare fields with the cascadeOn option. Empty
@@ -155,6 +163,7 @@ export function createSchemaRegistry(store) {
         edgeCollections.set(collection, enrichedSpec);
         graphIndex.declareEdge(collection, enrichedSpec);
         registerPredicateRouting(predicatesBySubject, edge, collection, predicates);
+        registerInversePredicateRouting(predicatesByObject, edge, collection, predicates);
       }
 
       // Scan for cascadeOn-flagged fields. Each match registers
@@ -339,6 +348,31 @@ export function createSchemaRegistry(store) {
     predicateEdge(subjectCollection, predicate) {
       const map = predicatesBySubject.get(subjectCollection);
       return map ? map.get(predicate) : undefined;
+    },
+
+    /**
+     * Look up the edge collection for inverse reads — given the OBJECT
+     * collection (the to-side of the edge) and a predicate, return the
+     * matching edge collection. Used by `acme.inverse.works_at`.
+     * @param {string} objectCollection
+     * @param {string} predicate
+     * @returns {string|undefined}
+     */
+    inversePredicateEdge(objectCollection, predicate) {
+      const map = predicatesByObject.get(objectCollection);
+      return map ? map.get(predicate) : undefined;
+    },
+
+    /**
+     * Iterate every (predicate, edgeCollection) registered for a given
+     * subject collection. Used by `entity.related` to enumerate all
+     * outgoing edges across the predicate vocabulary.
+     * @param {string} subjectCollection
+     * @returns {Iterable<[string, string]>} [predicate, edgeCollection]
+     */
+    predicatesForSubject(subjectCollection) {
+      const map = predicatesBySubject.get(subjectCollection);
+      return map ? map.entries() : [];
     },
 
     /**

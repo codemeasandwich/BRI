@@ -119,7 +119,7 @@ Middleware plugin system.
 Per-database schema registry. Holds schemas declared via `db.schema('name', def)` and instantiates the per-collection VectorIndex when a schema declares a vector field. On startup, consults the storage adapter's persisted vector entries (loaded from snapshot during recovery) and reuses the deserialized index when present, or creates a fresh one otherwise. Validates dims/metric/field drift against persisted state and refuses incompatible re-declarations with a diagnostic error. Single source of truth for schema-driven features (validation, vector indexing, future secondary indexes / refs / cascade scopes).
 
 **Exports:**
-- `createSchemaRegistry(store)` - Returns registry with `declare`, `get`, `vectorIndex`, `vectorFieldOf`, `validate`, `secondaryIndexManager`, `vectorIndices`, `graphIndex`, `edgeSpec`, `collectionForPrefix`, `predicateEdge`, `cascadeEntriesFor`. Reserved-name collision check fires at `declare` time when a `$edge.predicates` entry collides with the frozen proxy-method list. `cascadeOn`-flagged fields are registered into the per-scope lookup consumed by `db.cascade`. The optional `store` argument enables persistence-aware declares.
+- `createSchemaRegistry(store)` - Returns registry with `declare`, `get`, `vectorIndex`, `vectorFieldOf`, `validate`, `secondaryIndexManager`, `vectorIndices`, `graphIndex`, `edgeSpec`, `collectionForPrefix`, `predicateEdge`, `inversePredicateEdge`, `predicatesForSubject`, `cascadeEntriesFor`. Reserved-name collision check fires at `declare` time when a `$edge.predicates` entry collides with the frozen proxy-method list. `cascadeOn`-flagged fields are registered into the per-scope lookup consumed by `db.cascade`. The optional `store` argument enables persistence-aware declares.
 
 ### `vector-index.js`
 
@@ -181,19 +181,20 @@ Per-database adjacency index for edge collections. Maintains forward (outgoing) 
 
 ### `predicate-proxy.js`
 
-Resolves property accesses on reactive entities to predicate-aware accessors when the schema's `$edge` block registered a matching predicate. `resolvePredicateAccess(target, name, registry, wrapper)` returns a PredicateAccessor (callable for writes, thenable for reads, `.limit(n)` for top-k) when the access is a registered predicate, or undefined otherwise. Writes route through `db.add.{edgeCollection}` so middleware (validation + graph-index sync) fires identically to direct user calls.
+Resolves property accesses on reactive entities to predicate-aware accessors when the schema's `$edge` block registered a matching predicate. `resolvePredicateAccess(target, name, registry, wrapper)` returns a PredicateAccessor (callable for writes, thenable for reads, `.limit(n)` for top-k, `.$` for edge documents) when the access is a registered predicate; an InverseProxy when name is `'inverse'`; a RelatedAccessor (thenable + `.$`) when name is `'related'`; or undefined otherwise so the reactive proxy falls through to field access. Writes route through `db.add.{edgeCollection}` so middleware (validation + graph-index sync) fires identically to direct user calls.
 
 **Exports:**
 - `resolvePredicateAccess(target, name, registry, wrapper)` - The resolution algorithm
 
 ### `schema-edge-declare.js`
 
-Helpers for processing the `$edge` block at schema-declaration time. `buildEdgeSpec(collection, schemaDef)` resolves concrete from/to field names from the schema's ref-typed fields in declaration order (per spec §2.1.3), validates predicate names against the frozen `RESERVED_PROXY_NAMES` list (§0.4), and emits the enriched edge spec consumed by GraphIndex + predicate-proxy. `registerPredicateRouting` wires (subject collection, predicate) to the matching edge collection and rejects cross-schema ambiguity.
+Helpers for processing the `$edge` block at schema-declaration time. `buildEdgeSpec(collection, schemaDef)` resolves concrete from/to field names from the schema's ref-typed fields in declaration order (per spec §2.1.3), validates predicate names against the frozen `RESERVED_PROXY_NAMES` list (§0.4), and emits the enriched edge spec consumed by GraphIndex + predicate-proxy. `registerPredicateRouting` wires (subject collection, predicate) to the matching edge collection and rejects cross-schema ambiguity. `registerInversePredicateRouting` mirrors that under the to-collection so `acme.inverse.works_at` can find the matching edge collection (polymorphic `'a | b'` to-constraints split on `|`; the literal `string` pseudo-collection is skipped).
 
 **Exports:**
 - `RESERVED_PROXY_NAMES` - Frozen set of reserved proxy method names
 - `buildEdgeSpec(collection, schemaDef)` - Returns `{enrichedSpec, predicates}`
 - `registerPredicateRouting(map, edge, edgeCollection, predicates)` - Mutates the routing map in-place
+- `registerInversePredicateRouting(map, edge, edgeCollection, predicates)` - Mirror for the object-side
 
 ### `cascade.js`
 

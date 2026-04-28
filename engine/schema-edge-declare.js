@@ -118,3 +118,43 @@ export function registerPredicateRouting(predicatesBySubject, edge, edgeCollecti
     map.set(pred, edgeCollection);
   }
 }
+
+/**
+ * Mirror of registerPredicateRouting for the object-side. Used by inverse
+ * predicate reads (`acme.inverse.works_at`) — given the entity's collection
+ * and a predicate name, the registry can find the matching edge collection
+ * even when this entity is on the TO side.
+ *
+ * Polymorphic to-collections (`'kgEntity | string'`) are split on `|` so
+ * each component collection registers independently. The literal `string`
+ * pseudo-collection is skipped — entities can't be plain literals.
+ *
+ * @param {Map<string,Map<string,string>>} predicatesByObject - Mutated in place
+ * @param {Object} edge - Original $edge block (uses edge.to for routing)
+ * @param {string} edgeCollection - Name of the edge collection
+ * @param {Array<string>} predicates - Predicate names to register
+ * @throws {Error} on cross-schema ambiguity
+ */
+export function registerInversePredicateRouting(predicatesByObject, edge, edgeCollection, predicates) {
+  if (!predicates || !edge.to) return;
+  // Split polymorphic to-constraints; skip literal pseudo-collection.
+  const toCollections = String(edge.to)
+    .split('|').map(s => s.trim()).filter(c => c && c !== 'string');
+  for (const objCollection of toCollections) {
+    if (!predicatesByObject.has(objCollection)) {
+      predicatesByObject.set(objCollection, new Map());
+    }
+    const map = predicatesByObject.get(objCollection);
+    for (const pred of predicates) {
+      if (map.has(pred) && map.get(pred) !== edgeCollection) {
+        throw new Error(
+          `Predicate '${pred}' inverse-registered on both ` +
+          `'${map.get(pred)}' and '${edgeCollection}' as edges to ` +
+          `'${objCollection}'. Each (collection, predicate) pair must map to ` +
+          `one edge collection.`
+        );
+      }
+      map.set(pred, edgeCollection);
+    }
+  }
+}
