@@ -163,8 +163,49 @@ A v2 snapshot does not need migration; the next snapshot that has a vector schem
 
 - One vector field per collection.
 - Brute-force linear scan; latency is O(N) in collection size. At v1 target scales (≤10k vectors) this is well under the spec's correctness budget. v2 will add an HNSW-style index behind the same interface.
-- No transaction integration yet — vector writes inside a `rec()`/`fin()` boundary update the index immediately. Tombstone-based txn isolation is the next slice.
 - No worker-thread offload — search runs on the main thread. Acceptable at v1 scale; v2 moves the index behind a Worker.
+
+---
+
+## Transactions (UC-V4)
+
+Vector writes inside an open transaction are buffered per-txn and flushed atomically on `db.fin()`. Outside-txn searches never see staged writes; inside-txn searches see them immediately.
+
+```js
+db.rec();
+const fact = await db.add.memoryArtifact({ type: 'fact', embedding });
+
+// Inside the txn — sees the staged write.
+const inside = await db.get.memoryArtifactS.near(embedding, 1);  // contains fact
+
+// Side-door check from "outside": opt out via .near's opts.
+const outside = await db.get.memoryArtifactS.near(embedding, 1, { txnId: null });  // empty
+
+await db.fin();   // staged write becomes committed; both views agree.
+```
+
+### Lifecycle
+
+| Action | Vector-index effect |
+|---|---|
+| `db.rec()` | No-op for vector layer |
+| `db.add` / `db.set` / `db.del` inside a txn | Op queued in the index's pending buffer for that txnId |
+| `db.fin(txnId)` | All pending ops flushed to the committed index in order |
+| `db.nop(txnId)` | Pending bucket discarded — committed index is bit-identical to pre-`rec()` |
+| `db.pop(txnId)` | Most recent pending op for the popped action's `$ID` is removed (note: a single `db.add` records SET + SADD actions, so a full add-undo requires two `pop()` calls) |
+| Crash mid-txn | Pending lives only in memory; on reboot the snapshot+WAL replay restore the committed-only state automatically — no special recovery for vectors needed |
+
+### Search semantics
+
+`.near(query, k)` consults the active transaction by default. Override per-query:
+
+| `opts.txnId` | Behavior |
+|---|---|
+| omitted | Use the active txn (default) — sees pending + committed |
+| `null` | Force committed-only — useful for verifying isolation |
+| `'<txnId>'` | Query a specific transaction's view (must be open) |
+
+The committed buffer is never modified during a transaction, so a long-running txn doesn't degrade outside-txn search latency.
 
 ---
 
