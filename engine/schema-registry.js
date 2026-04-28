@@ -226,6 +226,16 @@ export function createSchemaRegistry(store) {
      */
     secondaryIndexManager() {
       return secondaryIndexes;
+    },
+
+    /**
+     * Iterate all registered vector indices. Used by transaction lifecycle
+     * hooks (fin/nop/pop in client/proxy.js) to flush, drop, or pop staged
+     * vector ops across every collection that has a vector field.
+     * @returns {Iterable<[string, Object]>} yields [collection, VectorIndex]
+     */
+    vectorIndices() {
+      return vectorIndices.entries();
     }
   };
 }

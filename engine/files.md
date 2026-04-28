@@ -16,6 +16,7 @@ engine/
 ├── secondary-index.js
 ├── query-planner.js
 ├── vector-index.js
+├── vector-index-codec.js
 └── vector-middleware.js
 ```
 
@@ -113,19 +114,29 @@ Middleware plugin system.
 Per-database schema registry. Holds schemas declared via `db.schema('name', def)` and instantiates the per-collection VectorIndex when a schema declares a vector field. On startup, consults the storage adapter's persisted vector entries (loaded from snapshot during recovery) and reuses the deserialized index when present, or creates a fresh one otherwise. Validates dims/metric/field drift against persisted state and refuses incompatible re-declarations with a diagnostic error. Single source of truth for schema-driven features (validation, vector indexing, future secondary indexes / refs / cascade scopes).
 
 **Exports:**
-- `createSchemaRegistry(store)` - Returns registry with `declare`, `get`, `vectorIndex`, `vectorFieldOf`, `validate`, `secondaryIndexManager`. The optional `store` argument enables persistence-aware declares (vector and secondary indexes).
+- `createSchemaRegistry(store)` - Returns registry with `declare`, `get`, `vectorIndex`, `vectorFieldOf`, `validate`, `secondaryIndexManager`, `vectorIndices` (iterator used by transaction lifecycle hooks). The optional `store` argument enables persistence-aware declares (vector and secondary indexes).
 
 ### `vector-index.js`
 
-In-process vector index for k-NN search. v1 uses a brute-force linear scan backed by `Float32Array` storage; the public interface (`add`, `remove`, `search`, `searchFiltered`, `stats`, `serialize`, `deserialize`) is pluggable so a v2 HNSW or USearch backend slots in without API changes. `serialize()` packs the index into a compact binary buffer (custom format with magic 'VIDX' + version) for snapshot embedding; `deserialize()` validates the magic/version and reconstructs the index, including slot-id pairs and the Float32Array buffer.
+In-process vector index for k-NN search. v1 uses a brute-force linear scan backed by `Float32Array` storage; the public interface (`add`, `remove`, `search`, `searchFiltered`, `stats`, `serialize`, `deserialize`) is pluggable so a v2 HNSW or USearch backend slots in without API changes. `serialize()` packs the index into a compact binary buffer (custom format with magic 'VIDX' + version) for snapshot embedding; `deserialize()` validates the magic/version and reconstructs the index, including slot-id pairs and the Float32Array buffer. Transaction support (UC-V4) adds `addStaged` / `removeStaged` / `commit` / `rollback` / `popStaged` and `searchInTxn` for deferred-linking semantics — pending ops are buffered per-txn and flushed only on commit, so the committed buffer is never partially modified.
 
 **Exports:**
 - `VectorIndex` class - One instance per vector-bearing collection
 - `default` - Same as VectorIndex
 
+### `vector-index-codec.js`
+
+Binary codec for VectorIndex — magic + version constants, the cosine helper, and `packIndex` / `unpackIndex` free functions that materialize the wire format. Lives next to vector-index.js so persistence can evolve independently of the index's runtime behavior.
+
+**Exports:**
+- `cosine(a, b)` - similarity helper
+- `packIndex(index)` - serialize a VectorIndex to a Buffer
+- `unpackIndex(buf)` - decode a Buffer into VectorIndex internal state
+- `SERIALIZATION_MAGIC`, `SERIALIZATION_FORMAT_VERSION`
+
 ### `vector-middleware.js`
 
-Middleware that keeps the per-collection VectorIndex AND any declared secondary indexes in sync with add/set/del operations and enforces schemas registered through the registry. Validation runs before next() (invalid writes short-circuit before storage); index sync runs after next() (so ctx.result.$ID is populated). For set/del on collections with secondary indexes, the middleware pre-fetches the old document so SortedIndex can remove the OLD compound key before inserting the NEW.
+Middleware that keeps the per-collection VectorIndex AND any declared secondary indexes in sync with add/set/del operations and enforces schemas registered through the registry. Validation runs before next() (invalid writes short-circuit before storage); index sync runs after next() (so ctx.result.$ID is populated). For set/del on collections with secondary indexes, the middleware pre-fetches the old document so SortedIndex can remove the OLD compound key before inserting the NEW. When `ctx.opts.txnId` is set, vector writes route through `addStaged` / `removeStaged` so the committed index buffer is never touched until `db.fin()` flushes the pending bucket.
 
 **Exports:**
 - `vectorIndexMiddleware(registry)` - Returns the middleware function

@@ -52,40 +52,27 @@
  * @implements UC-V1
  */
 
-// Magic + version sit at the head of every serialized buffer. Reading them
-// out of band allows us to refuse to deserialize incompatible payloads with a
-// clear error, instead of producing a silently broken index.
-const SERIALIZATION_MAGIC = 0x56494458;          // 'VIDX' as uint32 BE
-const SERIALIZATION_FORMAT_VERSION = 1;
-
-/**
- * Cosine similarity between two equal-length numeric vectors.
- *
- * Why cosine: standard for embedding similarity; magnitude-invariant.
- * Why we still divide by magnitudes (vs. assuming pre-normalized inputs):
- *   correctness on inputs the embedder produced without normalization, at
- *   the cost of one extra sqrt per pair. v2 may add a "stored-normalized"
- *   flag to skip the sqrt on the stored side.
- *
- * @param {ArrayLike<number>} a
- * @param {ArrayLike<number>} b
- * @returns {number} Similarity in [-1, 1]; 1 means identical direction
- */
-function cosine(a, b) {
-  let dot = 0, ma = 0, mb = 0;
-  const n = a.length;
-  for (let i = 0; i < n; i++) {
-    const av = a[i], bv = b[i];
-    dot += av * bv;
-    ma  += av * av;
-    mb  += bv * bv;
-  }
-  const denom = Math.sqrt(ma) * Math.sqrt(mb);
-  return denom === 0 ? 0 : dot / denom;
-}
+import { cosine, packIndex, unpackIndex } from './vector-index-codec.js';
 
 /**
  * In-process vector index for one collection.
+ *
+ * Transaction model (UC-V4):
+ *   Inside an open transaction, vector ops are not applied to the committed
+ *   storage above. They go into _pending, a Map<txnId, Array<{op,id,vec}>>.
+ *   - searchInTxn(query, k, txnId) merges the committed search with the
+ *     pending log entries for that txnId, so the writer sees its own
+ *     buffered changes immediately while outside-txn callers don't.
+ *   - commit(txnId) flushes the pending ops to the committed index.
+ *   - rollback(txnId) discards the pending bucket entirely.
+ *   - popStaged(txnId, id) drops the most recent pending op for that id.
+ *
+ *   Why deferred linking (instead of tombstone-marking applied entries):
+ *   the committed index never carries half-applied state, so nop is O(1)
+ *   (drop the bucket) and crash recovery is automatically pre-txn (the
+ *   committed buffer was never touched). Spec §7.1 picks this trade-off
+ *   for v1 — slightly larger working set during long transactions in
+ *   exchange for trivial recovery semantics.
  *
  * @class VectorIndex
  */
@@ -111,6 +98,10 @@ export class VectorIndex {
     this._slotOf = new Map();                           // id → slot
     this._freeSlots = [];                               // recycled removed slots
     this._size = 0;                                     // populated slot count
+    // Per-txn deferred-linking buffer: txnId → array of {op, id, vec}.
+    // 'op' is 'add' or 'remove'. Pending ops never touch _buf / _slotOf
+    // until commit(txnId) flushes them.
+    this._pending = new Map();
   }
 
   /**
@@ -232,135 +223,189 @@ export class VectorIndex {
   }
 
   /**
-   * Pack the index into a compact binary wire format suitable for snapshot
-   * embedding (base64-encode at the snapshot boundary). The format is:
+   * Stage an add inside a transaction.
    *
-   *   [4]  magic 'VIDX' (uint32 BE)
-   *   [4]  format version (uint32 LE)
-   *   [4]  dims (uint32 LE)
-   *   [4]  metric tag length M (uint32 LE)
-   *   [M]  metric tag UTF-8
-   *   [4]  size — number of populated slots (uint32 LE)
-   *   [4]  capacity — total slot count of the buffer (uint32 LE)
-   *   [4]  id-pair count P (uint32 LE)
-   *   for each pair P:
-   *     [4]  id length I (uint32 LE)
-   *     [I]  id UTF-8
-   *     [4]  slot index (uint32 LE)
-   *   [4]  free-slot count F (uint32 LE)
-   *   for each free slot F:
-   *     [4]  slot index (uint32 LE)
-   *   [capacity * dims * 4]  Float32Array buffer (LE)
+   * Validates dims up front so an oversize/undersize vector fails the same
+   * way as the non-txn add() path; the surrounding middleware translates
+   * this into a write-time validation error visible to the caller.
    *
-   * Why custom binary (not JSON of typedArray):
-   *   A 10k×1536 Float32Array is 60MB. JSON-stringifying ballooned to 600MB+;
-   *   base64 of binary is ~80MB. Decode is also dramatically faster (no
-   *   number-string parsing). JSS would not preserve Float32 precision.
+   * @param {string} txnId - Active transaction id
+   * @param {string} id - Document $ID
+   * @param {ArrayLike<number>} vector
+   * @throws {Error} on dims mismatch
+   */
+  addStaged(txnId, id, vector) {
+    if (vector.length !== this.dims) {
+      throw new Error(
+        `VectorIndex.addStaged: vector dimension mismatch for ${id}: ` +
+        `expected ${this.dims}, got ${vector.length}.`
+      );
+    }
+    if (!this._pending.has(txnId)) this._pending.set(txnId, []);
+    // Defensive copy: caller's array may be mutated after staging. Use
+    // Float32Array to keep the storage representation consistent with the
+    // committed buffer.
+    const copy = new Float32Array(this.dims);
+    for (let i = 0; i < this.dims; i++) copy[i] = vector[i];
+    this._pending.get(txnId).push({ op: 'add', id, vec: copy });
+  }
+
+  /**
+   * Stage a remove inside a transaction.
    *
-   * @returns {Buffer} packed buffer; caller may base64-encode for transport
+   * Symmetric to addStaged. The pending log records the removal; commit
+   * applies it to the committed index, rollback drops it.
+   *
+   * @param {string} txnId
+   * @param {string} id - Document $ID being removed
+   */
+  removeStaged(txnId, id) {
+    if (!this._pending.has(txnId)) this._pending.set(txnId, []);
+    this._pending.get(txnId).push({ op: 'remove', id, vec: null });
+  }
+
+  /**
+   * Flush all pending ops for txnId to the committed index, then drop the
+   * pending bucket. Idempotent — calling commit on an unknown txnId is a
+   * no-op so callers don't need to track which collections had staged ops.
+   *
+   * @param {string} txnId
+   */
+  commit(txnId) {
+    const ops = this._pending.get(txnId);
+    if (!ops) return;
+    for (const { op, id, vec } of ops) {
+      if (op === 'add') this.add(id, vec);
+      else if (op === 'remove') this.remove(id);
+    }
+    this._pending.delete(txnId);
+  }
+
+  /**
+   * Discard all pending ops for txnId without touching the committed index.
+   * Idempotent.
+   *
+   * @param {string} txnId
+   */
+  rollback(txnId) {
+    this._pending.delete(txnId);
+  }
+
+  /**
+   * Drop the most recent pending op for the given $ID within txnId. Used by
+   * the proxy's pop() handler when the popped action targeted a vector-
+   * bearing doc.
+   *
+   * @param {string} txnId
+   * @param {string} id - Document $ID whose last staged op should be removed
+   * @returns {boolean} true if a pending op was popped, false otherwise
+   */
+  popStaged(txnId, id) {
+    const ops = this._pending.get(txnId);
+    if (!ops || ops.length === 0) return false;
+    for (let i = ops.length - 1; i >= 0; i--) {
+      if (ops[i].id === id) {
+        ops.splice(i, 1);
+        if (ops.length === 0) this._pending.delete(txnId);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Search merging the committed index with the pending log for one txn.
+   *
+   * Algorithm:
+   *   1. Run committed search (existing path).
+   *   2. Score every pending add for this txn against the query, replacing
+   *      committed results with the same id (later-staged wins).
+   *   3. Drop committed results whose id appears as a pending 'remove'.
+   *   4. Re-sort and truncate to k.
+   *
+   * Why merge (instead of materialize the pending log into a temporary
+   * shadow index): pending logs are bounded by the txn's lifetime, which is
+   * orders of magnitude smaller than the committed index. Linear scan over
+   * the pending log is cheaper than allocating + populating a parallel
+   * index per query.
+   *
+   * @param {ArrayLike<number>} query
+   * @param {number} k
+   * @param {string} txnId
+   * @param {((id:string)=>boolean)|null} predicate - Optional caller filter,
+   *   applied to both committed and pending candidates
+   * @returns {Array<{id:string, score:number}>}
+   */
+  searchInTxn(query, k, txnId, predicate = null) {
+    if (query.length !== this.dims) {
+      throw new Error(
+        `VectorIndex.searchInTxn: query vector dimension mismatch: ` +
+        `expected ${this.dims}, got ${query.length}.`
+      );
+    }
+    const ops = this._pending.get(txnId) || [];
+    // Index 'remove' targets — drop these from committed results.
+    const stagedRemoves = new Set();
+    // Latest-staged-vector-by-id, applied as additions during merge.
+    const stagedAdds = new Map();
+    for (const { op, id, vec } of ops) {
+      if (op === 'remove') {
+        stagedRemoves.add(id);
+        stagedAdds.delete(id);
+      } else if (op === 'add') {
+        stagedRemoves.delete(id);
+        stagedAdds.set(id, vec);
+      }
+    }
+    // Run a wider committed search so that drops/replaces don't truncate
+    // genuine hits below k. Heuristic: 2*k + #pendingAdds is a safe upper
+    // bound for v1 scale; v2 may need a smarter "iterate-until-k" approach.
+    const wideK = k + stagedAdds.size + stagedRemoves.size;
+    const committed = this.searchFiltered(query, wideK,
+      (id) => (!predicate || predicate(id)) && !stagedRemoves.has(id));
+    const merged = committed.slice();
+    // Score and merge pending adds.
+    for (const [id, vec] of stagedAdds) {
+      if (predicate && !predicate(id)) continue;
+      const score = cosine(query, vec);
+      // Replace any committed entry for the same id (this id was staged).
+      const existingIdx = merged.findIndex(h => h.id === id);
+      if (existingIdx >= 0) merged[existingIdx] = { id, score };
+      else merged.push({ id, score });
+    }
+    merged.sort((a, b) => b.score - a.score);
+    return merged.length > k ? merged.slice(0, k) : merged;
+  }
+
+  /**
+   * Pack into the binary wire format. Delegates to vector-index-codec
+   * (free function over the index's internals) so the format can evolve
+   * independently of the index's runtime behavior.
+   * @returns {Buffer}
    */
   serialize() {
-    const enc = new TextEncoder();
-    const metricBytes = enc.encode(this.metric);
-    // Pre-walk the id map to size the id-pair section exactly.
-    const idEntries = [];
-    let idsByteLen = 0;
-    for (const [id, slot] of this._slotOf) {
-      const idBytes = enc.encode(id);
-      idEntries.push({ idBytes, slot });
-      idsByteLen += 4 + idBytes.length + 4;
-    }
-    const headerBytes = 4 + 4 + 4
-                      + 4 + metricBytes.length
-                      + 4 + 4
-                      + 4 + idsByteLen
-                      + 4 + this._freeSlots.length * 4;
-    const dataBytes = this._capacity * this.dims * 4;
-    const out = Buffer.allocUnsafe(headerBytes + dataBytes);
-    let off = 0;
-    out.writeUInt32BE(SERIALIZATION_MAGIC, off); off += 4;
-    out.writeUInt32LE(SERIALIZATION_FORMAT_VERSION, off); off += 4;
-    out.writeUInt32LE(this.dims, off); off += 4;
-    out.writeUInt32LE(metricBytes.length, off); off += 4;
-    out.set(metricBytes, off); off += metricBytes.length;
-    out.writeUInt32LE(this._size, off); off += 4;
-    out.writeUInt32LE(this._capacity, off); off += 4;
-    out.writeUInt32LE(idEntries.length, off); off += 4;
-    for (const { idBytes, slot } of idEntries) {
-      out.writeUInt32LE(idBytes.length, off); off += 4;
-      out.set(idBytes, off); off += idBytes.length;
-      out.writeUInt32LE(slot, off); off += 4;
-    }
-    out.writeUInt32LE(this._freeSlots.length, off); off += 4;
-    for (const slot of this._freeSlots) {
-      out.writeUInt32LE(slot, off); off += 4;
-    }
-    // Copy Float32Array bytes verbatim. ArrayBuffer view honors slot order.
-    const floatBytes = Buffer.from(
-      this._buf.buffer, this._buf.byteOffset, dataBytes
-    );
-    floatBytes.copy(out, off);
-    return out;
+    return packIndex(this);
   }
 
   /**
    * Reconstruct a VectorIndex from a buffer produced by serialize().
-   *
-   * @param {Buffer} buf - Packed buffer; magic + version validated up front
-   * @returns {VectorIndex} fully restored index, ready for search/add/remove
-   * @throws {Error} on magic mismatch or unsupported format version
+   * @param {Buffer} buf
+   * @returns {VectorIndex}
+   * @throws {Error} on magic or version mismatch
    */
   static deserialize(buf) {
-    let off = 0;
-    const magic = buf.readUInt32BE(off); off += 4;
-    if (magic !== SERIALIZATION_MAGIC) {
-      throw new Error(
-        `VectorIndex.deserialize: invalid magic 0x${magic.toString(16)}; ` +
-        `expected 'VIDX' (0x${SERIALIZATION_MAGIC.toString(16)}).`
-      );
-    }
-    const version = buf.readUInt32LE(off); off += 4;
-    if (version !== SERIALIZATION_FORMAT_VERSION) {
-      throw new Error(
-        `VectorIndex.deserialize: unsupported format version ${version}; ` +
-        `this binary supports version ${SERIALIZATION_FORMAT_VERSION}. ` +
-        `Rebuild the index by re-running db.schema with the original embeddings.`
-      );
-    }
-    const dims = buf.readUInt32LE(off); off += 4;
-    const metricLen = buf.readUInt32LE(off); off += 4;
-    const metric = buf.slice(off, off + metricLen).toString('utf8'); off += metricLen;
-    const size = buf.readUInt32LE(off); off += 4;
-    const capacity = buf.readUInt32LE(off); off += 4;
-    const idx = new VectorIndex({ dims, metric, initialCapacity: Math.max(8, capacity) });
-    // Replace the freshly-constructed buffer with one of exact requested
-    // capacity — saves a doubling cycle when capacity > 64 default.
-    idx._capacity = capacity;
-    idx._buf = new Float32Array(capacity * dims);
-    idx._idAt = new Array(capacity).fill(null);
-    idx._slotOf = new Map();
-    idx._freeSlots = [];
-    idx._size = size;
-    const dec = new TextDecoder();
-    const pairCount = buf.readUInt32LE(off); off += 4;
-    for (let i = 0; i < pairCount; i++) {
-      const idLen = buf.readUInt32LE(off); off += 4;
-      const id = dec.decode(buf.slice(off, off + idLen)); off += idLen;
-      const slot = buf.readUInt32LE(off); off += 4;
-      idx._slotOf.set(id, slot);
-      idx._idAt[slot] = id;
-    }
-    const freeCount = buf.readUInt32LE(off); off += 4;
-    for (let i = 0; i < freeCount; i++) {
-      idx._freeSlots.push(buf.readUInt32LE(off));
-      off += 4;
-    }
-    // Float32Array view directly into the source buffer's bytes. Use a copy
-    // (not a shared view) so the input Buffer can be GC'd independently.
-    const floatBytes = buf.slice(off, off + capacity * dims * 4);
-    const floats = new Float32Array(capacity * dims);
-    Buffer.from(floats.buffer).set(floatBytes);
-    idx._buf = floats;
+    const state = unpackIndex(buf);
+    const idx = new VectorIndex({
+      dims: state.dims,
+      metric: state.metric,
+      initialCapacity: Math.max(8, state.capacity)
+    });
+    idx._capacity = state.capacity;
+    idx._buf = state.buf;
+    idx._idAt = state.idAt;
+    idx._slotOf = state.slotOf;
+    idx._freeSlots = state.freeSlots;
+    idx._size = state.size;
     return idx;
   }
 

@@ -70,19 +70,26 @@ export function vectorIndexMiddleware(registry) {
 
     await next();
 
-    // POST: sync the vector index.
+    // POST: sync the vector index. When a txnId is in scope, route through
+    // the staged path so the committed buffer stays untouched until fin.
+    // Outside a txn, fall through to the regular add/remove path.
     const fieldName = registry.vectorFieldOf(ctx.type);
     const vIndex = fieldName ? registry.vectorIndex(ctx.type) : null;
     if (vIndex) {
+      const txnId = ctx.opts.txnId;
       if (ctx.operation === 'add' || ctx.operation === 'set') {
         const entity = ctx.result;
         if (entity && entity.$ID && Array.isArray(entity[fieldName])) {
-          vIndex.add(entity.$ID, entity[fieldName]);
+          if (txnId) vIndex.addStaged(txnId, entity.$ID, entity[fieldName]);
+          else vIndex.add(entity.$ID, entity[fieldName]);
         }
       } else if (ctx.operation === 'del') {
         const id = typeof ctx.args[0] === 'string' ? ctx.args[0]
                  : (ctx.args[0] && ctx.args[0].$ID);
-        if (id) vIndex.remove(id);
+        if (id) {
+          if (txnId) vIndex.removeStaged(txnId, id);
+          else vIndex.remove(id);
+        }
       }
     }
 
