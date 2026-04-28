@@ -65,6 +65,12 @@ export function createSchemaRegistry(store) {
   // so the edge collection is whatever was registered with that pair.
   const predicatesBySubject = new Map();
 
+  // Cascade scope name (e.g. 'session') -> array of {collection, field}.
+  // Populated as schemas declare fields with the cascadeOn option. Empty
+  // for collections that don't opt in — db.cascade.{scope}(id) on those
+  // collections is a no-op, preserving the §10 two-store invariant.
+  const cascadeByScope = new Map();
+
   // Per-database secondary-index manager. Populated lazily when a schema
   // declares $indexes; the registry hands out a single shared instance so
   // middleware and the query planner observe consistent state.
@@ -149,6 +155,20 @@ export function createSchemaRegistry(store) {
         edgeCollections.set(collection, enrichedSpec);
         graphIndex.declareEdge(collection, enrichedSpec);
         registerPredicateRouting(predicatesBySubject, edge, collection, predicates);
+      }
+
+      // Scan for cascadeOn-flagged fields. Each match registers
+      // (collection, field) under the named scope so cascade.{scope}(id)
+      // knows where to look. Multiple cascadeOn fields per collection are
+      // allowed (e.g. cascadeOn: 'session' AND cascadeOn: 'tenant'); each
+      // registers independently.
+      for (const [field, decl] of Object.entries(schemaDef)) {
+        if (field.startsWith('$')) continue;
+        if (decl && typeof decl.cascadeOn === 'string') {
+          const scope = decl.cascadeOn;
+          if (!cascadeByScope.has(scope)) cascadeByScope.set(scope, []);
+          cascadeByScope.get(scope).push({ collection, field });
+        }
       }
 
       // Process $indexes — a malformed $indexes spec must throw BEFORE we
@@ -319,6 +339,18 @@ export function createSchemaRegistry(store) {
     predicateEdge(subjectCollection, predicate) {
       const map = predicatesBySubject.get(subjectCollection);
       return map ? map.get(predicate) : undefined;
+    },
+
+    /**
+     * Look up cascade entries for a given scope name. Each entry is
+     * { collection, field } — the cascade routine iterates these to find
+     * docs matching the scope id.
+     *
+     * @param {string} scope - Scope name (e.g. 'session')
+     * @returns {Array<{collection:string, field:string}>}
+     */
+    cascadeEntriesFor(scope) {
+      return cascadeByScope.get(scope) || [];
     }
   };
 }

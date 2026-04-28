@@ -24,3 +24,4 @@ Schema validation module.
 - Array item type validation
 - Vector deep validation (dimensionality, finite-numeric elements)
 - Collection-level options ($-prefixed keys like $indexes, $supersession) are skipped during per-document validation — they configure engine behavior, not field shape
+- Per-field options like `cascadeOn: '{scope}'` are recognized at schema-registration time (in engine/schema-registry.js) and don't affect document-level validation

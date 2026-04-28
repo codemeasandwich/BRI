@@ -18,6 +18,7 @@ engine/
 ├── graph-index.js
 ├── predicate-proxy.js
 ├── schema-edge-declare.js
+├── cascade.js
 ├── vector-index.js
 ├── vector-index-codec.js
 └── vector-middleware.js
@@ -117,7 +118,7 @@ Middleware plugin system.
 Per-database schema registry. Holds schemas declared via `db.schema('name', def)` and instantiates the per-collection VectorIndex when a schema declares a vector field. On startup, consults the storage adapter's persisted vector entries (loaded from snapshot during recovery) and reuses the deserialized index when present, or creates a fresh one otherwise. Validates dims/metric/field drift against persisted state and refuses incompatible re-declarations with a diagnostic error. Single source of truth for schema-driven features (validation, vector indexing, future secondary indexes / refs / cascade scopes).
 
 **Exports:**
-- `createSchemaRegistry(store)` - Returns registry with `declare`, `get`, `vectorIndex`, `vectorFieldOf`, `validate`, `secondaryIndexManager`, `vectorIndices`, `graphIndex`, `edgeSpec`, `collectionForPrefix`, `predicateEdge`. Reserved-name collision check fires at `declare` time when a `$edge.predicates` entry collides with the frozen proxy-method list. The optional `store` argument enables persistence-aware declares.
+- `createSchemaRegistry(store)` - Returns registry with `declare`, `get`, `vectorIndex`, `vectorFieldOf`, `validate`, `secondaryIndexManager`, `vectorIndices`, `graphIndex`, `edgeSpec`, `collectionForPrefix`, `predicateEdge`, `cascadeEntriesFor`. Reserved-name collision check fires at `declare` time when a `$edge.predicates` entry collides with the frozen proxy-method list. `cascadeOn`-flagged fields are registered into the per-scope lookup consumed by `db.cascade`. The optional `store` argument enables persistence-aware declares.
 
 ### `vector-index.js`
 
@@ -184,3 +185,11 @@ Helpers for processing the `$edge` block at schema-declaration time. `buildEdgeS
 - `RESERVED_PROXY_NAMES` - Frozen set of reserved proxy method names
 - `buildEdgeSpec(collection, schemaDef)` - Returns `{enrichedSpec, predicates}`
 - `registerPredicateRouting(map, edge, edgeCollection, predicates)` - Mutates the routing map in-place
+
+### `cascade.js`
+
+Schema-scoped cancellation cascade — the §10 NON-NEGOTIABLE. `createCascade({registry, getDb})` builds a Proxy-backed namespace where `db.cascade.{scope}(id)` enumerates registered cascadeOn entries for that scope and bulk-deletes matching docs through `db.del.{collection}` so middleware (vector + graph + secondary index sync) keeps state consistent. `byField` is the explicit-list escape hatch. `{ atomic: true }` wraps in an internal txn for all-or-nothing semantics.
+
+**Exports:**
+- `createCascade({registry, getDb})` - Returns the Proxy-backed cascade namespace
+- `default` - Same as createCascade
