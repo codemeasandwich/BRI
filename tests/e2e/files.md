@@ -15,6 +15,7 @@ e2e/
 ├── edge-cases.test.js
 ├── errors.test.js
 ├── memory.test.js
+├── vector.test.js
 ├── coverage-gaps.test.js
 └── final-coverage.test.js
 ```
@@ -59,6 +60,9 @@ Error handling - invalid inputs, missing data, constraint violations.
 
 ### `memory.test.js`
 Memory management - eviction, cold tier promotion.
+
+### `vector.test.js`
+Vector search end-to-end (UC-V1) - top-k cosine similarity, filter composition, dimension validation, score metadata, legacy call-form back-compat.
 
 ### `coverage-gaps.test.js`
 Additional test cases for uncovered code paths.
