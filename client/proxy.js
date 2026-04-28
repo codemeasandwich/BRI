@@ -74,21 +74,35 @@ import { QueryBuilder } from './query-builder.js';
 import { createTxnLifecycle } from './txn-lifecycle.js';
 
 /**
- * Create a proxy handler that intercepts collection access
- * and runs operations through the middleware system.
+ * Build a per-operation proxy for the non-`get` collection verbs
+ * (`db.add.{coll}`, `db.set.{coll}`, `db.del.{coll}` — `db.sub.{coll}` and
+ * `db.pin.{coll}` use simpler bind-only proxies declared inline in
+ * createDBInterface). Each accessed collection name returns a callable
+ * that runs the operation through the middleware chain so validation,
+ * vector + graph + secondary-index sync, and transaction-id injection
+ * all fire automatically.
  *
- * @param {Function} operation - The underlying operation (get, create, etc.)
- * @param {string} opName - Operation name ('get', 'add', 'set', 'del')
- * @param {Object} middleware - Middleware runner
- * @param {Function} getDb - Function to get db reference
- */
-/**
- * Build a per-operation proxy for non-get verbs (add/set/del/sub/pin).
+ * Lifecycle: one Proxy per opName (add / set / del). The Proxy wraps an
+ * empty function as the target so the inner Proxy traps can fire on both
+ * property access (per-collection callable) and apply (the function
+ * call that follows). Symbols and ill-formed collection names are
+ * rejected up front to avoid surprising downstream errors.
  *
- * @param {Function} operation - Underlying engine wrapper method
+ * Why route through middleware here (instead of letting the engine
+ * wrapper own the chain): the engine wrapper is schema-agnostic and
+ * doesn't know about the registry. Middleware lives in the client layer
+ * where the registry was constructed; running the chain at the proxy
+ * boundary means any future middleware (e.g. observability hooks, audit
+ * logging) gets fired uniformly across user-facing calls.
+ *
+ * @param {Function} operation - Underlying engine wrapper method (unused
+ *   directly here; the middleware's final handler calls wrapper.{op}
+ *   via closure access in createDBInterface)
  * @param {string} opName - Operation tag ('add' | 'set' | 'del')
  * @param {Object} middleware - Middleware runner from createMiddleware()
- * @param {Function} getDb - Returns the resolved db reference (closure-bound)
+ * @param {Function} getDb - Lazy db accessor; resolves to the db object
+ *   constructed by createDBInterface so middleware can read
+ *   db._activeTxnId etc.
  * @returns {Proxy}
  */
 function createOperationProxy(operation, opName, middleware, getDb) {
@@ -182,8 +196,16 @@ function createOperationProxy(operation, opName, middleware, getDb) {
 }
 
 /**
- * Create a hybrid get-proxy that keeps the legacy callable API while also
- * exposing the new chainable QueryBuilder for group reads.
+ * Create a hybrid get-proxy: keeps the legacy callable API for backwards
+ * compatibility AND exposes the chainable QueryBuilder for new code.
+ * This is the user-facing surface for `db.get.{collection}` access.
+ *
+ * Why hybrid: the project has existing tests / consumers calling
+ * `db.get.userS()` with parens; adding a chainable replacement that
+ * broke them would force every downstream caller to migrate. The
+ * Proxy here intercepts BOTH property access (returns a chain method
+ * bound to a fresh QueryBuilder) and apply (calls the legacy callable),
+ * so the same `db.get.userS` symbol supports both forms.
  *
  * Behavior:
  *   - `db.get.user('USER_x')`        : legacy single-fetch (function call)
@@ -320,10 +342,40 @@ function createGetProxy(wrapper, registry, middleware, getDb) {
 }
 
 /**
- * Create the public database interface from engine wrapper
- * @param {Object} wrapper - Engine wrapper
- * @param {Object} store - Storage adapter
- * @returns {Object} - Public DB interface
+ * Build the public db interface — the one user code interacts with.
+ *
+ * Composition order matters here:
+ *   1. Construct the middleware runner; bind transactionMiddleware first
+ *      so subsequent middleware sees the active txnId on ctx.opts.
+ *   2. Construct the schema registry, passing the store so persisted
+ *      vector indices and secondary-index state load on first declare().
+ *   3. Decorate the wrapper with `_registry` and `_getDb` so the engine's
+ *      reactive proxy (engine/reactive.js) can route predicate property
+ *      access through engine/predicate-proxy.js. This is one-way: the
+ *      engine reads these fields but doesn't depend on the client folder.
+ *   4. Bind vectorIndexMiddleware AFTER transactionMiddleware so it sees
+ *      ctx.opts.txnId already populated; without this order, edge writes
+ *      inside a transaction would route through the committed-index path.
+ *   5. Construct each user-facing namespace — sub / get / add / set / del /
+ *      pin / cascade / algo / schema / use / middleware / rec-fin-nop-pop —
+ *      and assemble them into the db object.
+ *   6. Spread createTxnLifecycle's bindings so `db.fin/nop/pop` know how to
+ *      flush / rollback / pop the schema-registry's vector indices in lock
+ *      step with the storage transaction.
+ *
+ * Why the registry holds vectorIndices but the storage adapter holds
+ * vectorEntries: the registry is the runtime owner; the storage layer
+ * just persists serialized snapshots. The registry's declare() asks the
+ * store for any cached entry on a known collection, validates against
+ * drift, and registers the live VectorIndex with the store so the next
+ * snapshot serializes it. See engine/schema-registry.js for the protocol.
+ *
+ * @param {Object} wrapper - Engine wrapper produced by createEngine(store);
+ *   provides sub / create / update / replace / cache / get / remove
+ * @param {Object} store - Storage adapter (currently the InHouseAdapter);
+ *   used by the registry for persistence-aware declares and by the
+ *   txn lifecycle bindings for rec / fin / nop / pop / txnStatus
+ * @returns {Object} The public db interface — passed to createDB callers
  */
 export function createDBInterface(wrapper, store) {
   // Create middleware system
