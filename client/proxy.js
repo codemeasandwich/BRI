@@ -260,6 +260,16 @@ export function createDBInterface(wrapper, store) {
   // Schema registry for vector indexes and validation. Store reference
   // enables reuse of persisted indices loaded from snapshot during recovery.
   const registry = createSchemaRegistry(store);
+  // Make the registry visible to the engine's reactive proxy so it can
+  // route predicate property access through resolvePredicateAccess.
+  // (Lower-layer, per the existing wrapper convention of internal _underscore fields.)
+  wrapper._registry = registry;
+  // Late-bound db accessor for the predicate proxy: writes go through
+  // db.add.{collection} so middleware (validation, vector + graph sync)
+  // fires the same way it does for direct user calls. The accessor is a
+  // function so it captures the db reference even though it's assigned
+  // below this line.
+  wrapper._getDb = () => db;
 
   // Register default transaction middleware
   middleware.use(transactionMiddleware());
