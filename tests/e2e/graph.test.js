@@ -482,7 +482,7 @@ describe('UC-G5: db.algo.degree', () => {
     expect(result).toHaveLength(1);
   });
 
-  test('dangling adjacency entry does not crash degree', async () => {
+  test('UC-G5: dangling adjacency entry does not crash degree', async () => {
     // Edge case: an edge document was deleted but a stale adjacency entry
     // remains (shouldn't happen given middleware, but a regression test
     // gates the resilience contract).
@@ -502,5 +502,229 @@ describe('UC-G5: db.algo.degree', () => {
       collection: 'kgEntity', via: 'kgTriple'
     });
     expect(result.length).toBeGreaterThan(0);
+  });
+});
+
+describe('UC-G4: reference chain walks', () => {
+  let db;
+  afterEach(async () => {
+    if (db) await db.disconnect();
+    await fs.rm(DIR, { recursive: true, force: true }).catch(() => {});
+  });
+
+  /**
+   * Self-referential ref schema for chain walks. supersedes_id points
+   * back to the previous version of the same row; superseded_by_id
+   * points forward.
+   */
+  function declareSupersededSchema(_db) {
+    _db.schema('memoryArtifact', {
+      content:           { type: String, required: true },
+      supersedes_id:     { type: 'ref', to: 'memoryArtifact', required: false },
+      superseded_by_id:  { type: 'ref', to: 'memoryArtifact', required: false }
+    });
+  }
+
+  test('chain walk follows a self-ref forward to null', async () => {
+    db = await freshDB();
+    declareSupersededSchema(db);
+    const v1 = await db.add.memoryArtifact({ content: 'v1' });
+    const v2 = await db.add.memoryArtifact({ content: 'v2', supersedes_id: v1.$ID });
+    const v3 = await db.add.memoryArtifact({ content: 'v3', supersedes_id: v2.$ID });
+
+    const history = await v3.chain.supersedes_id;
+    expect(Array.isArray(history)).toBe(true);
+    const contents = history.map(d => d.content);
+    expect(contents).toEqual(['v3', 'v2', 'v1']);
+  });
+
+  test('chain walk in the opposite direction', async () => {
+    db = await freshDB();
+    declareSupersededSchema(db);
+    const v1 = await db.add.memoryArtifact({ content: 'v1' });
+    const v2 = await db.add.memoryArtifact({ content: 'v2', supersedes_id: v1.$ID });
+    // Update v1 to point forward.
+    const v1ref = await db.get.memoryArtifact(v1.$ID);
+    v1ref.superseded_by_id = v2.$ID;
+    await v1ref.save();
+
+    const future = await v1ref.chain.superseded_by_id;
+    expect(future.map(d => d.content)).toEqual(['v1', 'v2']);
+  });
+
+  test('chain walk on a cycle returns cycleDetected without hanging', async () => {
+    db = await freshDB();
+    declareSupersededSchema(db);
+    const a = await db.add.memoryArtifact({ content: 'A' });
+    const b = await db.add.memoryArtifact({ content: 'B', supersedes_id: a.$ID });
+    // Close the cycle: a.supersedes_id = b
+    const aRef = await db.get.memoryArtifact(a.$ID);
+    aRef.supersedes_id = b.$ID;
+    await aRef.save();
+
+    const result = await aRef.chain.supersedes_id;
+    // On cycle, the function returns an object {chain, cycleDetected}
+    // instead of a flat array.
+    expect(result.cycleDetected).toBe(true);
+    expect(Array.isArray(result.chain)).toBe(true);
+    expect(result.chain.length).toBeGreaterThan(0);
+  });
+
+  test('chain walk respects maxDepth cap', async () => {
+    db = await freshDB();
+    declareSupersededSchema(db);
+    let prev = null;
+    for (let i = 0; i < 5; i++) {
+      const doc = await db.add.memoryArtifact({
+        content: `v${i}`,
+        ...(prev ? { supersedes_id: prev.$ID } : {})
+      });
+      prev = doc;
+    }
+    const result = await prev.chain.supersedes_id({ maxDepth: 3 });
+    expect(result.truncated).toBe(true);
+    expect(Array.isArray(result.chain)).toBe(true);
+    expect(result.chain.length).toBeLessThanOrEqual(3);
+  });
+
+  test('chain walk on a field pointing to a different collection throws', async () => {
+    db = await freshDB();
+    db.schema('user', { name: { type: String, required: true } });
+    db.schema('post', {
+      author_id: { type: 'ref', to: 'user', required: true },
+      title:     { type: String, required: true }
+    });
+    const u = await db.add.user({ name: 'Alice' });
+    const p = await db.add.post({ author_id: u.$ID, title: 'hello' });
+
+    // author_id points to user, not post — chain.field must reject this.
+    await expect(p.chain.author_id).rejects.toThrow(/cross.*collection|self-ref/i);
+  });
+
+  test('chain walk with no value at the start returns just the seed', async () => {
+    db = await freshDB();
+    declareSupersededSchema(db);
+    const orphan = await db.add.memoryArtifact({ content: 'no-pred' });
+    const chain = await orphan.chain.supersedes_id;
+    expect(chain.map(d => d.content)).toEqual(['no-pred']);
+  });
+});
+
+describe('UC-G1: predicate chain methods (.history / .confidence / .withProvenance)', () => {
+  let db;
+  afterEach(async () => {
+    if (db) await db.disconnect();
+    await fs.rm(DIR, { recursive: true, force: true }).catch(() => {});
+  });
+
+  /**
+   * Extended schema with $supersession + $confidence + $provenance flags.
+   * The edge document carries supersession backref, confidence score,
+   * and a provenance turn-id list.
+   */
+  function declareKnowledgeSchema(_db) {
+    _db.schema('kgEntity', { name: { type: String, required: true } });
+    _db.schema('kgTriple', {
+      subject_id:           { type: 'ref', to: 'kgEntity', required: true },
+      predicate:            { type: String, required: true },
+      object_id_or_literal: { type: 'ref', to: 'kgEntity', required: true },
+      confidence:           { type: Number, required: false },
+      superseded_by_id:     { type: 'ref', to: 'kgTriple', required: false },
+      provenance_turn_ids:  { type: Array, required: false, items: String },
+      $edge: {
+        from: 'kgEntity', to: 'kgEntity',
+        predicate: 'predicate',
+        predicates: ['works_at', 'knows']
+      },
+      $supersession: 'superseded_by_id',
+      $confidence:   'confidence',
+      $provenance:   'provenance_turn_ids'
+    });
+  }
+
+  test('predicate read default-filters out superseded edges', async () => {
+    db = await freshDB();
+    declareKnowledgeSchema(db);
+    const alice = await db.add.kgEntity({ name: 'Alice' });
+    const acme  = await db.add.kgEntity({ name: 'Acme' });
+    const initech = await db.add.kgEntity({ name: 'Initech' });
+
+    const oldEdge = await alice.works_at(acme);
+    const newEdge = await alice.works_at(initech);
+    // Mark old edge as superseded by the new one.
+    const oldRef = await db.get.kgTriple(oldEdge.$ID);
+    oldRef.superseded_by_id = newEdge.$ID;
+    await oldRef.save();
+
+    const current = await alice.works_at;
+    const names = current.map(e => e.name);
+    expect(names).toEqual(['Initech']);  // Acme filtered out as superseded
+  });
+
+  test('.history opts out of supersession filter — sees all edges', async () => {
+    db = await freshDB();
+    declareKnowledgeSchema(db);
+    const alice = await db.add.kgEntity({ name: 'Alice' });
+    const acme  = await db.add.kgEntity({ name: 'Acme' });
+    const initech = await db.add.kgEntity({ name: 'Initech' });
+
+    const oldEdge = await alice.works_at(acme);
+    const newEdge = await alice.works_at(initech);
+    const oldRef = await db.get.kgTriple(oldEdge.$ID);
+    oldRef.superseded_by_id = newEdge.$ID;
+    await oldRef.save();
+
+    const all = await alice.works_at.history;
+    const names = all.map(e => e.name).sort();
+    expect(names).toEqual(['Acme', 'Initech']);
+  });
+
+  test('.confidence(t) filters edges by confidence threshold', async () => {
+    db = await freshDB();
+    declareKnowledgeSchema(db);
+    const alice = await db.add.kgEntity({ name: 'Alice' });
+    const acme  = await db.add.kgEntity({ name: 'Acme' });
+    const initech = await db.add.kgEntity({ name: 'Initech' });
+    const evil  = await db.add.kgEntity({ name: 'Evil' });
+
+    await alice.works_at(acme,    { confidence: 0.95 });
+    await alice.works_at(initech, { confidence: 0.6 });
+    await alice.works_at(evil,    { confidence: 0.2 });
+
+    const trustworthy = await alice.works_at.confidence(0.5);
+    const names = trustworthy.map(e => e.name).sort();
+    expect(names).toEqual(['Acme', 'Initech']);
+  });
+
+  test('.withProvenance attaches $provenance metadata', async () => {
+    db = await freshDB();
+    declareKnowledgeSchema(db);
+    const alice = await db.add.kgEntity({ name: 'Alice' });
+    const acme  = await db.add.kgEntity({ name: 'Acme' });
+    await alice.works_at(acme, { provenance_turn_ids: ['T1', 'T2', 'T3'] });
+
+    const [hit] = await alice.works_at.withProvenance;
+    expect(hit.name).toBe('Acme');
+    expect(hit.$provenance).toEqual(['T1', 'T2', 'T3']);
+  });
+
+  test('chain methods absent when schema does not declare the corresponding field', async () => {
+    db = await freshDB();
+    // Minimal schema without $supersession / $confidence / $provenance
+    declareSocialSchema(db);
+    const alice = await db.add.kgEntity({ name: 'Alice' });
+    const acme  = await db.add.kgEntity({ name: 'Acme' });
+    await alice.works_at(acme);
+
+    // .history is undefined when no $supersession declared
+    expect(alice.works_at.history).toBeUndefined();
+    // .confidence callable should also be absent
+    expect(alice.works_at.confidence).toBeUndefined();
+    // .withProvenance same
+    expect(alice.works_at.withProvenance).toBeUndefined();
+
+    // But the basic read still works
+    const targets = await alice.works_at;
+    expect(targets).toHaveLength(1);
   });
 });
