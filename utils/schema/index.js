@@ -1,11 +1,31 @@
 /**
- * Schema Validation - Mongoose-like schema validation for BRI
+ * @file Schema Validation - Mongoose-like schema validation for BRI
  *
  * Supports type checking, required fields, enums, get/set transformers,
- * nested objects, and array item validation.
+ * nested objects, array item validation, and vector embeddings.
+ *
+ * Contract: validate(schema, obj) returns a descriptive error string or null.
+ *           Returning a string preserves the historical, non-throwing API used
+ *           by the existing validationMiddleware in engine/middleware.js.
+ *
+ * Type vocabulary:
+ *   String, Number, Boolean, Date, Object, Array  - JS native constructors
+ *   'email'                                       - regex-validated string
+ *   'ref'                                         - string ID reference
+ *   'vector'                                      - numeric array; needs dims
  */
 
-// Helper function to check type
+/**
+ * Coarse type-shape check used as the first gate in validate().
+ *
+ * Purpose: tell us whether the value is plausibly the declared type. Detailed
+ * sub-rules (vector dims, vector finiteness, ref ID format, etc.) are applied
+ * AFTER this check passes so error messages can be specific.
+ *
+ * @param {Function|string} type - Schema type constructor or named string type
+ * @param {*} value - Field value to inspect
+ * @returns {boolean} true if value is shape-compatible with type
+ */
 const checkType = (type, value) => {
     switch (type) {
         case String:
@@ -26,9 +46,48 @@ const checkType = (type, value) => {
             return typeof value === 'string' && /\S+@\S+\.\S+/.test(value); // Simple email regex
         case 'ref':
             return typeof value === 'string'; // Assuming references are stored as strings (e.g., IDs)
+        case 'vector':
+            // A vector is a non-null, non-string array. Element-level checks
+            // (numeric, finite, dim count) run separately so error messages
+            // can pinpoint the actual problem.
+            return Array.isArray(value);
         default:
             return false;
     }
+};
+
+/**
+ * Vector field deep-validator.
+ *
+ * Why separate from checkType: the surrounding validate() needs to keep type
+ * shape checks fast and binary-true/false. Vector validation has three failure
+ * modes (dim mismatch, non-numeric element, non-finite element) and each one
+ * needs a distinct, actionable error message. Keeping this here lets
+ * validate() stay readable while still meeting the diagnostic-error standard.
+ *
+ * @param {string} field - Field name (for error messages)
+ * @param {Array} value  - Vector to validate (array shape already verified)
+ * @param {Object} schemaField - Schema field declaration; must include numeric dims
+ * @returns {string|null} Error message or null if valid
+ */
+const validateVector = (field, value, schemaField) => {
+    const dims = schemaField.dims;
+    if (typeof dims !== 'number' || dims <= 0) {
+        return `${field} schema declares vector type but is missing positive 'dims'.`;
+    }
+    if (value.length !== dims) {
+        return `${field} vector dimension mismatch: expected ${dims}, got ${value.length}.`;
+    }
+    for (let i = 0; i < value.length; i++) {
+        const e = value[i];
+        if (typeof e !== 'number') {
+            return `${field}[${i}] must be a number; got ${typeof e}.`;
+        }
+        if (!Number.isFinite(e)) {
+            return `${field}[${i}] must be finite; got ${e}.`;
+        }
+    }
+    return null;
 };
 
 /**
@@ -50,9 +109,19 @@ export default function validate(schemaObj, pojoObj){
         } else {
             // Check type
             if (!checkType(schemaField.type, pojoField)) {
-                return `${key} should be of type ${schemaField.type === 'email' ? 'Email'
-                                                                                : schemaField.type === 'ref'
-                                                                  ? 'Reference' : schemaField.type.name}.`;
+                // Map named types to readable labels; constructor types use .name.
+                const typeLabel = schemaField.type === 'email'  ? 'Email'
+                                : schemaField.type === 'ref'    ? 'Reference'
+                                : schemaField.type === 'vector' ? 'Vector (numeric array)'
+                                : schemaField.type.name;
+                return `${key} should be of type ${typeLabel}.`;
+            }
+
+            // Vector deep-check: element types, finiteness, and dimension count.
+            // Runs only after the array shape passed checkType above.
+            if (schemaField.type === 'vector') {
+                const vErr = validateVector(key, pojoField, schemaField);
+                if (vErr) return vErr;
             }
 
             // Enum check for roles

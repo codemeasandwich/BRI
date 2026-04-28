@@ -17,8 +17,9 @@ Schema validation module.
 
 **Validation Features:**
 - Required field checking (default: required)
-- Type validation (String, Number, Boolean, Date, Object, Array, email, ref)
+- Type validation (String, Number, Boolean, Date, Object, Array, email, ref, vector)
 - Enum constraint validation
 - Get/set transformers (applied to value in-place)
 - Recursive nested object validation
 - Array item type validation
+- Vector deep validation (dimensionality, finite-numeric elements)
