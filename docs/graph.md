@@ -144,6 +144,72 @@ The GraphIndex maintains forward + inverse adjacency keyed by `(node, predicate)
 
 ---
 
+## Reference chain walks (UC-G4)
+
+`entity.chain.{field}` walks a self-referential ref field from the seed entity through repeated hops until null, a cycle, or a depth cap.
+
+```js
+db.schema('memoryArtifact', {
+  content:           { type: String, required: true },
+  supersedes_id:     { type: 'ref', to: 'memoryArtifact', required: false },
+  superseded_by_id:  { type: 'ref', to: 'memoryArtifact', required: false }
+});
+
+// Walk supersedes_id backwards until null:
+const history = await v3.chain.supersedes_id;
+// → [v3, v2, v1]
+
+// Or forward:
+const future = await v1.chain.superseded_by_id;
+// → [v1, v2, v3]
+
+// Cap the chain length explicitly:
+const recent = await v999.chain.supersedes_id({ maxDepth: 100 });
+```
+
+**Termination:** Per-walk visited-set on `$ID` guarantees cycle termination. On cycle detection, the walker returns `{ chain, cycleDetected: true }` instead of a flat array — the destructure pattern is `Array.isArray(result) ? result : result.chain`.
+
+**Default cap:** 10,000 hops. Override with `({ maxDepth })`. Hitting the cap returns `{ chain, truncated: true }` (only if the chain could have continued — reaching null at exactly the cap returns a flat array, no truncation flag).
+
+**Cross-collection enforcement:** `entity.chain.{field}` requires `field` to be a `'ref'` declared on the *same* collection. Refs to a different collection throw with a message recommending `.and.{field}` instead (the existing single-hop ref proxy).
+
+---
+
+## Predicate chain methods (UC-G1 read-side)
+
+When the edge collection's schema declares lifecycle flags, the PredicateAccessor exposes additional chain methods that filter or annotate the read.
+
+```js
+db.schema('kgTriple', {
+  subject_id:           { type: 'ref', to: 'kgEntity', required: true },
+  predicate:            { type: String, required: true },
+  object_id_or_literal: { type: 'ref', to: 'kgEntity', required: true },
+  confidence:           { type: Number, required: false },
+  superseded_by_id:     { type: 'ref', to: 'kgTriple', required: false },
+  provenance_turn_ids:  { type: Array, required: false, items: String },
+  $edge: { from: 'kgEntity', to: 'kgEntity',
+           predicate: 'predicate', predicates: ['works_at', 'knows'] },
+  $supersession: 'superseded_by_id',
+  $confidence:   'confidence',
+  $provenance:   'provenance_turn_ids'
+});
+```
+
+| Form | Effect | Available iff |
+|---|---|---|
+| `await alice.works_at` | Default — drops edges where `superseded_by_id` is non-null | (always) |
+| `await alice.works_at.history` | Includes superseded edges | `$supersession` declared |
+| `await alice.works_at.confidence(0.8)` | Drops edges where `confidence < 0.8` (or non-numeric) | `$confidence` declared |
+| `await alice.works_at.withProvenance` | Same edges; each result entity carries `$provenance` (the field's value) as non-enumerable metadata | `$provenance` declared |
+
+**Default-supersession filter** is conservative — it activates the moment a schema declares `$supersession`, even on existing data. Schemas without the flag keep the unfiltered behavior.
+
+**Schema validation** at load time: `$supersession`/`$confidence`/`$provenance` must point to a declared field. A flag pointing at an undeclared field name throws on `db.schema()` with a list of valid fields.
+
+**Stacking** chain methods (e.g. `.confidence(0.8).history`) is a v2 ergonomic feature — v1 supports each chain method as a single terminal.
+
+---
+
 ## Multi-hop expand (UC-G6)
 
 `entity.expand({...})` walks outward through an edge collection up to a hop budget, collecting reachable nodes, edges, and paths from the seed.
@@ -201,9 +267,9 @@ PPR (`db.algo.ppr`) is scoped for v3 per spec §6.3 / §7.5.
 
 ## Limitations (v1)
 
-- **No supersession defaults.** `$supersession` field is recognized but predicate reads don't auto-filter by it; that comes with the chain-method slice.
-- **No confidence/provenance defaults.** Same — recognized in schema, not yet wired into reads.
 - **Polymorphic `'ref|string'` targets** are reserved for the next slice. v1 honors single-collection refs only.
+- **Chain method stacking** (`.confidence(0.8).history`) is v2 — each chain method is a single terminal in v1.
+- **`.asOf(t)`** point-in-time view is v2 per spec §6.2.
 - **GraphIndex is in-memory only.** Adjacency is rebuilt from edge documents on first access after restart (via the existing per-write sync once schemas are re-declared). Persistent adjacency lands with the snapshot slice for graph state.
 - **No PPR.** `db.algo.ppr` is v3 work per spec §6.3.
 - **`.expand` edgeFilter is function-form only.** Object-form filters (with operators like `{$ne: ...}`) work via the shared compileFilter — but the expand surface accepts a function for now, so callers wanting operator filters compose `compileFilter(obj)` themselves.
