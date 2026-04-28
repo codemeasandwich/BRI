@@ -9,7 +9,7 @@ await alice.works_at(acme, { confidence: 0.9 });   // write
 const employers = await alice.works_at;            // read targets
 ```
 
-> **Status:** v1 slice — UC-G1 (one-hop predicate read + write). Inverse reads, multi-hop chains, supersession defaults, confidence/provenance filters, and PPR are scoped for later slices.
+> **Status:** v1 — UC-G1 (one-hop predicate read + write, inverse reads, `.related` over all predicates, `.$` for edge documents). Multi-hop chains, supersession defaults, confidence/provenance filters, and PPR are scoped for later slices.
 
 ---
 
@@ -95,8 +95,19 @@ When you access `alice.works_at`:
 | `await alice.works_at` | Read — returns array of target entities |
 | `alice.works_at(target, attrs)` | Write — inserts an edge document and returns it |
 | `alice.works_at.limit(k)` then await | Read with top-k cap |
+| `await alice.works_at.$` | Read — returns the edge documents themselves (with attributes like confidence, source_session_id, etc.) |
+| `await acme.inverse.works_at` | Inverse read — returns subjects whose edge points to acme |
+| `await acme.inverse.works_at.$` | Inverse edge documents |
+| `await alice.related` | Flat list of every outgoing target across all registered predicates |
+| `await alice.related.$` | All outgoing edge documents across predicates |
 
 If `'works_at'` isn't a registered predicate, property access falls through to the existing reactive-proxy behavior — field lookup, then undefined.
+
+**`.inverse`** is a Proxy on the entity. Property access on it (the predicate name) consults the registry's inverse routing — set up at schema-declare time by walking each `$edge` block and recording the `to` collection alongside the `from` collection. Polymorphic `to` constraints (`'kgEntity | string'`) split on `|`; the literal `string` pseudo-collection is skipped (no entity to anchor inverse access on).
+
+**`.related`** consults the per-subject predicate map and unions every outgoing predicate. v1 hydrates each edge collection separately, so two predicates that map to different edge collections are still flattened into one result array.
+
+**`.$`** is a thenable property on every PredicateAccessor (and on `.inverse.{predicate}` / `.related`) that resolves to the edge documents instead of the hydrated endpoints. Useful when the consumer needs to read edge attributes (confidence, source_session_id, supersession state, etc.) without a separate fetch.
 
 ---
 
@@ -136,7 +147,6 @@ The GraphIndex maintains forward + inverse adjacency keyed by `(node, predicate)
 ## Limitations (v1)
 
 - **One-hop only.** `alice.works_at.founded_by` (multi-hop chaining) is not yet implemented.
-- **No `.inverse`, `.related`** chain methods on predicates yet (read targets only; reverse direction is a follow-up).
 - **No supersession defaults.** `$supersession` field is recognized but predicate reads don't auto-filter by it; that comes with the chain-method slice.
 - **No confidence/provenance defaults.** Same — recognized in schema, not yet wired into reads.
 - **Polymorphic `'ref|string'` targets** are reserved for the next slice. v1 honors single-collection refs only.
