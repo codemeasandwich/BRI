@@ -6,6 +6,7 @@ docs/
 ├── files.md
 ├── aggregation.md
 ├── cascade.md
+├── fts.md
 ├── graph.md
 ├── indexes.md
 └── vector.md
@@ -32,6 +33,10 @@ End-user walkthrough of secondary indexes. Covers the `$indexes` schema option (
 ### `aggregation.md`
 
 End-user walkthrough of aggregation primitives (UC-X3). Covers `.count` / `.distinct` terminals, the `.groupBy(field).count()` and `.groupBy(field).sum(field)` chains, `.having(filter)` post-aggregation filtering, the operator vocabulary ($gte, $gt, $lte, $lt, $ne, $in, $exists), how aggregation interacts with secondary indexes, and v1 limitations (no min/max/avg, no compose with .near, no multi-key groupBy).
+
+### `fts.md`
+
+End-user walkthrough of substring full-text search (UC-X4) and combined alias+vector retrieval (UC-V3). Covers the `.match(stringFilter, k?)` chain method (case-insensitive, string-or-array fields, `$matchHits` attribution, recency tiebreak), the `.combine({alias, vector})` weighted blend (formula, `null_embedding_eligible_via_alias` behavior, `$score`/`$cosine`/`$matchHits` audit trail), how match integrates with the QueryPlanner's `.where` prefilter, and v1 limitations (substring-only, no stemming/stopwords/fuzzy, inline scan, no persistent FTS index — all v2 deliverables per spec §6.2).
 
 ### `cascade.md`
 
