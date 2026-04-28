@@ -11,7 +11,10 @@ engine/
 ├── operations-get.js
 ├── operations-remove.js
 ├── reactive.js
-└── middleware.js
+├── middleware.js
+├── schema-registry.js
+├── vector-index.js
+└── vector-middleware.js
 ```
 
 ## Files
@@ -28,7 +31,7 @@ Engine factory creating operation wrappers.
 
 Shared constants and symbols.
 
-- `collectionNamePattern` - Regex for valid collection names
+- `collectionNamePattern` - Regex for valid collection names. Accepts alphanumeric identifiers (camelCase allowed in the interior) starting with a lowercase letter or digit, never ending in lowercase 's', optionally suffixed with capital 'S' for the group accessor.
 - `undeclared` - Symbol for deleted/missing values
 - `MAKE_COPY` - Symbol for creating proxy copies
 
@@ -102,3 +105,26 @@ Middleware plugin system.
 - `loggingMiddleware(opts)` - Log all operations
 - `validationMiddleware(validators)` - Validate on write
 - `hooksMiddleware()` - Before/after hooks
+
+### `schema-registry.js`
+
+Per-database schema registry. Holds schemas declared via `db.schema('name', def)` and instantiates the per-collection VectorIndex when a schema declares a vector field. Single source of truth for schema-driven features (validation, vector indexing, future secondary indexes / refs / cascade scopes).
+
+**Exports:**
+- `createSchemaRegistry()` - Returns registry with `declare`, `get`, `vectorIndex`, `vectorFieldOf`, `validate`
+
+### `vector-index.js`
+
+In-process vector index for k-NN search. v1 uses a brute-force linear scan backed by `Float32Array` storage; the public interface (`add`, `remove`, `search`, `searchFiltered`, `stats`) is pluggable so a v2 HNSW or USearch backend slots in without API changes.
+
+**Exports:**
+- `VectorIndex` class - One instance per vector-bearing collection
+- `default` - Same as VectorIndex
+
+### `vector-middleware.js`
+
+Middleware that keeps the per-collection VectorIndex in sync with add/set/del operations and enforces schemas registered through the registry. Validation runs before next() (invalid writes short-circuit before storage); index sync runs after next() (so ctx.result.$ID is populated).
+
+**Exports:**
+- `vectorIndexMiddleware(registry)` - Returns the middleware function
+- `default` - Same as vectorIndexMiddleware

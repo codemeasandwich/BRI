@@ -1,12 +1,25 @@
 /**
- * Client proxy handlers
+ * @file Client proxy handlers
  *
  * Creates the db.get.userS, db.add.user syntax via Proxy.
  * Now with middleware support for plugins and extensions.
+ *
+ * Vector + schema additions:
+ *   - db.schema(collection, def) registers a schema and (when the schema
+ *     declares a vector field) instantiates a per-collection VectorIndex.
+ *   - db.get.{collection}S becomes a hybrid proxy: invoked with parens it
+ *     preserves the legacy group-call behavior; accessed without parens it
+ *     materializes a chainable QueryBuilder.
+ *   - vectorIndexMiddleware (engine/vector-middleware.js) keeps the index
+ *     synchronized with add/set/del operations on schema-registered
+ *     collections; wired in below alongside transactionMiddleware.
  */
 
 import { collectionNamePattern } from '../engine/constants.js';
 import { createMiddleware, transactionMiddleware } from '../engine/middleware.js';
+import { createSchemaRegistry } from '../engine/schema-registry.js';
+import { vectorIndexMiddleware } from '../engine/vector-middleware.js';
+import { QueryBuilder } from './query-builder.js';
 
 /**
  * Create a proxy handler that intercepts collection access
@@ -17,8 +30,23 @@ import { createMiddleware, transactionMiddleware } from '../engine/middleware.js
  * @param {Object} middleware - Middleware runner
  * @param {Function} getDb - Function to get db reference
  */
+/**
+ * Build a per-operation proxy for non-get verbs (add/set/del/sub/pin).
+ *
+ * @param {Function} operation - Underlying engine wrapper method
+ * @param {string} opName - Operation tag ('add' | 'set' | 'del')
+ * @param {Object} middleware - Middleware runner from createMiddleware()
+ * @param {Function} getDb - Returns the resolved db reference (closure-bound)
+ * @returns {Proxy}
+ */
 function createOperationProxy(operation, opName, middleware, getDb) {
   return new Proxy(function() {}, {
+    /**
+     * Proxy get trap: returns a per-collection callable for the operation.
+     * @param {Function} target - Underlying empty function (proxy target)
+     * @param {string|symbol} prop - Collection name accessed on the proxy
+     * @returns {Function|undefined}
+     */
     get(target, prop) {
       // Validate collection name
       if (typeof prop === 'symbol') {
@@ -102,6 +130,124 @@ function createOperationProxy(operation, opName, middleware, getDb) {
 }
 
 /**
+ * Create a hybrid get-proxy that keeps the legacy callable API while also
+ * exposing the new chainable QueryBuilder for group reads.
+ *
+ * Behavior:
+ *   - `db.get.user('USER_x')`        : legacy single-fetch (function call)
+ *   - `db.get.userS()`               : legacy group fetch
+ *   - `db.get.userS.where(...)`      : NEW — returns QueryBuilder
+ *   - `db.get.userS.near(vec, k)`    : NEW — returns QueryBuilder
+ *
+ * Implementation: the inner per-collection proxy is itself a Proxy over the
+ * legacy callable. The Proxy intercepts property access to detect chainable
+ * method names (where, near, limit, then, toArray, first) and constructs a
+ * QueryBuilder lazily. apply() preserves legacy invocation.
+ *
+ * Why lazy: a builder allocates on first chain access, not on bare property
+ * access — keeps the legacy callable cheap and the chainable surface
+ * discoverable via a single fixed list of method names.
+ *
+ * @param {Object} wrapper  - Engine wrapper (for hydration)
+ * @param {Object} registry - Schema registry (for vector index lookup)
+ * @param {Object} middleware - Middleware runner (for legacy invocation)
+ * @param {Function} getDb  - db reference accessor
+ * @returns {Proxy}
+ */
+function createGetProxy(wrapper, registry, middleware, getDb) {
+  // Names that should construct a QueryBuilder when accessed on a group
+  // collection (one ending with 'S'). This is the only chainable surface.
+  const CHAIN_METHODS = new Set([
+    'where', 'near', 'limit', 'toArray', 'first', 'then'
+  ]);
+
+  return new Proxy(function() {}, {
+    /**
+     * Outer get trap: returns either a legacy callable (singular form,
+     * collection name without trailing 'S') or a hybrid callable+chainable
+     * proxy (group form, collection name ending in 'S').
+     * @param {Function} target - Underlying empty function (proxy target)
+     * @param {string|symbol} prop - Collection name accessed on db.get
+     * @returns {Function|Proxy|undefined}
+     */
+    get(target, prop) {
+      if (typeof prop === 'symbol') return undefined;
+      if (!collectionNamePattern.test(prop)) {
+        throw new Error(`"${prop} is not a good collection name"`);
+      }
+
+      const isGroup = prop.endsWith('S');
+      // Strip trailing S to derive the underlying collection name. The
+      // engine consumes both forms but the schema registry only knows the
+      // singular form (memoryArtifact, not memoryArtifactS).
+      const collection = isGroup ? prop.slice(0, -1) : prop;
+
+      // Build the legacy callable that .userS(...) invokes (preserves shape).
+      const legacyCallable = function(...args) {
+        const db = getDb();
+        const ctx = {
+          operation: 'get', type: prop, args, opts: {}, db, result: undefined
+        };
+        const where = args[0];
+        const explicitOpts = args[1];
+        if (explicitOpts && typeof explicitOpts === 'object') {
+          ctx.opts = { ...explicitOpts };
+        } else if (where && typeof where === 'object' && 'txnId' in where && !where.$ID) {
+          ctx.opts = { ...where };
+          ctx.args = [undefined, ctx.opts];
+        }
+        return middleware.run(ctx, (ctx) => {
+          let finalArgs;
+          const w = ctx.args[0];
+          if (Object.keys(ctx.opts).length > 0) finalArgs = [w, ctx.opts];
+          else finalArgs = [w];
+          return wrapper.get(prop, ...finalArgs);
+        });
+      };
+
+      // For non-group collections (db.get.user), only the callable form is
+      // ever used. Return the legacy callable directly.
+      if (!isGroup) return legacyCallable;
+
+      // Group collection: wrap the callable so chain methods trigger a
+      // builder. Property access for chain methods returns a bound builder
+      // method; everything else returns whatever the underlying callable
+      // exposes (mostly nothing).
+      return new Proxy(legacyCallable, {
+        /**
+         * Property-access trap: routes chain-method names to a fresh
+         * QueryBuilder bound to this collection.
+         * @param {Function} _t - Underlying callable (legacy form)
+         * @param {string|symbol} builderProp - Property name accessed
+         * @returns {Function|undefined}
+         */
+        get(_t, builderProp) {
+          if (typeof builderProp === 'symbol') return undefined;
+          if (!CHAIN_METHODS.has(builderProp)) return undefined;
+          // Lazily construct a builder; the chain method on it is what the
+          // caller actually wanted.
+          const builder = new QueryBuilder({
+            collection, wrapper, registry
+          });
+          return builder[builderProp].bind(builder);
+        },
+        /**
+         * Apply trap: invoking the proxy with parens preserves the legacy
+         * group-call semantics.
+         * @param {Function} _t - Underlying callable
+         * @param {*} _thisArg - Ignored
+         * @param {Array} args - Forwarded to the legacy callable
+         * @returns {Promise}
+         */
+        apply(_t, _thisArg, args) {
+          return legacyCallable(...args);
+        }
+      });
+    }
+  });
+}
+
+/**
  * Create the public database interface from engine wrapper
  * @param {Object} wrapper - Engine wrapper
  * @param {Object} store - Storage adapter
@@ -110,19 +256,34 @@ function createOperationProxy(operation, opName, middleware, getDb) {
 export function createDBInterface(wrapper, store) {
   // Create middleware system
   const middleware = createMiddleware();
+  // Schema registry for vector indexes and validation. Always present —
+  // collections without a registered schema simply produce no-op lookups.
+  const registry = createSchemaRegistry();
 
   // Register default transaction middleware
   middleware.use(transactionMiddleware());
+  // Register vector-index sync middleware. Runs after txn middleware so
+  // ctx.opts.txnId is already populated when we observe the operation.
+  middleware.use(vectorIndexMiddleware(registry));
 
   // The db object (we need a reference for middleware context)
   let db;
 
-  // Getter for db reference (used by proxies)
+  /**
+   * Late-bound db accessor used by proxy traps that need to consult ctx.db.
+   * @returns {Object} the db interface (resolved lazily after assignment)
+   */
   const getDb = () => db;
 
   db = {
     // CRUD operations with middleware support
     sub: new Proxy(wrapper.sub, {
+      /**
+       * Bind subscribe operations to a specific collection name.
+       * @param {Function} target - wrapper.sub
+       * @param {string|symbol} prop - collection name
+       * @returns {Function|undefined}
+       */
       get(target, prop) {
         if (typeof prop === 'symbol') {
           return undefined;
@@ -133,11 +294,17 @@ export function createDBInterface(wrapper, store) {
         return target.bind(target, prop);
       }
     }),
-    get: createOperationProxy(wrapper.get, 'get', middleware, getDb),
+    get: createGetProxy(wrapper, registry, middleware, getDb),
     add: createOperationProxy(wrapper.create, 'add', middleware, getDb),
     set: createOperationProxy(wrapper.replace, 'set', middleware, getDb),
     del: createOperationProxy(wrapper.remove, 'del', middleware, getDb),
     pin: new Proxy(wrapper.cache, {
+      /**
+       * Bind cache operations to a specific collection name.
+       * @param {Function} target - wrapper.cache
+       * @param {string|symbol} prop - collection name
+       * @returns {Function|undefined}
+       */
       get(target, prop) {
         if (typeof prop === 'symbol') {
           return undefined;
@@ -202,6 +369,26 @@ export function createDBInterface(wrapper, store) {
       txnId = txnId || db._activeTxnId;
       return store.txnStatus(txnId);
     },
+
+    // ==================== Schema Registry ====================
+    /**
+     * Register a schema for a collection.
+     *
+     * Declaring a schema with a vector field auto-instantiates the per-
+     * collection VectorIndex and arms the indexing middleware so that
+     * subsequent add/set/del operations stay in sync.
+     *
+     * @param {string} collection
+     * @param {Object} schemaDef
+     * @returns {Object} db (chainable)
+     */
+    schema: (collection, schemaDef) => {
+      registry.declare(collection, schemaDef);
+      return db;
+    },
+
+    // Expose registry for advanced introspection (vector index stats, etc.)
+    _registry: registry,
 
     // ==================== Middleware API ====================
     // Access middleware system for plugins

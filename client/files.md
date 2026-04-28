@@ -3,7 +3,8 @@
 ```
 client/
 ├── index.js
-└── proxy.js
+├── proxy.js
+└── query-builder.js
 ```
 
 ## Files
@@ -30,11 +31,13 @@ Proxy-based API handlers with middleware integration.
 
 **Interface Methods:**
 - `db.sub.<type>(callback)` - Subscribe to changes
-- `db.get.<type>(where?, opts?)` - Get documents
+- `db.get.<type>(where?, opts?)` - Get documents (legacy callable form)
+- `db.get.<type>S.where(...).near(...)` - Chainable query builder (group form only)
 - `db.add.<type>(data, opts?)` - Create document
 - `db.set.<type>(data, opts?)` - Replace document
 - `db.del.<type>($ID, deletedBy?)` - Delete document
 - `db.pin.<type>(key, val, expire)` - Cache value
+- `db.schema(collection, schemaDef)` - Register a schema; auto-instantiates vector index if schema declares a vector field
 
 **Transaction Methods:**
 - `db.rec()` - Start transaction, returns txnId
@@ -50,4 +53,13 @@ Proxy-based API handlers with middleware integration.
 **Internal:**
 - `db._activeTxnId` - Current transaction ID
 - `db._store` - Storage adapter reference
+- `db._registry` - Schema registry instance (for advanced introspection)
 - `db.disconnect()` - Graceful shutdown
+
+### `query-builder.js`
+
+Chainable query builder used by the new `db.get.{collection}S.where(...).near(...)` surface. Immutable per-link chain (each chain method returns a new builder). Composes attribute filters with vector search by feeding `.where` predicates into the `VectorIndex.searchFiltered` traversal so filtering happens before k-truncation.
+
+**Exports:**
+- `QueryBuilder` class - chain methods: `where`, `near`, `limit`, `toArray`, `first`; thenable so `await builder` works.
+- `default` - Same as QueryBuilder
