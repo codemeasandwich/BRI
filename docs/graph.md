@@ -144,13 +144,69 @@ The GraphIndex maintains forward + inverse adjacency keyed by `(node, predicate)
 
 ---
 
+## Multi-hop expand (UC-G6)
+
+`entity.expand({...})` walks outward through an edge collection up to a hop budget, collecting reachable nodes, edges, and paths from the seed.
+
+```js
+const reach = await alice.expand({
+  via:        'kgTriple',         // edge collection (required)
+  hops:       2,                  // hop budget (default 1)
+  budget:     { results: 100, ms: 25 },
+  predicates: ['works_at', 'authored'],   // optional predicate whitelist
+  direction:  'out',              // 'out' | 'in' | 'both' (default 'out')
+  edgeFilter: (e) => !e.superseded_by_id  // optional per-edge predicate
+});
+
+reach.nodes              // hydrated entities reachable from alice
+reach.edges              // edge documents traversed
+reach.paths              // [[seedId, edgeId, nodeId, edgeId, nodeId, ...], ...]
+reach.complete           // false if a budget was hit
+reach.incompleteReason   // 'time' | 'results' | undefined
+```
+
+**Cycle handling.** A per-traversal visited-set on node $IDs guarantees BFS terminates on cyclic graphs. Edges aren't deduplicated across paths (a path-deduped result loses information).
+
+**Direction semantics.** `'out'` follows the from→to fields; `'in'` follows to→from; `'both'` picks whichever endpoint isn't the current node, which is the right behavior for symmetric edges (lexicalEdge co-occurrence) but produces both endpoints on traversal so the visited-set still terminates correctly.
+
+**Phantom adjacency.** If an edge $ID is in the GraphIndex but the underlying document was deleted (shouldn't happen given middleware sync, but the resilience contract gates it), the BFS skips silently rather than throwing.
+
+**Budget enforcement.** Time budgets are checked between hop iterations (not per-edge) so measurement overhead doesn't dominate small graphs. Results budget is checked after every node addition.
+
+---
+
+## Graph algorithms (UC-G5)
+
+`db.algo.{name}` is a separate namespace for parameter-rich algorithms over registered edge collections.
+
+### `db.algo.degree({...})`
+
+Degree centrality — for every node in `collection`, sum its incoming + outgoing edges in the edge collection `via`. Optionally weighted by a numeric edge attribute.
+
+```js
+const central = await db.algo.degree({
+  collection: 'kgEntity',          // node collection
+  via:        'kgTriple',          // edge collection (must be registered $edge)
+  weighted:   'co_occurrence_count',  // optional — sum this field; default counts
+  top:        50                    // optional top-k cap
+});
+// → [{ entity, degree }, ...] sorted by degree desc
+```
+
+Edge hydration is cached so an edge counted on both sides reads at most once. Phantom adjacency entries (id present but doc missing) are silently skipped per the UC-G5 resilience criterion.
+
+PPR (`db.algo.ppr`) is scoped for v3 per spec §6.3 / §7.5.
+
+---
+
 ## Limitations (v1)
 
-- **One-hop only.** `alice.works_at.founded_by` (multi-hop chaining) is not yet implemented.
 - **No supersession defaults.** `$supersession` field is recognized but predicate reads don't auto-filter by it; that comes with the chain-method slice.
 - **No confidence/provenance defaults.** Same — recognized in schema, not yet wired into reads.
 - **Polymorphic `'ref|string'` targets** are reserved for the next slice. v1 honors single-collection refs only.
 - **GraphIndex is in-memory only.** Adjacency is rebuilt from edge documents on first access after restart (via the existing per-write sync once schemas are re-declared). Persistent adjacency lands with the snapshot slice for graph state.
+- **No PPR.** `db.algo.ppr` is v3 work per spec §6.3.
+- **`.expand` edgeFilter is function-form only.** Object-form filters (with operators like `{$ne: ...}`) work via the shared compileFilter — but the expand surface accepts a function for now, so callers wanting operator filters compose `compileFilter(obj)` themselves.
 
 ---
 
