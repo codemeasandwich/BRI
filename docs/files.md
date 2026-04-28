@@ -4,6 +4,7 @@
 docs/
 ├── README.md
 ├── files.md
+├── aggregation.md
 ├── cascade.md
 ├── graph.md
 ├── indexes.md
@@ -27,6 +28,10 @@ End-user walkthrough of the vector-search surface (UC-V1 slice). Covers schema d
 ### `indexes.md`
 
 End-user walkthrough of secondary indexes. Covers the `$indexes` schema option (single-field and compound), how the QueryPlanner picks indexes, prefix matching semantics, bounded-hydration guarantees when combining `.where` with `.near`, mutation consistency, persistence behavior, and v1 limitations.
+
+### `aggregation.md`
+
+End-user walkthrough of aggregation primitives (UC-X3). Covers `.count` / `.distinct` terminals, the `.groupBy(field).count()` and `.groupBy(field).sum(field)` chains, `.having(filter)` post-aggregation filtering, the operator vocabulary ($gte, $gt, $lte, $lt, $ne, $in, $exists), how aggregation interacts with secondary indexes, and v1 limitations (no min/max/avg, no compose with .near, no multi-key groupBy).
 
 ### `cascade.md`
 
