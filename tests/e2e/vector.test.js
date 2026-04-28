@@ -179,3 +179,163 @@ describe('Vector Search (UC-V1)', () => {
     expect(none).toEqual([]);
   });
 });
+
+describe('Vector Persistence (Risk 1)', () => {
+  /**
+   * Each test in this describe owns its own data dir so we can reboot the
+   * process (simulated by createDB twice against the same directory) without
+   * cross-contamination from neighbours.
+   */
+  const PERSIST_DIMS = 8;
+
+  /**
+   * Spin up a db, run a callback, disconnect, return the result.
+   * Used to model "first boot" / "second boot" patterns in tests.
+   */
+  async function withDB(dir, fn) {
+    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
+    try {
+      return await fn(db);
+    } finally {
+      await db.disconnect();
+    }
+  }
+
+  test('vector index survives process restart via snapshot', async () => {
+    const dir = './test-data-vector-persist-1';
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+
+    let savedId, savedVec;
+    await withDB(dir, async (db) => {
+      db.schema('memoryArtifact', {
+        type:      { type: String, required: true },
+        embedding: { type: 'vector', dims: PERSIST_DIMS, required: false }
+      });
+      savedVec = makeVec('persist-1-target', PERSIST_DIMS);
+      const doc = await db.add.memoryArtifact({ type: 'fact', embedding: savedVec });
+      savedId = doc.$ID;
+      // Force a snapshot so the index is durable.
+      await db._store.createSnapshot();
+    });
+
+    // Second boot: same dir, no inserts. Search must still find the doc.
+    await withDB(dir, async (db) => {
+      db.schema('memoryArtifact', {
+        type:      { type: String, required: true },
+        embedding: { type: 'vector', dims: PERSIST_DIMS, required: false }
+      });
+      const [hit] = await db.get.memoryArtifactS.near(savedVec, 1);
+      expect(hit).toBeDefined();
+      expect(hit.$ID).toBe(savedId);
+      expect(hit.$cosine).toBeGreaterThan(0.9999);
+    });
+
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+  });
+
+  test('WAL replay reapplies inserts written after the snapshot', async () => {
+    const dir = './test-data-vector-persist-2';
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+
+    let preId, postId, preVec, postVec;
+    await withDB(dir, async (db) => {
+      db.schema('memoryArtifact', {
+        type:      { type: String, required: true },
+        embedding: { type: 'vector', dims: PERSIST_DIMS, required: false }
+      });
+      preVec = makeVec('persist-2-pre', PERSIST_DIMS);
+      preId = (await db.add.memoryArtifact({ type: 'fact', embedding: preVec })).$ID;
+      await db._store.createSnapshot();
+      // Now insert AFTER the snapshot so the doc only exists in the WAL.
+      postVec = makeVec('persist-2-post', PERSIST_DIMS);
+      postId = (await db.add.memoryArtifact({ type: 'fact', embedding: postVec })).$ID;
+    });
+
+    await withDB(dir, async (db) => {
+      db.schema('memoryArtifact', {
+        type:      { type: String, required: true },
+        embedding: { type: 'vector', dims: PERSIST_DIMS, required: false }
+      });
+      const [hitPre]  = await db.get.memoryArtifactS.near(preVec, 1);
+      const [hitPost] = await db.get.memoryArtifactS.near(postVec, 1);
+      expect(hitPre.$ID).toBe(preId);
+      expect(hitPost.$ID).toBe(postId);
+    });
+
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+  });
+
+  test('schema dim mismatch on reboot raises a diagnostic error', async () => {
+    const dir = './test-data-vector-persist-3';
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+
+    await withDB(dir, async (db) => {
+      db.schema('memoryArtifact', {
+        embedding: { type: 'vector', dims: 8, required: false }
+      });
+      await db.add.memoryArtifact({ embedding: makeVec('p3', 8) });
+      await db._store.createSnapshot();
+    });
+
+    // Reboot with the WRONG dims — must throw at schema declaration time.
+    await withDB(dir, async (db) => {
+      expect(() => {
+        db.schema('memoryArtifact', {
+          embedding: { type: 'vector', dims: 16, required: false }
+        });
+      }).toThrow(/drift.*dims=8.*dims=16/i);
+    });
+
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+  });
+
+  test('field rename on reboot raises a diagnostic error', async () => {
+    const dir = './test-data-vector-persist-4';
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+
+    await withDB(dir, async (db) => {
+      db.schema('memoryArtifact', {
+        embedding: { type: 'vector', dims: 8, required: false }
+      });
+      await db.add.memoryArtifact({ embedding: makeVec('p4', 8) });
+      await db._store.createSnapshot();
+    });
+
+    await withDB(dir, async (db) => {
+      expect(() => {
+        db.schema('memoryArtifact', {
+          // Same dims/metric but renamed field — auto-migration not supported.
+          vec: { type: 'vector', dims: 8, required: false }
+        });
+      }).toThrow(/rename|field/i);
+    });
+
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+  });
+
+  test('snapshot v2 from a no-vector boot still loads cleanly', async () => {
+    const dir = './test-data-vector-persist-5';
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+
+    // First boot: NO schema declared. Snapshot is v2.
+    await withDB(dir, async (db) => {
+      await db.add.user({ name: 'Alice' });
+      await db._store.createSnapshot();
+    });
+
+    // Second boot: declare a vector schema for a different collection.
+    // The v2 snapshot loader skips the vector path; we expect a fresh empty
+    // index for memoryArtifact, not an error.
+    await withDB(dir, async (db) => {
+      db.schema('memoryArtifact', {
+        embedding: { type: 'vector', dims: 8, required: false }
+      });
+      const v = makeVec('p5-after', 8);
+      await db.add.memoryArtifact({ embedding: v });
+      const [hit] = await db.get.memoryArtifactS.near(v, 1);
+      expect(hit).toBeDefined();
+    });
+
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+  });
+});
