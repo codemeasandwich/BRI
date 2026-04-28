@@ -1,7 +1,38 @@
 /**
- * @file Chainable query builder for Bri reads
+ * @file Chainable query builder for Bri reads (the surface behind
+ * `db.get.{collection}S.where(...).near(...)`).
  *
- * Backs the new chainable form `db.get.{collection}S.where(...).near(...)`.
+ * Role in the system:
+ *   This module is the user-facing chain syntax for everything except the
+ *   legacy callable form (`db.get.userS(...)` — preserved by proxy.js).
+ *   Every read primitive that has chain ergonomics — .where, .near, .match,
+ *   .limit, .count, .distinct, .groupBy, .first, .toArray — terminates here
+ *   or in a sibling module that this one delegates to.
+ *
+ * Dependencies (what this relies on):
+ *   - engine/query-planner.js  → QueryPlanner.planWhere turns .where into
+ *                                a {useIndex, candidateIds, residualFilter}
+ *                                shape; index-aware paths use the candidate
+ *                                set, scan paths use the residual filter
+ *   - engine/filter-compiler.js → indirectly, via QueryPlanner; also via
+ *                                GroupedQueryBuilder.having
+ *   - engine/vector-index.js   → for .near via registry.vectorIndex; the
+ *                                builder never imports it directly
+ *   - client/grouped-query-builder.js → produced by .groupBy(field)
+ *   - client/match-engine.js   → produced by .match() and .combine();
+ *                                extracted to keep this file under the
+ *                                260-source-line gate
+ *
+ * Consumers (what relies on this):
+ *   - client/proxy.js          → the hybrid get-proxy returns a bound chain
+ *                                method when CHAIN_METHODS contains the
+ *                                accessed name; otherwise falls back to the
+ *                                legacy callable. Adding a new chain method
+ *                                requires updating CHAIN_METHODS in proxy.js
+ *   - engine/predicate-proxy.js → uses the same metadata-attach convention
+ *                                ($cosine / $score / $matchHits / $provenance)
+ *                                so chain-method-attached fields and predicate-
+ *                                attached fields read alike at the call site
  *
  * Index-aware execution:
  *   When a `.where(filter)` is present, the builder consults the schema
@@ -12,36 +43,58 @@
  *   after hydration. When no index applies, behavior matches the previous
  *   full-scan path so collections without $indexes are unaffected.
  *
- * Design:
- *   - Immutable per-link chain: every chain method returns a NEW builder so
- *     that intermediate references don't leak state across two parallel
+ * Design choices and why:
+ *   - **Immutable per-link chain.** Every chain method returns a NEW builder
+ *     so that intermediate references don't leak state across two parallel
  *     callers. The cost is small object allocations; the benefit is no
- *     surprise mutation across awaits.
- *   - Thenable: defining a .then() on the builder lets `await builder` work
- *     directly without an explicit .toArray(). Deliberate — it matches the
- *     spec's "executes when awaited" language and keeps simple call sites
- *     readable.
- *   - Vector + filter composition: when both .where and .near are present,
- *     the filter is applied DURING the vector search via predicate (UC-V1
- *     acceptance criterion 3), not as a post-filter.
+ *     surprise mutation across awaits — a common foot-gun in fluent APIs.
+ *   - **Thenable.** Defining a .then() on the builder lets `await builder`
+ *     work directly without an explicit .toArray(). Deliberate — matches
+ *     the spec's "executes when awaited" language; the spec example
+ *     `await db.get.{coll}S.near(v, 5)` works because of this.
+ *   - **Vector + filter composition during traversal.** When both .where
+ *     and .near are present, the filter is applied DURING the vector
+ *     search via predicate (UC-V1 acceptance criterion 3), not as a post-
+ *     filter. Otherwise k-truncation could drop eligible candidates and
+ *     return fewer than k results when more were available.
+ *   - **Heavy execution paths delegate to sibling modules.** ._executeMatchPlan
+ *     and ._executeCombinedPlan are one-liners here; the actual scan +
+ *     scoring + blending lives in client/match-engine.js because (a) it
+ *     keeps this file under the pre-commit hook's 260-source-line gate
+ *     and (b) match scoring is a v2 expansion target (TF-IDF, fuzzy,
+ *     persistent FTS index) — isolating it from the chain ergonomics
+ *     means future scoring changes don't risk the chain semantics.
  *
  * Backwards compatibility:
- *   This module is consumed by the proxy in client/proxy.js. Legacy callers
- *   that invoke `db.get.userS()` (with parens) bypass the builder entirely —
- *   the proxy keeps that path. The builder is constructed lazily on the
- *   first chain-method access so legacy code pays zero overhead.
+ *   Legacy callers that invoke `db.get.userS()` (with parens) bypass the
+ *   builder entirely — proxy.js keeps that path. The builder is constructed
+ *   lazily on the first chain-method access so legacy code pays zero
+ *   overhead.
  *
- * Score metadata:
- *   .near attaches $cosine and $score onto each result entity as
- *   non-enumerable properties. This lets the existing reactive-entity layer
- *   continue to use Object.keys/Object.assign for diffing without picking up
- *   transient ranking metadata.
+ * Search-result metadata convention:
+ *   Chain methods that produce ranked results attach non-enumerable fields
+ *   to each entity:
+ *     - $cosine     vector similarity (set by .near and .combine)
+ *     - $score      composite score (set by .combine; equals $cosine when
+ *                   only .near contributed)
+ *     - $matchHits  {field, value} for the substring that matched (.match
+ *                   and .combine)
+ *     - $provenance optional metadata from the predicate proxy's
+ *                   .withProvenance chain (separate path, but same
+ *                   non-enumerable convention)
+ *   Non-enumerability keeps the reactive-entity layer's Object.keys /
+ *   Object.assign diffing clean — these transient ranking fields don't
+ *   leak into persistence.
  *
- * @implements UC-V1 (subset: .where + .near + .limit + .toArray + .first)
+ * @implements UC-V1 (.where + .near + .limit + .toArray + .first),
+ *             UC-X3 (.count + .distinct + .groupBy via GroupedQueryBuilder),
+ *             UC-X4 (.match — substring FTS scan),
+ *             UC-V3 (.combine — weighted alias + vector blend)
  */
 
 import { QueryPlanner } from '../engine/query-planner.js';
 import { GroupedQueryBuilder } from './grouped-query-builder.js';
+import { executeMatch, executeCombined } from './match-engine.js';
 
 // compileFilter lives in engine/filter-compiler.js — shared with the
 // query planner and the GroupedQueryBuilder so .where, .having, and the
@@ -133,6 +186,57 @@ export class QueryBuilder {
   }
 
   /**
+   * Substring match on string-or-array fields (UC-X4). Pass a single-field
+   * filter object `{fieldName: 'query'}`; the field's value is checked for
+   * case-insensitive substring containment (or, if the field is an array,
+   * containment of the substring in any element). Optional `k` caps results.
+   *
+   * v1 behavior: binary score {0, 1} per doc; equal-score ties broken by
+   * `updatedAt` desc (recency). v2 will add stemming + stop-word filtering.
+   * Composes with `.where` for prefilter and with `.near` + `.combine` for
+   * weighted alias+vector blending (UC-V3).
+   *
+   * @param {Object} stringFilter - Single-field substring filter
+   * @param {number} [k] - Optional top-k cap
+   * @returns {QueryBuilder}
+   */
+  match(stringFilter, k) {
+    if (!stringFilter || typeof stringFilter !== 'object') {
+      throw new Error('QueryBuilder.match: requires a {field: substring} object');
+    }
+    return this._next({ match: { filter: stringFilter, k } });
+  }
+
+  /**
+   * Weighted blend of `.match` and `.near` scores into a single ranked
+   * result set (UC-V3). REQUIRES both `.match` and `.near` to have been
+   * declared earlier in the chain — without both, calling `.toArray()`
+   * throws with a diagnostic.
+   *
+   * Each result is scored as:
+   *   $score = weights.alias * matchScore + weights.vector * cosine
+   * with matchScore ∈ {0, 1} and cosine in [-1, 1] (typically [0, 1] for
+   * normalized embeddings). Docs missing one component (e.g., no embedding)
+   * still rank via the other — `null_embedding_eligible_via_alias`.
+   *
+   * Result entities carry `$score`, `$cosine`, and `$matchHits` so callers
+   * can audit the blend.
+   *
+   * @param {Object} weights - {alias: number, vector: number}
+   * @returns {QueryBuilder}
+   */
+  combine(weights) {
+    if (!weights || typeof weights !== 'object'
+        || typeof weights.alias !== 'number'
+        || typeof weights.vector !== 'number') {
+      throw new Error(
+        'QueryBuilder.combine: requires {alias: number, vector: number}'
+      );
+    }
+    return this._next({ combine: weights });
+  }
+
+  /**
    * Cap result count. Redundant when .near specifies k, useful for filter-
    * only queries.
    * @param {number} n
@@ -159,13 +263,33 @@ export class QueryBuilder {
    */
   async toArray() {
     const { collection, wrapper, registry } = this._ctx;
-    const { filter, near, limit } = this._state;
+    const { filter, near, match, combine, limit } = this._state;
     const planner = new QueryPlanner(registry);
     const plan = planner.planWhere(collection, filter);
 
-    if (near) {
-      return this._executeVectorPlan(plan, near, limit);
+    // Routing matrix:
+    //   .combine present → must have .match AND .near; weighted blend
+    //   .match + .near (no combine) → ambiguous; throw with diagnostic
+    //   .match alone → substring scan with recency tiebreak
+    //   .near alone → existing vector path
+    //   .where only → existing where path
+    if (combine) {
+      if (!match || !near) {
+        throw new Error(
+          'QueryBuilder.combine: requires both .match(...) and .near(...) ' +
+          'to have been declared earlier in the chain.'
+        );
+      }
+      return this._executeCombinedPlan(plan, match, near, combine, limit);
     }
+    if (match && near) {
+      throw new Error(
+        'QueryBuilder: .match and .near in the same chain require .combine ' +
+        'to specify how their scores blend. Add .combine({alias, vector}).'
+      );
+    }
+    if (match) return this._executeMatchPlan(plan, match, limit);
+    if (near)  return this._executeVectorPlan(plan, near, limit);
     return this._executeWherePlan(plan, limit);
   }
 
@@ -268,6 +392,55 @@ export class QueryBuilder {
    * Execute a `.where`-only plan (no `.near`).
    *
    * @param {Object} plan
+   * @param {number|undefined} limit
+   * @returns {Promise<Array<Object>>}
+   */
+  /**
+   * Execute a `.match`-only chain. Delegates to match-engine.executeMatch
+   * which encapsulates the substring scan, scoring, recency tiebreak, and
+   * $matchHits attribution. Kept as a one-liner here so the dispatcher in
+   * toArray() reads cleanly; the heavy lifting and rationale live in the
+   * helper module.
+   *
+   * @param {Object} plan - From QueryPlanner.planWhere
+   * @param {Object} match - {filter, k}
+   * @param {number|undefined} limit
+   * @returns {Promise<Array<Object>>}
+   */
+  async _executeMatchPlan(plan, match, limit) {
+    const { collection, wrapper } = this._ctx;
+    return executeMatch({ plan, match, limit, collection, wrapper });
+  }
+
+  /**
+   * Execute a `.match` + `.near` + `.combine` chain. Delegates to
+   * match-engine.executeCombined which handles the candidate-set blend
+   * (matchScore + cosine via the VectorIndex), the
+   * null_embedding_eligible_via_alias case, and the $score / $cosine /
+   * $matchHits audit-trail metadata.
+   *
+   * @param {Object} plan
+   * @param {Object} match
+   * @param {Object} near
+   * @param {Object} weights - {alias, vector}
+   * @param {number|undefined} limit
+   * @returns {Promise<Array<Object>>}
+   */
+  async _executeCombinedPlan(plan, match, near, weights, limit) {
+    const { collection, registry, wrapper } = this._ctx;
+    return executeCombined({
+      plan, match, near, weights, limit, collection, registry, wrapper
+    });
+  }
+
+  /**
+   * Execute a `.where`-only chain (no `.near` / `.match` / `.combine`).
+   * If the planner found an index hit, hydrates only the candidate set and
+   * applies the residual filter post-hydration. Otherwise falls back to
+   * the engine's group-get over the full collection with the filter as a
+   * residual JS predicate.
+   *
+   * @param {Object} plan - From QueryPlanner.planWhere
    * @param {number|undefined} limit
    * @returns {Promise<Array<Object>>}
    */

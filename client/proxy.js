@@ -1,18 +1,67 @@
 /**
- * @file Client proxy handlers
+ * @file Client proxy handlers — the user-facing routing layer.
  *
- * Creates the db.get.userS, db.add.user syntax via Proxy.
- * Now with middleware support for plugins and extensions.
+ * Builds the db.get / db.add / db.set / db.del / db.sub / db.pin namespaces
+ * over the engine wrapper, plus the higher-level surfaces (db.schema,
+ * db.cascade, db.algo, db.use, db.middleware, db.rec/fin/nop/pop). This is
+ * the file that determines what syntax users see; the engine wrapper
+ * underneath sees no Proxy magic.
  *
- * Vector + schema additions:
- *   - db.schema(collection, def) registers a schema and (when the schema
- *     declares a vector field) instantiates a per-collection VectorIndex.
- *   - db.get.{collection}S becomes a hybrid proxy: invoked with parens it
- *     preserves the legacy group-call behavior; accessed without parens it
- *     materializes a chainable QueryBuilder.
- *   - vectorIndexMiddleware (engine/vector-middleware.js) keeps the index
- *     synchronized with add/set/del operations on schema-registered
- *     collections; wired in below alongside transactionMiddleware.
+ * Role in the system:
+ *   - Sits between the user code and the engine wrapper. Adds:
+ *       1. CRUD-by-collection-name routing (`db.add.{collection}` etc.)
+ *       2. The middleware chain (validation, txn injection, vector + graph
+ *          + secondary index sync)
+ *       3. The hybrid get-proxy (legacy callable + new chainable builder)
+ *       4. The schema registry binding so the proxy can route predicate
+ *          access on reactive entities through to the engine
+ *       5. Lifecycle bindings (rec/fin/nop/pop) wired through txn-lifecycle
+ *
+ * Dependencies (what this relies on):
+ *   - engine/constants.js          → collectionNamePattern (rejects bad names)
+ *   - engine/middleware.js         → createMiddleware + transactionMiddleware
+ *   - engine/schema-registry.js    → createSchemaRegistry (vector + secondary +
+ *                                    graph + cascade + lifecycle state)
+ *   - engine/vector-middleware.js  → vectorIndexMiddleware (sync indexes on
+ *                                    add/set/del; pre-fetches old docs for
+ *                                    edge / secondary-index removals)
+ *   - engine/cascade.js            → createCascade (db.cascade.{scope})
+ *   - engine/graph-algo.js         → createAlgo (db.algo.degree, future PPR)
+ *   - client/query-builder.js      → QueryBuilder (chainable .where/.near/...)
+ *   - client/txn-lifecycle.js      → createTxnLifecycle (rec/fin/nop/pop with
+ *                                    vector-index commit/rollback hooks)
+ *
+ * Consumers (what relies on this):
+ *   - client/index.js              → createDB calls createDBInterface to build
+ *                                    the user-facing db object
+ *
+ * Hybrid get-proxy mechanics:
+ *   - `db.get.user('USER_x')`        → legacy single-fetch (function call)
+ *   - `db.get.userS()`               → legacy group fetch (preserved)
+ *   - `db.get.userS.where(...)`      → chainable QueryBuilder (new)
+ *   - `db.get.userS.near(vec, k)`    → chainable QueryBuilder (new)
+ *
+ * Implementation: an inner Proxy over the legacy callable. The Proxy
+ * intercepts property access to detect chainable method names — when the
+ * accessed name is in CHAIN_METHODS, a builder is allocated lazily and
+ * the requested method is bound to it. apply() on the same proxy preserves
+ * the legacy invocation form. Unknown property names return undefined so
+ * non-chain accesses don't accidentally allocate builders.
+ *
+ * Adding a new chain method:
+ *   1. Add the method to QueryBuilder (or a sibling like GroupedQueryBuilder
+ *      / match-engine).
+ *   2. Add the method's name string to CHAIN_METHODS below.
+ *   3. Confirm it doesn't collide with the schema-author-facing reserved
+ *      list (engine/schema-edge-declare.js → RESERVED_PROXY_NAMES) — adding
+ *      to the reserved list is a breaking change requiring a major bump.
+ *
+ * Predicate proxy on reactive entities:
+ *   The wrapper returned by createEngine is decorated here with
+ *   `_registry` and `_getDb` so engine/reactive.js can route entity property
+ *   access through engine/predicate-proxy.js. The decoration is one-way —
+ *   wrapper consumers see the additions; the reactive layer reads them but
+ *   does not depend on the client/ folder.
  */
 
 import { collectionNamePattern } from '../engine/constants.js';
@@ -160,9 +209,28 @@ function createOperationProxy(operation, opName, middleware, getDb) {
 function createGetProxy(wrapper, registry, middleware, getDb) {
   // Names that should construct a QueryBuilder when accessed on a group
   // collection (one ending with 'S'). This is the only chainable surface.
+  /*
+   * Names that should construct a QueryBuilder when accessed on a group
+   * collection (one ending with 'S'). This is the only chainable surface;
+   * any other property access on the group proxy returns undefined so we
+   * don't accidentally allocate a builder for unrelated reads.
+   *
+   * Each entry must:
+   *   - exist on QueryBuilder (or be threaded through to a sibling like
+   *     GroupedQueryBuilder / match-engine via QueryBuilder method)
+   *   - NOT collide with the schema-author-facing reserved list
+   *     (engine/schema-edge-declare.js → RESERVED_PROXY_NAMES) — that list
+   *     governs predicate names; this list governs collection-level chain
+   *     methods. They overlap deliberately because the builder and the
+   *     predicate proxy share the same chain ergonomics.
+   *
+   * Routing matrix per implementation: see toArray() in query-builder.js
+   * and the executeMatch / executeCombined helpers in match-engine.js.
+   */
   const CHAIN_METHODS = new Set([
     'where', 'near', 'limit', 'toArray', 'first', 'then',
-    'count', 'distinct', 'groupBy'
+    'count', 'distinct', 'groupBy',
+    'match', 'combine'
   ]);
 
   return new Proxy(function() {}, {

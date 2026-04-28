@@ -6,6 +6,7 @@ client/
 ├── proxy.js
 ├── query-builder.js
 ├── grouped-query-builder.js
+├── match-engine.js
 └── txn-lifecycle.js
 ```
 
@@ -74,7 +75,7 @@ Transaction lifecycle bindings (rec/fin/nop/pop/txnStatus) for the public db int
 Chainable query builder used by the new `db.get.{collection}S.where(...).near(...)` surface. Immutable per-link chain (each chain method returns a new builder). Composes attribute filters with vector search by feeding `.where` predicates into the `VectorIndex.searchFiltered` traversal so filtering happens before k-truncation. Honors active transactions: when `db._activeTxnId` is set, `.near` calls `searchInTxn` (committed + pending merge) and propagates `txnId` to hydration. `.near` accepts an optional opts object (`{txnId: null}` to force-bypass the active txn, `{txnId: '<id>'}` to target a specific txn) for advanced query routing. `.count()`, `.distinct(field)`, and `.groupBy(field)` (UC-X3) provide aggregation primitives; the GroupedQueryBuilder it returns supports `.count()`, `.sum(field)`, `.having(filter)` with the shared filter compiler.
 
 **Exports:**
-- `QueryBuilder` class - chain methods: `where`, `near`, `limit`, `toArray`, `first`, `count`, `distinct`, `groupBy`; thenable so `await builder` works.
+- `QueryBuilder` class - chain methods: `where`, `near`, `match`, `combine`, `limit`, `toArray`, `first`, `count`, `distinct`, `groupBy`; thenable so `await builder` works.
 - `default` - Same as QueryBuilder
 
 ### `grouped-query-builder.js`
@@ -84,3 +85,11 @@ GroupedQueryBuilder produced by `QueryBuilder.groupBy(field)`. Supports `.count(
 **Exports:**
 - `GroupedQueryBuilder` class - chain methods: `count`, `sum`, `having`, `toArray`; thenable
 - `default` - Same as GroupedQueryBuilder
+
+### `match-engine.js`
+
+Substring-FTS scan + weighted-blend execution helpers (UC-X4 / UC-V3). Backs the `.match()` and `.combine()` chain methods on `QueryBuilder`. Two free functions — `executeMatch` for `.match`-only chains (binary substring score + recency tiebreak + `$matchHits` attribution) and `executeCombined` for `.match` + `.near` + `.combine` chains (blended `weights.alias * matchScore + weights.vector * cosine` with `$score` / `$cosine` / `$matchHits` audit trail; honors `null_embedding_eligible_via_alias` by treating missing embeddings as `cosine = 0`). Extracted from query-builder.js to keep that file under the 260-source-line gate AND to isolate the v2 scoring expansion target (TF-IDF, fuzzy match, persistent FTS index) from the chain ergonomics.
+
+**Exports:**
+- `executeMatch({plan, match, limit, collection, wrapper})` - `.match`-only execution
+- `executeCombined({plan, match, near, weights, limit, collection, registry, wrapper})` - blended execution
