@@ -41,6 +41,8 @@ Proxy-based API handlers with middleware integration.
 - `db.pin.<type>(key, val, expire)` - Cache value
 - `db.schema(collection, schemaDef)` - Register a schema; auto-instantiates vector index if schema declares a vector field
 - `db.cascade.{scope}(id, opts?)` - Schema-scoped bulk delete (UC-X2); operates only on collections that declared a field with cascadeOn for the matching scope. `db.cascade.byField({collections, filter})` is the explicit-list escape hatch.
+- `db.algo.degree({collection, via, weighted?, top?})` - Degree centrality over a registered edge collection (UC-G5). PPR scoped for v3.
+- `entity.expand({via, hops, budget, predicates, direction, edgeFilter})` - Parameterized BFS from the entity (UC-G6); see graph.md.
 
 **Transaction Methods:**
 - `db.rec()` - Start transaction, returns txnId

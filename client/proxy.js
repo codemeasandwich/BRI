@@ -20,6 +20,7 @@ import { createMiddleware, transactionMiddleware } from '../engine/middleware.js
 import { createSchemaRegistry } from '../engine/schema-registry.js';
 import { vectorIndexMiddleware } from '../engine/vector-middleware.js';
 import { createCascade } from '../engine/cascade.js';
+import { createAlgo } from '../engine/graph-algo.js';
 import { QueryBuilder } from './query-builder.js';
 import { createTxnLifecycle } from './txn-lifecycle.js';
 
@@ -362,6 +363,11 @@ export function createDBInterface(wrapper, store) {
     // that scope. Per §10 this surface is non-negotiable; collections
     // without the matching cascadeOn flag stay invisible to it.
     cascade: createCascade({ registry, getDb }),
+
+    // ==================== Graph algorithms (UC-G5) ====================
+    // db.algo.{name}(args) — parameterized graph algorithms over registered
+    // edge collections. v1 ships degree centrality; PPR is scoped for v3.
+    algo: createAlgo({ registry, getDb }),
 
     // Expose registry for advanced introspection (vector index stats, etc.)
     _registry: registry,

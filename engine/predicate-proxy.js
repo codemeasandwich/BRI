@@ -21,6 +21,7 @@
  */
 
 import { type2Short } from '../engine/types.js';
+import { expand as runExpand } from './graph-expand.js';
 
 /**
  * Decide whether a property access on an entity should be resolved by the
@@ -57,6 +58,19 @@ export function resolvePredicateAccess(target, name, registry, wrapper) {
   if (name === 'related') {
     if (!subjectCollection) return undefined;
     return makeRelatedAccessor({ target, registry, wrapper, subjectCollection });
+  }
+
+  // 'expand' is a parameterized BFS — return a callable that runs the
+  // graph-expand engine bound to this seed entity. Distinct from .related
+  // (which is fixed at one hop, all predicates) — expand takes hops,
+  // budget, predicates, direction, edgeFilter.
+  if (name === 'expand') {
+    return (opts = {}) => runExpand({
+      ...opts,
+      seedId: target.$ID,
+      registry,
+      wrapper
+    });
   }
 
   // Declared fields on the entity are not predicates.
