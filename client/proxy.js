@@ -256,9 +256,9 @@ function createGetProxy(wrapper, registry, middleware, getDb) {
 export function createDBInterface(wrapper, store) {
   // Create middleware system
   const middleware = createMiddleware();
-  // Schema registry for vector indexes and validation. Always present —
-  // collections without a registered schema simply produce no-op lookups.
-  const registry = createSchemaRegistry();
+  // Schema registry for vector indexes and validation. Store reference
+  // enables reuse of persisted indices loaded from snapshot during recovery.
+  const registry = createSchemaRegistry(store);
 
   // Register default transaction middleware
   middleware.use(transactionMiddleware());

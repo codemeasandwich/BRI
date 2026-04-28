@@ -28,9 +28,14 @@ import { VectorIndex } from './vector-index.js';
 /**
  * Create a schema registry instance.
  *
+ * @param {Object} [store] - Storage adapter; when provided, the registry
+ *   consults its persisted vector-index cache on declare() so that a process
+ *   restart restores the index from snapshot. When omitted, behaves as before
+ *   (fresh index per declare). The store is also notified of new schemas so
+ *   future snapshots persist them.
  * @returns {Object} Registry with declare/get/vectorIndex/validate/vectorFieldOf
  */
-export function createSchemaRegistry() {
+export function createSchemaRegistry(store) {
   // collection name → schema definition POJO
   const schemas = new Map();
   // collection name → VectorIndex instance (only for collections with a vector field)
@@ -67,24 +72,63 @@ export function createSchemaRegistry() {
     /**
      * Register a schema for a collection.
      *
-     * Side effects: if the schema declares a vector field, a VectorIndex is
-     * created for that collection and stored under the same key. The index is
-     * empty initially; the auto-indexing middleware populates it on add/set
-     * and clears entries on del.
+     * Side effects when the schema declares a vector field:
+     *   1. If the store has a persisted entry for this collection (loaded from
+     *      a snapshot during recovery), we reuse its index and validate that
+     *      the new declaration matches the persisted dims/metric/field.
+     *      Drift is rejected with a diagnostic error so the user can either
+     *      revert the schema change or rebuild the index explicitly.
+     *   2. Otherwise we create a fresh VectorIndex and (when a store is
+     *      attached) register it with the store so future snapshots persist
+     *      it and WAL replays can update it.
      *
      * @param {string} collection - Collection name (matches db.add.{collection})
      * @param {Object} schemaDef  - Field definitions; see utils/schema
      * @returns {void}
-     * @throws {Error} on multiple vector fields
+     * @throws {Error} on multiple vector fields or drift against persisted index
      */
     declare(collection, schemaDef) {
       schemas.set(collection, schemaDef);
       const vec = findVectorField(schemaDef);
-      if (vec) {
-        vectorFields.set(collection, vec.name);
-        vectorIndices.set(collection, new VectorIndex({
-          dims: vec.dims, metric: vec.metric
-        }));
+      if (!vec) return;
+      vectorFields.set(collection, vec.name);
+
+      const persisted = store && typeof store.getVectorEntry === 'function'
+        ? store.getVectorEntry(collection)
+        : undefined;
+
+      if (persisted) {
+        // Drift detection. Renaming the field is a structural change we
+        // cannot transparently reconcile because the persisted index is
+        // keyed off the old field; refuse and require explicit action.
+        const ps = persisted.schema;
+        if (ps.dims !== vec.dims || (ps.metric || 'cosine') !== vec.metric) {
+          throw new Error(
+            `Vector index drift on '${collection}': persisted index has ` +
+            `dims=${ps.dims}/metric=${ps.metric || 'cosine'}, ` +
+            `but new schema declares dims=${vec.dims}/metric=${vec.metric}. ` +
+            `Revert the schema change or delete the data directory to rebuild.`
+          );
+        }
+        if (ps.field !== vec.name) {
+          throw new Error(
+            `Vector field rename on '${collection}': persisted index targets ` +
+            `field '${ps.field}', but new schema declares field '${vec.name}'. ` +
+            `Rename in the schema is not auto-migrated; either keep the old ` +
+            `field name or delete the data directory to rebuild.`
+          );
+        }
+        vectorIndices.set(collection, persisted.index);
+      } else {
+        const fresh = new VectorIndex({ dims: vec.dims, metric: vec.metric });
+        vectorIndices.set(collection, fresh);
+        if (store && typeof store.registerVectorIndex === 'function') {
+          store.registerVectorIndex(
+            collection,
+            { field: vec.name, dims: vec.dims, metric: vec.metric },
+            fresh
+          );
+        }
       }
     },
 
