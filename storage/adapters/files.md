@@ -24,6 +24,9 @@ Main InHouseAdapter class coordinating all storage components.
 - `registerVectorIndex(collection, schema, index)` - Register a per-collection VectorIndex + schema for snapshot persistence and WAL-replay sync
 - `getVectorEntry(collection)` - Look up persisted vector entry (loaded from snapshot)
 - `vectorEntries()` - Iterate all registered vector entries (used by snapshot serialization)
+- `bindSecondaryIndexManager(mgr)` - Bind the schema registry's SecondaryIndexManager so snapshots can persist its state
+- `getSecondaryIndexState()` - Return pre-loaded secondary index state (from snapshot) for the registry to consume on first use
+- `setPendingSecondaryState(state)` - Capture secondary index state during recovery
 
 ### `inhouse-crud.js`
 
@@ -57,5 +60,5 @@ Recovery and snapshot methods.
 - `recover()` - Load snapshot + replay WAL; routes vector ops in WAL records into the loaded vector indices
 - `loadSnapshotV2(docs, cols)` - Load v2 format
 - `loadVectorState(serializedIndices, schemas)` - Load v3 vector indices and schemas into the store's vector registry
-- `getSnapshotState()` - Prepare snapshot data; emits v3 if any vector schemas are registered, v2 otherwise
+- `getSnapshotState()` - Prepare snapshot data; emits v3 if any vector or secondary index state exists, v2 otherwise
 - `createSnapshot()` - Create snapshot and rotate WAL

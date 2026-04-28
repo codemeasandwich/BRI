@@ -16,6 +16,7 @@ e2e/
 ├── errors.test.js
 ├── memory.test.js
 ├── vector.test.js
+├── secondary-index.test.js
 ├── coverage-gaps.test.js
 └── final-coverage.test.js
 ```
@@ -62,7 +63,10 @@ Error handling - invalid inputs, missing data, constraint violations.
 Memory management - eviction, cold tier promotion.
 
 ### `vector.test.js`
-Vector search end-to-end (UC-V1) - top-k cosine similarity, filter composition, dimension validation, score metadata, legacy call-form back-compat.
+Vector search end-to-end (UC-V1) - top-k cosine similarity, filter composition, dimension validation, score metadata, legacy call-form back-compat, persistence (snapshot v3 + WAL replay), drift detection.
+
+### `secondary-index.test.js`
+Secondary indexes (engine portion of UC-X1) - SortedIndex unit roundtrips, $indexes schema declaration, compound prefix matching, non-prefix scan fallback, mutation consistency on insert/update/delete, undeclared-field rejection, persistence across restart, bounded hydration when combined with .near.
 
 ### `coverage-gaps.test.js`
 Additional test cases for uncovered code paths.

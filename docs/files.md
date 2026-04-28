@@ -4,6 +4,7 @@
 docs/
 ├── README.md
 ├── files.md
+├── indexes.md
 └── vector.md
 ```
 
@@ -19,4 +20,8 @@ This index — explains the responsibility of every file in this directory.
 
 ### `vector.md`
 
-End-user walkthrough of the vector-search surface (UC-V1 slice). Covers schema declaration, the chainable `db.get.{collection}S.where(...).near(...)` API, result metadata (`$cosine`, `$score`), error modes, backwards compatibility with the legacy callable form, and v1 limitations with pointers to v2 follow-ups.
+End-user walkthrough of the vector-search surface (UC-V1 slice). Covers schema declaration, the chainable `db.get.{collection}S.where(...).near(...)` API, result metadata (`$cosine`, `$score`), error modes, backwards compatibility with the legacy callable form, persistence (snapshot v3 + WAL replay + drift detection), composition with secondary indexes, and v1 limitations with pointers to v2 follow-ups.
+
+### `indexes.md`
+
+End-user walkthrough of secondary indexes. Covers the `$indexes` schema option (single-field and compound), how the QueryPlanner picks indexes, prefix matching semantics, bounded-hydration guarantees when combining `.where` with `.near`, mutation consistency, persistence behavior, and v1 limitations.

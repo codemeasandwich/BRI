@@ -168,9 +168,31 @@ A v2 snapshot does not need migration; the next snapshot that has a vector schem
 
 ---
 
+## Combining `.where` with `.near`
+
+For the lowest latency, declare a secondary index on the field your `.where` filters by. When the index covers the filter, the vector search runs against a bounded candidate set and only the final `k` hits are hydrated.
+
+```js
+db.schema('memoryArtifact', {
+  type:      { type: String, required: true },
+  embedding: { type: 'vector', dims: 1536 },
+  $indexes:  [['type']],
+});
+
+// Hydration is O(k), not O(collection).
+const facts = await db.get.memoryArtifactS
+  .where({ type: 'fact' })
+  .near(query, 5);
+```
+
+See [docs/indexes.md](indexes.md) for the full secondary-index surface.
+
+---
+
 ## See also
 
 - [`engine/vector-index.js`](../engine/vector-index.js) — index implementation
 - [`engine/schema-registry.js`](../engine/schema-registry.js) — schema → index wiring
 - [`client/query-builder.js`](../client/query-builder.js) — chainable read API
 - [`tests/e2e/vector.test.js`](../tests/e2e/vector.test.js) — UC-V1 acceptance suite
+- [`docs/indexes.md`](indexes.md) — secondary indexes for bounded `.where`

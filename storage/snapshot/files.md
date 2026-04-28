@@ -26,5 +26,6 @@ Snapshot manager for periodic state dumps.
 - `collections` - All collections
 - `vectorIndices` - (v3) base64-packed VectorIndex buffers, keyed by collection
 - `vectorSchemas` - (v3) `{collection: {field, dims, metric}}` for drift detection on reboot
+- `secondaryIndexes` - (v3) POJO from `SecondaryIndexManager.serialize()` carrying declared compound indexes
 
 The manager itself is format-agnostic: state fields are passed through verbatim alongside `version` and `timestamp`. Each writer (storage adapter) decides which keys make sense at which version.

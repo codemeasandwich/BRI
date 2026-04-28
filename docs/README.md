@@ -7,5 +7,6 @@ Capability-area documentation for Bri features. Implementation reference lives n
 | Document | Covers |
 |---|---|
 | [vector.md](vector.md) | Vector search — schema declaration, chainable query builder (`.where().near()`), result metadata, errors, v1 limitations |
+| [indexes.md](indexes.md) | Secondary indexes — `$indexes` schema option, planner behavior, bounded hydration when combined with `.near` |
 
 More capability-area docs (graph, transactions, cascade, aggregation, FTS, proxy conventions, migration, observability) land alongside their respective implementation slices.

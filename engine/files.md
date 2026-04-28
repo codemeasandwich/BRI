@@ -13,6 +13,8 @@ engine/
 ├── reactive.js
 ├── middleware.js
 ├── schema-registry.js
+├── secondary-index.js
+├── query-planner.js
 ├── vector-index.js
 └── vector-middleware.js
 ```
@@ -111,7 +113,7 @@ Middleware plugin system.
 Per-database schema registry. Holds schemas declared via `db.schema('name', def)` and instantiates the per-collection VectorIndex when a schema declares a vector field. On startup, consults the storage adapter's persisted vector entries (loaded from snapshot during recovery) and reuses the deserialized index when present, or creates a fresh one otherwise. Validates dims/metric/field drift against persisted state and refuses incompatible re-declarations with a diagnostic error. Single source of truth for schema-driven features (validation, vector indexing, future secondary indexes / refs / cascade scopes).
 
 **Exports:**
-- `createSchemaRegistry(store)` - Returns registry with `declare`, `get`, `vectorIndex`, `vectorFieldOf`, `validate`. The optional `store` argument enables persistence-aware declares.
+- `createSchemaRegistry(store)` - Returns registry with `declare`, `get`, `vectorIndex`, `vectorFieldOf`, `validate`, `secondaryIndexManager`. The optional `store` argument enables persistence-aware declares (vector and secondary indexes).
 
 ### `vector-index.js`
 
@@ -123,8 +125,24 @@ In-process vector index for k-NN search. v1 uses a brute-force linear scan backe
 
 ### `vector-middleware.js`
 
-Middleware that keeps the per-collection VectorIndex in sync with add/set/del operations and enforces schemas registered through the registry. Validation runs before next() (invalid writes short-circuit before storage); index sync runs after next() (so ctx.result.$ID is populated).
+Middleware that keeps the per-collection VectorIndex AND any declared secondary indexes in sync with add/set/del operations and enforces schemas registered through the registry. Validation runs before next() (invalid writes short-circuit before storage); index sync runs after next() (so ctx.result.$ID is populated). For set/del on collections with secondary indexes, the middleware pre-fetches the old document so SortedIndex can remove the OLD compound key before inserting the NEW.
 
 **Exports:**
 - `vectorIndexMiddleware(registry)` - Returns the middleware function
 - `default` - Same as vectorIndexMiddleware
+
+### `secondary-index.js`
+
+Schema-declared compound indexes used to bound `.where` lookups. `SortedIndex` holds parallel arrays of (sortedKey, ids[]) entries with binary-search lookup; `SecondaryIndexManager` owns one or more SortedIndex instances per collection, routes write/lookup calls, and computes the best-fit candidate set for a filter via `candidatesFor(collection, filter)`. Persisted as POJO inside snapshot v3.
+
+**Exports:**
+- `SecondaryIndexManager` (default) - Per-database registry of compound indexes
+- `SortedIndex` - Single sorted compound index
+- `compoundKey(values)` - Canonical JSON-encoded key
+
+### `query-planner.js`
+
+Turns a `.where(filter)` declaration into an execution plan that picks between a secondary-index lookup and a fallback full-collection scan. Returns a uniform `{useIndex, candidateIds, residualFilter}` shape consumed by QueryBuilder.
+
+**Exports:**
+- `QueryPlanner` class - `planWhere(collection, filter)` returns the plan
