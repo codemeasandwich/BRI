@@ -52,12 +52,15 @@ export class SnapshotManager {
 
     try {
       const timestamp = Date.now();
+      // Copy the entire state and overlay timestamp + version. The previous
+      // implementation cherry-picked specific keys, which silently dropped
+      // any new top-level fields (e.g., vectorIndices, vectorSchemas in
+      // snapshot v3). Treat snapshot manager as format-agnostic — the
+      // store decides what goes in each version.
       const snapshot = {
+        ...state,
         version: state.version || 1,
-        walLine: state.walLine,
-        timestamp: new Date(timestamp),
-        documents: state.documents,
-        collections: state.collections
+        timestamp: new Date(timestamp)
       };
 
       const tempPath = this.snapshotPath + '.tmp';

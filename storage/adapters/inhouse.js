@@ -35,6 +35,60 @@ export class InHouseAdapter {
     this.pubsub = null;
     this.txnManager = null;
     this.keyManager = null;
+
+    // Vector registry: collection name -> { schema, index }.
+    //
+    // Why on the store (not the schema-registry): vector indices outlive the
+    // db wrapper that wraps the store, and they need to be populated at
+    // recovery time before the user has called db.schema(). The schema-
+    // registry (engine/schema-registry.js) consults this map on declare()
+    // and shares the same VectorIndex instance for runtime queries.
+    //
+    // Schema shape: { field: 'embedding', dims: 1536, metric: 'cosine' }.
+    this._vectorRegistry = new Map();
+  }
+
+  /**
+   * Register a vector index + schema for a collection.
+   *
+   * Called by:
+   *   - schema-registry.declare() at runtime when a vector field is declared
+   *   - inhouse-recovery.js when loading a snapshot that has vector data
+   *
+   * The store retains the index reference so it can serialize on the next
+   * snapshot and so WAL replay can update it before any user-side schema is
+   * declared. Subsequent declares for the same collection MUST pass an index
+   * that matches the persisted dims/metric — the registry enforces drift
+   * detection up the stack.
+   *
+   * @param {string} collection - Collection name (e.g. 'memoryArtifact')
+   * @param {Object} schema - Vector schema; { field: string, dims: number, metric: string }
+   * @param {Object} index - VectorIndex instance
+   */
+  registerVectorIndex(collection, schema, index) {
+    this._vectorRegistry.set(collection, { schema, index });
+  }
+
+  /**
+   * Look up the persisted vector entry for a collection. Returns the entry
+   * (with `.schema` and `.index`) if cached, or undefined when this collection
+   * has no persisted vector data.
+   *
+   * @param {string} collection
+   * @returns {{schema:Object, index:Object}|undefined}
+   */
+  getVectorEntry(collection) {
+    return this._vectorRegistry.get(collection);
+  }
+
+  /**
+   * Iterate all registered vector entries. Used by snapshot serialization
+   * to capture every collection's index + schema in one pass.
+   *
+   * @returns {Iterable<[string, {schema:Object, index:Object}]>}
+   */
+  vectorEntries() {
+    return this._vectorRegistry.entries();
   }
 
   /**

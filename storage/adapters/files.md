@@ -21,6 +21,9 @@ Main InHouseAdapter class coordinating all storage components.
 - `subscribe(channel, callback)` - Pub/sub subscribe
 - `unsubscribe(channel, callback)` - Pub/sub unsubscribe
 - `getStats()` - Get stats from all subsystems
+- `registerVectorIndex(collection, schema, index)` - Register a per-collection VectorIndex + schema for snapshot persistence and WAL-replay sync
+- `getVectorEntry(collection)` - Look up persisted vector entry (loaded from snapshot)
+- `vectorEntries()` - Iterate all registered vector entries (used by snapshot serialization)
 
 ### `inhouse-crud.js`
 
@@ -51,7 +54,8 @@ Transaction API delegation.
 Recovery and snapshot methods.
 
 **Methods:**
-- `recover()` - Load snapshot + replay WAL
+- `recover()` - Load snapshot + replay WAL; routes vector ops in WAL records into the loaded vector indices
 - `loadSnapshotV2(docs, cols)` - Load v2 format
-- `getSnapshotState()` - Prepare snapshot data
+- `loadVectorState(serializedIndices, schemas)` - Load v3 vector indices and schemas into the store's vector registry
+- `getSnapshotState()` - Prepare snapshot data; emits v3 if any vector schemas are registered, v2 otherwise
 - `createSnapshot()` - Create snapshot and rotate WAL

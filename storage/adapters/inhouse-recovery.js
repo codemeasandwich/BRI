@@ -1,10 +1,25 @@
 /**
  * @file Recovery and snapshot methods for InHouseAdapter
+ *
+ * Snapshot format versions:
+ *   v1 - flat documents/collections POJOs with JSS-serialized doc bodies
+ *   v2 - same as v1 but with reattached toString/$ID prototypes
+ *   v3 - adds vectorIndices (base64 of VectorIndex.serialize()) and
+ *        vectorSchemas ({ collection -> { field, dims, metric } }) so a
+ *        process restart restores vector capability without re-embedding
+ *
+ * Backwards compatibility:
+ *   v1/v2 snapshots load as before. The first snapshot written after
+ *   startup is v3 (no migration step required). Reading a v3 snapshot in a
+ *   build that doesn't know v3 would still work for the documents/collections
+ *   keys; the vectorIndices key would simply be ignored by older code.
  */
 
 import path from 'path';
 import { WALReader } from '../wal/reader.js';
 import JSS from '../../utils/jss/index.js';
+import { VectorIndex } from '../../engine/vector-index.js';
+import { type2Short } from '../../engine/types.js';
 
 /**
  * Creates recovery and snapshot methods for InHouseAdapter
@@ -21,7 +36,10 @@ export function createRecoveryMethods() {
       let startLine = 0;
 
       if (snapshot) {
-        if (snapshot.version === 2) {
+        if (snapshot.version === 3) {
+          this.loadSnapshotV2(snapshot.documents || {}, snapshot.collections || {});
+          this.loadVectorState(snapshot.vectorIndices || {}, snapshot.vectorSchemas || {});
+        } else if (snapshot.version === 2) {
           this.loadSnapshotV2(snapshot.documents || {}, snapshot.collections || {});
         } else {
           this.hotTier.loadDocuments(snapshot.documents || {});
@@ -40,15 +58,56 @@ export function createRecoveryMethods() {
 
       await this.wal.init();
 
+      // Build a prefix→collection lookup from the registered schemas. Used by
+      // WAL replay to route doc updates into the right vector index without
+      // a per-record string parse of the schema map.
+      const prefixToCollection = new Map();
+      for (const [collection, _entry] of this._vectorRegistry) {
+        prefixToCollection.set(type2Short(collection), collection);
+      }
+      /**
+       * Route a WAL set record into the matching collection's vector index.
+       * @param {string} key - Document $ID
+       * @param {string} value - JSS-encoded document body
+       */
+      const applyVectorWrite = (key, value) => {
+        // Extract collection from the $ID prefix; bail if no vector entry.
+        const prefix = key.split('_')[0];
+        const collection = prefixToCollection.get(prefix);
+        if (!collection) return;
+        const entry = this._vectorRegistry.get(collection);
+        if (!entry) return;
+        const doc = JSS.parse(value);
+        const vec = doc[entry.schema.field];
+        if (Array.isArray(vec)) {
+          entry.index.add(key, vec);
+        }
+      };
+
+      /**
+       * Route a WAL delete record into the matching collection's vector index.
+       * @param {string} key - Document $ID being deleted
+       */
+      const applyVectorDelete = (key) => {
+        const prefix = key.split('_')[0];
+        const collection = prefixToCollection.get(prefix);
+        if (!collection) return;
+        const entry = this._vectorRegistry.get(collection);
+        if (!entry) return;
+        entry.index.remove(key);
+      };
+
       const encryptionKey = this.keyManager?.getKey() || null;
       const walReader = new WALReader(path.join(this.config.dataDir, 'wal'), { encryptionKey });
       await walReader.replay(startLine, {
         onSet: (key, value) => {
           this.hotTier.set(key, value, false);
+          applyVectorWrite(key, value);
         },
         onDelete: (key) => {
           this.hotTier.delete(key);
           this.coldTier.deleteDoc(key).catch(() => {});
+          applyVectorDelete(key);
         },
         onRename: (oldKey, newKey) => {
           this.hotTier.rename(oldKey, newKey);
@@ -63,6 +122,40 @@ export function createRecoveryMethods() {
 
       await this.txnManager.recover();
       console.log('InHouse Store: Recovered');
+    },
+
+    /**
+     * Restore vector indices and schemas from a v3 snapshot payload.
+     *
+     * Each entry in `serializedIndices` is a base64-encoded buffer produced by
+     * VectorIndex.serialize(); we decode and reconstruct via deserialize().
+     * The schema POJOs hold the field name, dims, and metric so WAL replay
+     * (and later db.schema() validation) can act on them.
+     *
+     * @param {Object} serializedIndices - { collection -> base64 string }
+     * @param {Object} schemas - { collection -> {field, dims, metric} }
+     */
+    loadVectorState(serializedIndices, schemas) {
+      for (const [collection, schema] of Object.entries(schemas)) {
+        const b64 = serializedIndices[collection];
+        if (!b64) {
+          // Schema declared but no index buffer — should not happen in
+          // practice, but tolerate by registering an empty index that
+          // matches the persisted shape.
+          const empty = new VectorIndex({
+            dims: schema.dims, metric: schema.metric || 'cosine'
+          });
+          this._vectorRegistry.set(collection, { schema, index: empty });
+          continue;
+        }
+        const buf = Buffer.from(b64, 'base64');
+        const index = VectorIndex.deserialize(buf);
+        this._vectorRegistry.set(collection, { schema, index });
+      }
+      const count = Object.keys(schemas).length;
+      if (count > 0) {
+        console.log(`InHouse Store: Loaded vector state for ${count} collection(s)`);
+      }
     },
 
     /**
@@ -103,19 +196,36 @@ export function createRecoveryMethods() {
     },
 
     /**
-     * Get current state for snapshot
+     * Get current state for snapshot.
+     *
+     * Always emits v3 when any vector data is registered, otherwise v2.
+     * Why conditional: v3 readers handle v2 snapshots fine, but a v2 snapshot
+     * can't carry vector state — so the version reflects the actual payload.
+     *
      * @returns {Object} Snapshot state
      */
     async getSnapshotState() {
       const encryptionKey = this.keyManager?.getKey() || null;
       const walReader = new WALReader(path.join(this.config.dataDir, 'wal'), { encryptionKey });
       const walLine = await walReader.getLineCount();
-      return {
-        version: 2,
+      const hasVectorState = this._vectorRegistry.size > 0;
+      const base = {
+        version: hasVectorState ? 3 : 2,
         walLine,
         documents: this.hotTier.getAllDocumentsForSnapshot(JSS.parse),
         collections: this.hotTier.getAllCollections()
       };
+      if (hasVectorState) {
+        const vectorIndices = {};
+        const vectorSchemas = {};
+        for (const [collection, entry] of this._vectorRegistry) {
+          vectorIndices[collection] = entry.index.serialize().toString('base64');
+          vectorSchemas[collection] = entry.schema;
+        }
+        base.vectorIndices = vectorIndices;
+        base.vectorSchemas = vectorSchemas;
+      }
+      return base;
     },
 
     /**
