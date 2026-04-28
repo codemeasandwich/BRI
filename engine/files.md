@@ -121,7 +121,7 @@ Middleware plugin system.
 Per-database schema registry. Holds schemas declared via `db.schema('name', def)` and instantiates the per-collection VectorIndex when a schema declares a vector field. On startup, consults the storage adapter's persisted vector entries (loaded from snapshot during recovery) and reuses the deserialized index when present, or creates a fresh one otherwise. Validates dims/metric/field drift against persisted state and refuses incompatible re-declarations with a diagnostic error. Single source of truth for schema-driven features (validation, vector indexing, future secondary indexes / refs / cascade scopes).
 
 **Exports:**
-- `createSchemaRegistry(store)` - Returns registry with `declare`, `get`, `vectorIndex`, `vectorFieldOf`, `validate`, `secondaryIndexManager`, `vectorIndices`, `graphIndex`, `edgeSpec`, `collectionForPrefix`, `predicateEdge`, `inversePredicateEdge`, `predicatesForSubject`, `cascadeEntriesFor`. Reserved-name collision check fires at `declare` time when a `$edge.predicates` entry collides with the frozen proxy-method list. `cascadeOn`-flagged fields are registered into the per-scope lookup consumed by `db.cascade`. The optional `store` argument enables persistence-aware declares.
+- `createSchemaRegistry(store)` - Returns registry with `declare`, `get`, `vectorIndex`, `vectorFieldOf`, `validate`, `secondaryIndexManager`, `vectorIndices`, `graphIndex`, `edgeSpec`, `collectionForPrefix`, `predicateEdge`, `inversePredicateEdge`, `predicatesForSubject`, `cascadeEntriesFor`, `lifecycleFieldsOf`. Reserved-name collision check fires at `declare` time when a `$edge.predicates` entry collides with the frozen proxy-method list. `cascadeOn`-flagged fields and `$supersession`/`$confidence`/`$provenance` flags are registered for `db.cascade` and the predicate proxy's chain methods respectively; `$`-flag values are validated against declared field names so a typo throws at schema load instead of silently filtering nothing. The optional `store` argument enables persistence-aware declares.
 
 ### `vector-index.js`
 
@@ -202,7 +202,7 @@ Graph algorithms namespace (UC-G5) — `createAlgo({registry, getDb})` returns `
 Resolves property accesses on reactive entities to predicate-aware accessors when the schema's `$edge` block registered a matching predicate. `resolvePredicateAccess(target, name, registry, wrapper)` returns a PredicateAccessor (callable for writes, thenable for reads, `.limit(n)` for top-k, `.$` for edge documents) when the access is a registered predicate; an InverseProxy when name is `'inverse'`; a RelatedAccessor (thenable + `.$`) when name is `'related'`; or undefined otherwise so the reactive proxy falls through to field access. Writes route through `db.add.{edgeCollection}` so middleware (validation + graph-index sync) fires identically to direct user calls.
 
 **Exports:**
-- `resolvePredicateAccess(target, name, registry, wrapper)` - The resolution algorithm — also routes `expand` to graph-expand.js for parameterized BFS from the entity
+- `resolvePredicateAccess(target, name, registry, wrapper)` - The resolution algorithm — also routes `expand` to graph-expand.js, `chain` to a self-ref walker (with cycle + maxDepth detection), and exposes `.history` / `.confidence(t)` / `.withProvenance` chain methods on the PredicateAccessor when the edge collection's schema declares the corresponding $supersession / $confidence / $provenance flags
 
 ### `schema-edge-declare.js`
 

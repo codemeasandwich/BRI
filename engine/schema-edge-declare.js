@@ -120,6 +120,57 @@ export function registerPredicateRouting(predicatesBySubject, edge, edgeCollecti
 }
 
 /**
+ * Collect (collection, field) entries for every cascadeOn-flagged field in
+ * a schema. Multiple cascadeOn fields per collection are allowed and each
+ * registers independently — e.g. cascadeOn: 'session' AND cascadeOn:
+ * 'tenant' on different fields lets cascade.session and cascade.tenant
+ * both target the collection.
+ *
+ * @param {string} collection
+ * @param {Object} schemaDef
+ * @returns {Array<{scope:string, collection:string, field:string}>}
+ */
+export function collectCascadeEntries(collection, schemaDef) {
+  const out = [];
+  for (const [field, decl] of Object.entries(schemaDef)) {
+    if (field.startsWith('$')) continue;
+    if (decl && typeof decl.cascadeOn === 'string') {
+      out.push({ scope: decl.cascadeOn, collection, field });
+    }
+  }
+  return out;
+}
+
+/**
+ * Collect the lifecycle field names a schema declares via $supersession /
+ * $confidence / $provenance. Validates each named field is actually
+ * declared on the collection — a typo would otherwise silently make the
+ * supersession filter / confidence threshold / provenance attach a no-op.
+ *
+ * @param {string} collection - Collection name (for error messages)
+ * @param {Object} schemaDef
+ * @returns {Object|undefined} {supersession?, confidence?, provenance?}
+ *   or undefined when no $-flag is set
+ * @throws {Error} if a $-flag names an undeclared field
+ */
+export function collectLifecycleFields(collection, schemaDef) {
+  const lifecycle = {};
+  for (const flag of ['$supersession', '$confidence', '$provenance']) {
+    const fieldName = schemaDef[flag];
+    if (typeof fieldName !== 'string') continue;
+    if (!Object.prototype.hasOwnProperty.call(schemaDef, fieldName)) {
+      throw new Error(
+        `Schema '${collection}' declares ${flag}: '${fieldName}' but ` +
+        `'${fieldName}' is not a declared field. Available fields: ` +
+        `${Object.keys(schemaDef).filter(k => !k.startsWith('$')).join(', ')}.`
+      );
+    }
+    lifecycle[flag.slice(1)] = fieldName;
+  }
+  return Object.keys(lifecycle).length > 0 ? lifecycle : undefined;
+}
+
+/**
  * Mirror of registerPredicateRouting for the object-side. Used by inverse
  * predicate reads (`acme.inverse.works_at`) — given the entity's collection
  * and a predicate name, the registry can find the matching edge collection

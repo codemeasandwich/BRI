@@ -30,7 +30,9 @@ import { type2Short } from './types.js';
 import {
   buildEdgeSpec,
   registerPredicateRouting,
-  registerInversePredicateRouting
+  registerInversePredicateRouting,
+  collectLifecycleFields,
+  collectCascadeEntries
 } from './schema-edge-declare.js';
 
 /**
@@ -44,40 +46,37 @@ import {
  * @returns {Object} Registry with declare/get/vectorIndex/validate/vectorFieldOf
  */
 export function createSchemaRegistry(store) {
-  // collection name → schema definition POJO
+  /*
+   * Per-database state Maps:
+   *   schemas              collection name → schema definition POJO
+   *   vectorIndices        collection name → VectorIndex (vector-bearing collections only)
+   *   vectorFields         collection name → vector field name (fast middleware lookup)
+   *   graphIndex           shared adjacency index, populated as $edge schemas declare
+   *   collectionByPrefix   $ID-prefix → collection (predicate-proxy uses this to
+   *                        resolve an entity's collection from its $ID at access time)
+   *   edgeCollections      collection → enriched edge spec (kept here so cross-schema
+   *                        collisions can be detected without round-tripping through
+   *                        the index layer)
+   *   predicatesBySubject  subject-collection → Map<predicate, edgeCollection>
+   *                        (forward routing for alice.works_at → kgTriple)
+   *   predicatesByObject   mirror of above for inverse routing (acme.inverse.works_at)
+   *   cascadeByScope       scope name → [{collection, field}, ...] for db.cascade.{scope}
+   *                        (empty when schema did not opt in via cascadeOn)
+   *   lifecycleFields      collection → {supersession?, confidence?, provenance?},
+   *                        drives default-supersession filter and chain-method
+   *                        availability (§2.2: chain methods exist iff the matching
+   *                        $-flag is declared)
+   */
   const schemas = new Map();
-  // collection name → VectorIndex instance (only for collections with a vector field)
   const vectorIndices = new Map();
-  // collection name → vector field name (cached for fast middleware lookup)
   const vectorFields = new Map();
-  // Per-database graph index. Populated lazily as edge collections
-  // declare themselves via $edge in their schema. Shared across the whole
-  // database — predicate proxy and middleware consume the same instance.
   const graphIndex = new GraphIndex();
-  // Reverse map: $ID prefix (e.g. 'KGEN') -> collection name. Used by the
-  // predicate proxy to resolve an entity's collection from its $ID at
-  // property-access time. Populated alongside declare().
   const collectionByPrefix = new Map();
-  // collection -> { from, to, predicate, predicates } registered for the
-  // edge — kept in the registry (in addition to graphIndex.edgeSpecFor) so
-  // collisions across edge schemas can be detected without round-tripping
-  // through the index layer.
   const edgeCollections = new Map();
-  // Subject collection -> Map<predicate, edgeCollection>. Used by the
-  // predicate proxy to find the right edge collection when alice.works_at
-  // is accessed: alice's collection is kgEntity, predicate is works_at,
-  // so the edge collection is whatever was registered with that pair.
   const predicatesBySubject = new Map();
-  // Object collection -> Map<predicate, edgeCollection>. Mirror of the
-  // above used by inverse reads — `acme.inverse.works_at` resolves through
-  // this map because acme is the TO side of the edge, not the FROM.
   const predicatesByObject = new Map();
-
-  // Cascade scope name (e.g. 'session') -> array of {collection, field}.
-  // Populated as schemas declare fields with the cascadeOn option. Empty
-  // for collections that don't opt in — db.cascade.{scope}(id) on those
-  // collections is a no-op, preserving the §10 two-store invariant.
   const cascadeByScope = new Map();
+  const lifecycleFields = new Map();
 
   // Per-database secondary-index manager. Populated lazily when a schema
   // declares $indexes; the registry hands out a single shared instance so
@@ -166,19 +165,17 @@ export function createSchemaRegistry(store) {
         registerInversePredicateRouting(predicatesByObject, edge, collection, predicates);
       }
 
-      // Scan for cascadeOn-flagged fields. Each match registers
-      // (collection, field) under the named scope so cascade.{scope}(id)
-      // knows where to look. Multiple cascadeOn fields per collection are
-      // allowed (e.g. cascadeOn: 'session' AND cascadeOn: 'tenant'); each
-      // registers independently.
-      for (const [field, decl] of Object.entries(schemaDef)) {
-        if (field.startsWith('$')) continue;
-        if (decl && typeof decl.cascadeOn === 'string') {
-          const scope = decl.cascadeOn;
-          if (!cascadeByScope.has(scope)) cascadeByScope.set(scope, []);
-          cascadeByScope.get(scope).push({ collection, field });
-        }
+      // cascadeOn flagged fields: helper validates + emits; we just file.
+      for (const { scope, ...entry } of collectCascadeEntries(collection, schemaDef)) {
+        if (!cascadeByScope.has(scope)) cascadeByScope.set(scope, []);
+        cascadeByScope.get(scope).push(entry);
       }
+
+      // Capture lifecycle-field flags ($supersession / $confidence /
+      // $provenance). Validation lives in collectLifecycleFields so a
+      // typo in the schema fails at db.schema time, not silently at read.
+      const lifecycle = collectLifecycleFields(collection, schemaDef);
+      if (lifecycle) lifecycleFields.set(collection, lifecycle);
 
       // Process $indexes — a malformed $indexes spec must throw BEFORE we
       // touch the vector index. Each entry is an array of field names;
@@ -385,6 +382,22 @@ export function createSchemaRegistry(store) {
      */
     cascadeEntriesFor(scope) {
       return cascadeByScope.get(scope) || [];
+    },
+
+    /**
+     * Look up lifecycle-field names for a collection. Returns an object
+     * with optional `supersession`, `confidence`, `provenance` keys mapping
+     * to the declared field names; undefined when no $-flag is set.
+     *
+     * Drives default supersession filtering on predicate reads and the
+     * conditional availability of .history / .confidence(t) / .withProvenance
+     * chain methods on the PredicateAccessor.
+     *
+     * @param {string} collection
+     * @returns {Object|undefined} {supersession?, confidence?, provenance?}
+     */
+    lifecycleFieldsOf(collection) {
+      return lifecycleFields.get(collection);
     }
   };
 }
