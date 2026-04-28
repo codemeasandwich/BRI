@@ -20,11 +20,15 @@
  * @implements UC-V1 §6.2 (HNSW upgrade / wire-format compatibility)
  */
 import { jest } from '@jest/globals';
+import fs from 'fs/promises';
+import path from 'path';
+import { createDB } from '../../client/index.js';
 import { VectorIndex } from '../../engine/vector-index.js';
 import {
   cosine, packIndex, unpackIndex,
   SERIALIZATION_FORMAT_VERSION, SERIALIZATION_FORMAT_VERSION_V1
 } from '../../engine/vector-index-codec.js';
+import JSS from '../../utils/jss/index.js';
 
 const DIMS = 8;
 
@@ -186,5 +190,119 @@ describe('VectorIndex codec — v1 → v2 backwards compatibility', () => {
     expect(idx._size).toBe(0);
     expect(idx._entryPoint).toBe(-1);
     expect(idx.search(makeVec('q'), 5)).toEqual([]);
+  });
+});
+
+describe('VectorIndex codec — full DB lifecycle v1 → v2 upgrade', () => {
+  /**
+   * End-to-end variant of the codec compatibility tests above. Writes a
+   * real snapshot.jss file to disk with a v1-format vector buffer
+   * embedded inside, boots createDB against that data dir, and asserts
+   * the search path returns the persisted vectors. This exercises:
+   *   - SnapshotManager.loadLatest reading the file
+   *   - inhouse-recovery.loadVectorState base64-decoding + dispatching
+   *   - VectorIndex.deserialize routing v1 → rebuildTopology
+   *   - schema-registry.declare reusing the persisted index instance
+   *   - QueryBuilder.near + searchFiltered hitting the rebuilt graph
+   * Without this gate, a regression in any of those steps would only
+   * surface in production — synthetic-buffer tests above don't exercise
+   * SnapshotManager or the recovery dispatch.
+   */
+  const E2E_DIR = './test-data-vector-v1-upgrade';
+  const E2E_DIMS = 8;
+
+  /**
+   * Build a populated VectorIndex, downgrade its serialized buffer to
+   * v1 (no topology section), and return the v1 buffer.
+   */
+  function buildV1Buffer(items) {
+    const src = new VectorIndex({ dims: E2E_DIMS, seed: 5 });
+    for (const { id, vec } of items) src.add(id, vec);
+    return asV1Buffer(src);
+  }
+
+  /**
+   * Synthesize a fresh snapshot.jss file from scratch with a v1-format
+   * vector index buffer for one collection. We bypass createSnapshot
+   * because that always emits v2; we want to model an old database
+   * directory that pre-dates the HNSW upgrade.
+   */
+  async function writeV1Snapshot(dir, collection, schema, ids, vecs, docs) {
+    await fs.mkdir(dir, { recursive: true });
+    const items = ids.map((id, i) => ({ id, vec: vecs[i] }));
+    const v1Buf = buildV1Buffer(items);
+    // Use the same JSS writer the production SnapshotManager uses.
+    // Format: snapshot v3 carries vectorIndices + vectorSchemas.
+    // Documents map: every id maps to a doc body containing the embedding
+    // and any extra metadata so middleware/lookup can resolve by $ID.
+    const documents = {};
+    for (let i = 0; i < ids.length; i++) {
+      documents[ids[i]] = docs[i];
+    }
+    const collections = {};
+    collections[collection] = ids.slice();
+    const state = {
+      version: 3,
+      walLine: 0,
+      documents,
+      collections,
+      vectorIndices: { [collection]: v1Buf.toString('base64') },
+      vectorSchemas: { [collection]: { field: 'embedding', dims: E2E_DIMS, metric: 'cosine' } }
+    };
+    const snapshotPath = path.join(dir, 'snapshot.jss');
+    await fs.writeFile(snapshotPath, JSS.stringify(state), 'utf8');
+  }
+
+  beforeEach(async () => {
+    await fs.rm(E2E_DIR, { recursive: true, force: true }).catch(() => {});
+  });
+
+  afterEach(async () => {
+    await fs.rm(E2E_DIR, { recursive: true, force: true }).catch(() => {});
+  });
+
+  test('boot reads v1 snapshot and search returns persisted vectors', async () => {
+    // Construct a 6-doc dataset and write it as a v1 snapshot file.
+    const N = 6;
+    const ids = [];
+    const vecs = [];
+    const docs = [];
+    // Collection prefix is type2Short('memoryArtifact') = 'MEAR'.
+    // We must use IDs that match Bri's id format so the prefix→collection
+    // routing works in middleware lookup paths.
+    for (let i = 0; i < N; i++) {
+      const id = `MEAR_v1up${String(i).padStart(2, '0')}a`;
+      const vec = makeVec(`v1upgrade-${i}`);
+      ids.push(id);
+      vecs.push(vec);
+      docs.push({ $ID: id, type: 'fact', embedding: vec });
+    }
+    await writeV1Snapshot(E2E_DIR, 'memoryArtifact', { field: 'embedding', dims: E2E_DIMS },
+      ids, vecs, docs);
+
+    // Boot the DB; the recovery path will read the v1 buffer, log the
+    // rebuild, and reconstruct the HNSW topology before db.schema runs.
+    const db = await createDB({ storeConfig: { dataDir: E2E_DIR, maxMemoryMB: 64 } });
+    db.schema('memoryArtifact', {
+      type:      { type: String, required: true },
+      embedding: { type: 'vector', dims: E2E_DIMS, required: false }
+    });
+
+    // Search for each persisted vector — must return its own ID at top.
+    for (let i = 0; i < N; i++) {
+      const hits = await db.get.memoryArtifactS.near(vecs[i], 1).toArray();
+      expect(hits[0].$ID).toBe(ids[i]);
+      expect(hits[0].$cosine).toBeGreaterThan(0.9999);
+    }
+
+    // Verify the next snapshot is v2 (the codec emits the current format).
+    await db._store.createSnapshot();
+    await db.disconnect();
+    // Read the snapshot.jss back and verify the embedded vector buffer
+    // version field is now 2 (not 1).
+    const snapText = await fs.readFile(path.join(E2E_DIR, 'snapshot.jss'), 'utf8');
+    const snap = JSS.parse(snapText);
+    const upgraded = Buffer.from(snap.vectorIndices.memoryArtifact, 'base64');
+    expect(upgraded.readUInt32LE(4)).toBe(SERIALIZATION_FORMAT_VERSION);
   });
 });

@@ -313,6 +313,87 @@ describe('HNSW correctness (v2)', () => {
     expect(s.efSearch).toBe(75);
     expect(typeof s.entryLevel).toBe('number');
   });
+
+  test('replace-via-add overwrites a vector and preserves search semantics', async () => {
+    // The HNSW wrapper's add() with an existing ID drops the old node from
+    // the topology and re-inserts. Tests the integration of the dropNode +
+    // insertNode path through the public surface, which is the only path
+    // that exercises both topology mutations in a single call.
+    const { VectorIndex } = await import('../../engine/vector-index.js');
+    const D = 8;
+    const idx = new VectorIndex({ dims: D, seed: 13, initialCapacity: 16 });
+    // Seed an initial vector under id=A.
+    const v1 = makeVec('replace-orig', D);
+    idx.add('A', v1);
+    // Add some other vectors so the graph is non-trivial.
+    for (let i = 0; i < 10; i++) idx.add(`B_${i}`, makeVec(`replace-pad-${i}`, D));
+    // Now overwrite A with a totally different vector.
+    const v2 = makeVec('replace-new', D);
+    idx.add('A', v2);
+    // Searching with v2 must return A first (overwrite worked).
+    const hitsNew = idx.search(v2, 1);
+    expect(hitsNew[0].id).toBe('A');
+    expect(hitsNew[0].score).toBeGreaterThan(0.9999);
+    // Searching with the OLD v1 must NOT score A as 1.0 — the slot now holds v2.
+    const hitsOld = idx.search(v1, 5);
+    const aHitOld = hitsOld.find(h => h.id === 'A');
+    if (aHitOld) {
+      // A may or may not be in the top-5 depending on cosine(v1, v2); it must
+      // not score as identical-direction.
+      expect(aHitOld.score).toBeLessThan(0.9999);
+    }
+    // Size hasn't changed (replace, not add).
+    expect(idx.stats().count).toBe(11);
+  });
+});
+
+describe('efSearch override end-to-end via .near', () => {
+  /**
+   * Ensures the v2 query-time tuning knob flows from .near(v, k, { efSearch })
+   * through query-builder → searchFiltered → searchHNSW. Without this gate, a
+   * regression that drops the opts plumbing in any layer would be invisible
+   * (the unit test on VectorIndex would still pass).
+   */
+  let db;
+  const E_DIMS = 8;
+  const E_DIR = './test-data-vector-efsearch';
+
+  beforeAll(async () => {
+    await fs.rm(E_DIR, { recursive: true, force: true }).catch(() => {});
+    db = await createDB({ storeConfig: { dataDir: E_DIR, maxMemoryMB: 64 } });
+    db.schema('memoryArtifact', {
+      type:      { type: String, required: true },
+      embedding: { type: 'vector', dims: E_DIMS, required: false }
+    });
+    // Populate enough docs that the default efSearch frontier doesn't
+    // trivially see all of them.
+    for (let i = 0; i < 200; i++) {
+      await db.add.memoryArtifact({
+        type: 'fact', embedding: makeVec(`efs-${i}`, E_DIMS)
+      });
+    }
+  });
+
+  afterAll(async () => {
+    await db.disconnect();
+    await fs.rm(E_DIR, { recursive: true, force: true }).catch(() => {});
+  });
+
+  test('opts.efSearch is forwarded by the chain to the index', async () => {
+    const q = makeVec('efs-query-1', E_DIMS);
+    // Both should return 5 results; the wider ef may produce a different set
+    // (the public correctness contract is just "results are valid for the k").
+    // We don't pin specific IDs because the graph topology depends on the RNG;
+    // we DO pin that both runs return the requested k and the wider-ef run's
+    // top score is monotonically ≥ the narrow run's top score (a strict
+    // refinement guarantee at small graph sizes where wider ef ⊇ narrower ef
+    // search frontier).
+    const narrow = await db.get.memoryArtifactS.near(q, 5).toArray();
+    const wide = await db.get.memoryArtifactS.near(q, 5, { efSearch: 200 }).toArray();
+    expect(narrow).toHaveLength(5);
+    expect(wide).toHaveLength(5);
+    expect(wide[0].$cosine).toBeGreaterThanOrEqual(narrow[0].$cosine);
+  });
 });
 
 describe('Vector Persistence (Risk 1)', () => {

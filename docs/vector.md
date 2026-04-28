@@ -129,7 +129,7 @@ Vector indices are persisted as part of the standard snapshot format (snapshot v
 
 For each collection that declared a vector field, the snapshot contains:
 
-- A binary-packed serialization of the index (cosine + Float32Array slots, base64-wrapped inside the snapshot JSON).
+- A binary-packed serialization of the index, base64-wrapped inside the snapshot JSON. The buffer holds the slot storage (Float32Array of vectors, ID↔slot map, free-slot list) AND the HNSW topology (per-slot levels, sparse neighbour blocks, entry-point pointer, M / efConstruction / efSearch parameters).
 - The schema metadata: field name, dimensionality, metric.
 
 ### Drift detection
