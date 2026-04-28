@@ -162,3 +162,119 @@ describe('UC-G1: Predicate proxy + edge collections', () => {
     expect(top3).toHaveLength(3);
   });
 });
+
+describe('UC-G1 read-side: inverse, related, edge access via .$', () => {
+  let db;
+  afterEach(async () => {
+    if (db) await db.disconnect();
+    await fs.rm(DIR, { recursive: true, force: true }).catch(() => {});
+  });
+
+  test('inverse predicate read returns subjects pointing TO this entity', async () => {
+    db = await freshDB();
+    declareSocialSchema(db);
+    const alice = await db.add.kgEntity({ name: 'Alice' });
+    const bob   = await db.add.kgEntity({ name: 'Bob' });
+    const carol = await db.add.kgEntity({ name: 'Carol' });
+    const acme  = await db.add.kgEntity({ name: 'Acme' });
+
+    await alice.works_at(acme);
+    await bob.works_at(acme);
+    await carol.works_at(acme);
+
+    const employees = await acme.inverse.works_at;
+    const names = employees.map(e => e.name).sort();
+    expect(names).toEqual(['Alice', 'Bob', 'Carol']);
+  });
+
+  test('inverse filters by predicate — knows-relations don\'t leak into works_at inverse', async () => {
+    db = await freshDB();
+    declareSocialSchema(db);
+    const alice = await db.add.kgEntity({ name: 'Alice' });
+    const bob   = await db.add.kgEntity({ name: 'Bob' });
+    const acme  = await db.add.kgEntity({ name: 'Acme' });
+
+    await alice.works_at(acme);
+    await bob.knows(acme);  // bob 'knows' acme — must NOT appear as employee
+
+    const employees = await acme.inverse.works_at;
+    expect(employees.map(e => e.name)).toEqual(['Alice']);
+  });
+
+  test('.related returns flat list of all outgoing targets across all predicates', async () => {
+    db = await freshDB();
+    declareSocialSchema(db);
+    const alice = await db.add.kgEntity({ name: 'Alice' });
+    const bob   = await db.add.kgEntity({ name: 'Bob' });
+    const acme  = await db.add.kgEntity({ name: 'Acme' });
+
+    await alice.works_at(acme);
+    await alice.knows(bob);
+
+    const all = await alice.related;
+    const names = all.map(e => e.name).sort();
+    expect(names).toEqual(['Acme', 'Bob']);
+  });
+
+  test('predicate.$ returns the edge documents themselves', async () => {
+    db = await freshDB();
+    declareSocialSchema(db);
+    const alice = await db.add.kgEntity({ name: 'Alice' });
+    const acme  = await db.add.kgEntity({ name: 'Acme' });
+    await alice.works_at(acme, { confidence: 0.9 });
+
+    const edges = await alice.works_at.$;
+    expect(edges).toHaveLength(1);
+    expect(edges[0].predicate).toBe('works_at');
+    expect(edges[0].subject_id).toBe(alice.$ID);
+    expect(edges[0].object_id_or_literal).toBe(acme.$ID);
+    expect(edges[0].confidence).toBe(0.9);
+  });
+
+  test('inverse predicate.$ returns edge documents (subject side)', async () => {
+    db = await freshDB();
+    declareSocialSchema(db);
+    const alice = await db.add.kgEntity({ name: 'Alice' });
+    const bob   = await db.add.kgEntity({ name: 'Bob' });
+    const acme  = await db.add.kgEntity({ name: 'Acme' });
+    await alice.works_at(acme, { confidence: 0.9 });
+    await bob.works_at(acme, { confidence: 0.6 });
+
+    const edges = await acme.inverse.works_at.$;
+    expect(edges).toHaveLength(2);
+    const subjectIds = edges.map(e => e.subject_id).sort();
+    expect(subjectIds).toEqual([alice.$ID, bob.$ID].sort());
+  });
+
+  test('.related.$ returns all outgoing edges across predicates', async () => {
+    db = await freshDB();
+    declareSocialSchema(db);
+    const alice = await db.add.kgEntity({ name: 'Alice' });
+    const bob   = await db.add.kgEntity({ name: 'Bob' });
+    const acme  = await db.add.kgEntity({ name: 'Acme' });
+
+    await alice.works_at(acme, { confidence: 0.9 });
+    await alice.knows(bob, { confidence: 0.8 });
+
+    const edges = await alice.related.$;
+    expect(edges).toHaveLength(2);
+    const predicates = edges.map(e => e.predicate).sort();
+    expect(predicates).toEqual(['knows', 'works_at']);
+  });
+
+  test('inverse on entity with no incoming edges yields empty array', async () => {
+    db = await freshDB();
+    declareSocialSchema(db);
+    const lonely = await db.add.kgEntity({ name: 'Lonely' });
+    const incoming = await lonely.inverse.works_at;
+    expect(incoming).toEqual([]);
+  });
+
+  test('related on entity with no outgoing edges yields empty array', async () => {
+    db = await freshDB();
+    declareSocialSchema(db);
+    const lonely = await db.add.kgEntity({ name: 'Lonely' });
+    const all = await lonely.related;
+    expect(all).toEqual([]);
+  });
+});
