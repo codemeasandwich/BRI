@@ -32,6 +32,7 @@ export function createRecoveryMethods() {
   return {
     /**
      * Recover state from snapshot and WAL
+     * @returns {Promise<void>}
      */
     async recover() {
       const snapshot = await this.snapshots.loadLatest();
@@ -133,10 +134,18 @@ export function createRecoveryMethods() {
     /**
      * Restore vector indices and schemas from a v3 snapshot payload.
      *
-     * Each entry in `serializedIndices` is a base64-encoded buffer produced by
-     * VectorIndex.serialize(); we decode and reconstruct via deserialize().
+     * Each entry in `serializedIndices` is a base64-encoded buffer produced
+     * by VectorIndex.serialize(); we decode and reconstruct via deserialize().
      * The schema POJOs hold the field name, dims, and metric so WAL replay
      * (and later db.schema() validation) can act on them.
+     *
+     * Vector wire-format compatibility:
+     *   The buffer's internal version is independent of the snapshot
+     *   version. VectorIndex.deserialize transparently handles both v1
+     *   (no graph topology — triggers a one-shot HNSW rebuild from slot
+     *   storage at boot) and v2 (HNSW topology installed directly). The
+     *   first snapshot written after a v1→v2 upgrade is automatically
+     *   v2 because packIndex always emits the current format.
      *
      * @param {Object} serializedIndices - { collection -> base64 string }
      * @param {Object} schemas - { collection -> {field, dims, metric} }

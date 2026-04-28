@@ -26,6 +26,10 @@ engine/
 ├── cascade.js
 ├── vector-index.js
 ├── vector-index-codec.js
+├── vector-index-hnsw.js
+├── vector-index-hnsw-state.js
+├── vector-index-rng.js
+├── vector-index-txn.js
 └── vector-middleware.js
 ```
 
@@ -127,7 +131,7 @@ Per-database schema registry. Holds schemas declared via `db.schema('name', def)
 
 ### `vector-index.js`
 
-In-process vector index for k-NN search. v1 uses a brute-force linear scan backed by `Float32Array` storage; the public interface (`add`, `remove`, `search`, `searchFiltered`, `stats`, `serialize`, `deserialize`) is pluggable so a v2 HNSW or USearch backend slots in without API changes. `serialize()` packs the index into a compact binary buffer (custom format with magic 'VIDX' + version) for snapshot embedding; `deserialize()` validates the magic/version and reconstructs the index, including slot-id pairs and the Float32Array buffer. Transaction support (UC-V4) adds `addStaged` / `removeStaged` / `commit` / `rollback` / `popStaged` and `searchInTxn` for deferred-linking semantics — pending ops are buffered per-txn and flushed only on commit, so the committed buffer is never partially modified.
+In-process vector index for k-NN search (v2). Slim wrapper class — owns slot storage (`Float32Array`, `_idAt`, `_slotOf`, free-list) and the public interface (`add`, `remove`, `search`, `searchFiltered`, `stats`, `serialize`, static `deserialize`). Search/insert delegate to the HNSW algorithm in `vector-index-hnsw.js`; transactions delegate to `vector-index-txn.js`. Constructor accepts HNSW parameters `{M, efConstruction, efSearch, seed}` (spec §3.1 defaults: 16 / 200 / 50). Per-call `opts.efSearch` override on `search` / `searchFiltered` / `searchInTxn`. `static deserialize(buf)` accepts both v1 (no graph topology — triggers a one-shot HNSW rebuild from slot storage on boot) and v2 (topology installed directly) wire formats.
 
 **Exports:**
 - `VectorIndex` class - One instance per vector-bearing collection
@@ -135,13 +139,42 @@ In-process vector index for k-NN search. v1 uses a brute-force linear scan backe
 
 ### `vector-index-codec.js`
 
-Binary codec for VectorIndex — magic + version constants, the cosine helper, and `packIndex` / `unpackIndex` free functions that materialize the wire format. Lives next to vector-index.js so persistence can evolve independently of the index's runtime behavior.
+Binary codec for VectorIndex — magic + version constants, the cosine helper, and `packIndex` / `unpackIndex` free functions that materialize the wire format. v2 appends an HNSW topology section after the v1 payload (M / efConstruction / efSearch / entryPoint / entryLevel / per-slot levels / sparse neighbour blocks). v1 buffers are still readable; the wrapper detects them and rebuilds the HNSW graph at deserialize time.
 
 **Exports:**
 - `cosine(a, b)` - similarity helper
 - `packIndex(index)` - serialize a VectorIndex to a Buffer
-- `unpackIndex(buf)` - decode a Buffer into VectorIndex internal state
-- `SERIALIZATION_MAGIC`, `SERIALIZATION_FORMAT_VERSION`
+- `unpackIndex(buf)` - decode a Buffer into VectorIndex internal state (returns `{... version, hnsw}`; `hnsw` is null for v1 payloads)
+- `SERIALIZATION_MAGIC`, `SERIALIZATION_FORMAT_VERSION` (= 2), `SERIALIZATION_FORMAT_VERSION_V1`
+
+### `vector-index-hnsw.js`
+
+Pure-JS HNSW algorithm core. `searchLayer(index, query, ep, ef, layer, predicate?)` runs the layer-bounded best-first search (Malkov & Yashunin §4 Algorithm 2, adapted to similarity); the predicate gates inclusion in the result set but NOT graph traversal so a filtered-out candidate can still bridge to additional accepting candidates (UC-V1 acceptance criterion 3). `selectNeighborsHeuristic` implements the §4 Algorithm 4 spread-direction selector that prevents single-direction clustering. `insertNode(index, slot)` runs the full insert: pickLevel → greedy descent → wide search-and-link with bidirectional pruning → entry-point promotion. `searchHNSW` is the top-level query entry point — greedy descent through upper layers, wide search at level 0, sort + truncate to k. `effectiveEf = max(ef, k)` so callers asking for more than the default frontier always get them, and small fixtures get exact-recall behaviour for free.
+
+**Exports:**
+- `searchLayer`, `selectNeighborsHeuristic`, `insertNode`, `searchHNSW`
+
+### `vector-index-hnsw-state.js`
+
+Topology lifecycle helpers — `ensureTopology` (alloc/grow per-slot level table + neighbour-list array), `dropNode` (lazy delete: clear lists + re-elect entry point if needed), `rebuildTopology` (re-insert every populated slot — used when deserializing a v1-format snapshot, logged at INFO so operators see the one-shot upgrade event). Separated from the algorithmic core so each file stays at or under the 200-NCLOC ceiling.
+
+**Exports:**
+- `ensureTopology`, `dropNode`, `rebuildTopology`
+
+### `vector-index-rng.js`
+
+Seedable Mulberry32 PRNG + `pickLevel(rng, M)` for HNSW level assignment. Determinism contract: `makeRng(seed)` with the same integer seed produces an identical output stream across runs, processes, and Node versions — required for tests that assert bit-equality of serialize() output across two freshly-constructed indexes. Without a seed, falls through to `Math.random() * 2^32` (production default). The VectorIndex constructor reads `BRI_VECTOR_RNG_SEED` from env when no `{seed}` opt is supplied, so operators / tests can pin determinism without per-call plumbing.
+
+**Exports:**
+- `makeRng(seed?)` - Returns a deterministic `() => [0,1)` closure
+- `pickLevel(rng, M)` - Geometric draw for HNSW level assignment
+
+### `vector-index-txn.js`
+
+Per-transaction deferred-linking buffer for the vector index (spec §7.1). `_pending` is a `Map<txnId, Array<{op,id,vec}>>` on the index instance; `stageAdd` / `stageRemove` append; `commitTxn` flushes via callbacks back to the wrapper's add/remove (so HNSW topology mutations go through the same path as non-txn writes); `rollbackTxn` drops the bucket; `popStagedOp` walks the bucket back-to-front; `searchInTxnMerged` runs a wider committed search and merges the pending log. The merge algorithm is independent of the underlying data structure — it scores pending vectors with the shared cosine helper and applies stagedRemoves as a predicate-time exclusion. Extracted from vector-index.js so the wrapper class stays under the 200-NCLOC ceiling.
+
+**Exports:**
+- `stageAdd`, `stageRemove`, `commitTxn`, `rollbackTxn`, `popStagedOp`, `searchInTxnMerged`
 
 ### `vector-middleware.js`
 

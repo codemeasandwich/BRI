@@ -24,7 +24,7 @@ This index — explains the responsibility of every file in this directory.
 
 ### `vector.md`
 
-End-user walkthrough of the vector-search surface (UC-V1 slice). Covers schema declaration, the chainable `db.get.{collection}S.where(...).near(...)` API, result metadata (`$cosine`, `$score`), error modes, backwards compatibility with the legacy callable form, persistence (snapshot v3 + WAL replay + drift detection), composition with secondary indexes, and v1 limitations with pointers to v2 follow-ups.
+End-user walkthrough of the vector-search surface. Covers schema declaration, the chainable `db.get.{collection}S.where(...).near(...)` API, result metadata (`$cosine`, `$score`), error modes, backwards compatibility with the legacy callable form, persistence (snapshot v3 + WAL replay + drift detection + index-format v1→v2 rebuild), composition with secondary indexes, transactions (UC-V4), and the HNSW algorithm with its tuning parameters (M / efConstruction / efSearch) and `BRI_VECTOR_RNG_SEED` determinism control.
 
 ### `indexes.md`
 

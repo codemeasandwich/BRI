@@ -2,7 +2,7 @@
 
 Bri supports embedding-based similarity search as a first-class read primitive. Declare a vector field in a collection's schema and the engine maintains a per-collection vector index, queryable through the same `db.get` proxy you already use for attribute reads.
 
-> **Status:** v1 slice — UC-V1 (`.where` + `.near` over a single vector field per collection). Backwards-compatible: existing collections without a registered schema behave exactly as before.
+> **Status:** v2 — pure-JS HNSW backend, default for all vector-bearing collections. UC-V1 (`.where` + `.near`), UC-V2 (`.where` prefilter), UC-V3 (`.match + .near + .combine`), UC-V4 (transaction isolation). Backwards-compatible: existing collections without a registered schema behave exactly as before; v1-format snapshots load cleanly and are upgraded to v2 on the next snapshot write.
 
 ---
 
@@ -157,13 +157,61 @@ When `BRI_ENCRYPTION_KEY` is set, the snapshot is AES-256-GCM-encrypted as a who
 
 A v2 snapshot does not need migration; the next snapshot that has a vector schema is written as v3.
 
+Vector index buffers carry their own internal version (independent of the snapshot version). The Bri v2 release introduced index format **v2** — same payload as v1 plus an HNSW topology section appended at the end. Old index buffers (v1, brute-force linear scan, no graph) deserialize cleanly: the wrapper reads slot storage as before, then runs a one-shot `rebuildTopology` pass to construct the HNSW graph from the populated vectors. The rebuild is logged at INFO so operators see the upgrade event:
+
+```
+VectorIndex: rebuilding HNSW topology from v1 snapshot (10000 vectors)
+VectorIndex: rebuilt HNSW topology from 10000 vectors
+```
+
+The next snapshot write produces a v2 buffer; subsequent boots skip the rebuild.
+
 ---
 
-## Limitations (v1)
+## Algorithm — HNSW
+
+Bri v2 uses a pure-JavaScript HNSW (Hierarchical Navigable Small World) graph as the default backend. HNSW is a graph-based approximate-nearest-neighbour structure that achieves logarithmic average-case query complexity with strong recall (≥99% at default parameters); it's the standard choice for production vector search engines.
+
+Key properties for Bri:
+
+- **Sub-linear search**: queries cost roughly O(log N) graph hops, not O(N) scans. The §6.2 latency budget (UC-V1 <50ms p95 over 100k vectors) is met by this property.
+- **Pure JS, no native binding**: ships in core. A future `BRI_VECTOR_NATIVE=usearch` flag will swap in a native HNSW backend behind the same interface (separate slice).
+- **Filter-during-search**: predicates are evaluated during graph expansion, not as a post-filter. Filtered-out nodes can still bridge to additional accepting nodes, so we never disconnect the result set from the part of the graph it lives in. UC-V1 acceptance criterion 3.
+- **Exact recall at fixture scale**: `efSearch` is bumped to `max(efSearch, k)` per query, so when fixtures hold ≤100 vectors the level-0 search visits the full frontier — exact recall comes free.
+
+### Tuning parameters
+
+The `VectorIndex` constructor accepts three HNSW knobs (defaults from spec §3.1):
+
+| Parameter | Default | What it controls |
+|---|---|---|
+| `M` | `16` | Max neighbours per upper level. Level 0 uses `2*M`. Higher = more memory per node, better recall, slightly slower insert. |
+| `efConstruction` | `200` | Insertion-time candidate-set size. Higher = denser graph, slower insert, better recall. The "build once, query many" preset. |
+| `efSearch` | `50` | Query-time candidate-set size. Higher = better recall, slower query. Override per-call via `.near(v, k, { efSearch: N })`. |
+
+Schemas don't expose these directly today — the registry constructs `VectorIndex` with defaults. To tune, override `efSearch` per-query:
+
+```js
+const results = await db.get.memoryArtifactS
+  .near(query, 10, { efSearch: 200 })
+  .toArray();
+```
+
+### Determinism
+
+For tests that need bit-identical topology across runs (snapshot equality, recall-vs-baseline gates), seed the level-pick RNG via the `BRI_VECTOR_RNG_SEED` environment variable. The seeded RNG produces identical output streams across processes and Node versions; production default is non-deterministic `Math.random`.
+
+```bash
+BRI_VECTOR_RNG_SEED=42 npm test
+```
+
+---
+
+## Limitations
 
 - One vector field per collection.
-- Brute-force linear scan; latency is O(N) in collection size. At v1 target scales (≤10k vectors) this is well under the spec's correctness budget. v2 will add an HNSW-style index behind the same interface.
-- No worker-thread offload — search runs on the main thread. Acceptable at v1 scale; v2 moves the index behind a Worker.
+- Lazy deletion: removing a vector tombstones the slot (O(1)) but leaves dangling neighbour links in the graph. Long-running, deletion-heavy workloads accumulate "ghost" references over time. A future compaction trigger (when tombstone density crosses a threshold) is out of scope for v2.
+- No worker-thread offload — search runs on the main thread. The worker-offload slice (separate ticket) moves the index behind a Worker for non-blocking bulk insert.
 
 ---
 

@@ -257,6 +257,10 @@ export class QueryBuilder {
    * @param {string|null} [opts.txnId] - `null` forces committed-only
    *   search (bypasses the active transaction); a string targets a
    *   specific txn; omitted = use the active txn (default behavior)
+   * @param {number} [opts.efSearch] - HNSW query-time candidate-set size
+   *   (v2 §6.2). Higher values trade latency for recall. Default lives
+   *   on the VectorIndex (50). Override per-query when the workload
+   *   needs tighter recall than the default frontier provides.
    * @returns {QueryBuilder} new builder with state.near set
    */
   near(vector, k, opts) {
@@ -478,16 +482,24 @@ export class QueryBuilder {
      */
     const hydrate = (id) => getOpts ? wrapper.get(null, id, getOpts) : wrapper.get(null, id);
 
+    // Forward an HNSW efSearch override (v2 §6.2 tuning knob) when the
+    // caller passed one via .near(v, k, { efSearch }). The wrapper
+    // builds an opts object only when efSearch is present so v1-shape
+    // tests asserting on the exact arity of searchFiltered keep working.
+    const searchOpts = near.opts && typeof near.opts.efSearch === 'number'
+      ? { efSearch: near.opts.efSearch }
+      : undefined;
     /**
      * Run a vector search over the index, picking the committed path or the
-     * txn-merging path based on active txnId.
+     * txn-merging path based on active txnId. Forwards the optional
+     * efSearch override resolved above.
      * @param {number} kArg - top-k size
      * @param {Function|null} pred - optional predicate
      * @returns {Array<{id:string, score:number}>}
      */
     const search = (kArg, pred) => txnId
-      ? index.searchInTxn(near.vector, kArg, txnId, pred)
-      : index.searchFiltered(near.vector, kArg, pred);
+      ? index.searchInTxn(near.vector, kArg, txnId, pred, searchOpts)
+      : index.searchFiltered(near.vector, kArg, pred, searchOpts);
 
     let hits;
     const docCache = new Map();
