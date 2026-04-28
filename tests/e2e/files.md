@@ -16,6 +16,7 @@ e2e/
 ├── errors.test.js
 ├── memory.test.js
 ├── vector.test.js
+├── vector-tx.test.js
 ├── secondary-index.test.js
 ├── coverage-gaps.test.js
 └── final-coverage.test.js
@@ -64,6 +65,9 @@ Memory management - eviction, cold tier promotion.
 
 ### `vector.test.js`
 Vector search end-to-end (UC-V1) - top-k cosine similarity, filter composition, dimension validation, score metadata, legacy call-form back-compat, persistence (snapshot v3 + WAL replay), drift detection.
+
+### `vector-tx.test.js`
+Vector transaction integration (UC-V4) - staged-write isolation (visible inside txn, invisible outside via `.near` opts.txnId override), nop pristine, fin atomic commit, pop undoes last vector write, crash recovery to pre-txn state.
 
 ### `secondary-index.test.js`
 Secondary indexes (engine portion of UC-X1) - SortedIndex unit roundtrips, $indexes schema declaration, compound prefix matching, non-prefix scan fallback, mutation consistency on insert/update/delete, undeclared-field rejection, persistence across restart, bounded hydration when combined with .near.
