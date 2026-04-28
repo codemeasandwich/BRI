@@ -20,6 +20,7 @@ e2e/
 ├── graph.test.js
 ├── cascade.test.js
 ├── aggregation.test.js
+├── match.test.js
 ├── secondary-index.test.js
 ├── coverage-gaps.test.js
 └── final-coverage.test.js
@@ -80,6 +81,9 @@ Schema-scoped cancellation cascade (UC-X2, §10 non-negotiable) - cascadeOn-flag
 
 ### `aggregation.test.js`
 Aggregation primitives (UC-X3) - .count() with and without filter, .distinct(field) with and without filter, .groupBy().count() / .sum(field) / .having(filter), and filter operator coverage ($gte/$gt/$lte/$lt/$ne/$in/$exists).
+
+### `match.test.js`
+Substring FTS (UC-X4) and combined alias+vector retrieval (UC-V3) - .match returns docs whose string field contains the query (case-insensitive), works on Array fields, attaches $matchHits metadata, respects top-k cap, recency tiebreak via updatedAt desc, composes with .where; .combine blends .match and .near scores per declared weights, null-embedding docs eligible via alias-only match, audit-trail components ($score / $cosine / $matchHits) on each result.
 
 ### `secondary-index.test.js`
 Secondary indexes (engine portion of UC-X1) - SortedIndex unit roundtrips, $indexes schema declaration, compound prefix matching, non-prefix scan fallback, mutation consistency on insert/update/delete, undeclared-field rejection, persistence across restart, bounded hydration when combined with .near.
