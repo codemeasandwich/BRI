@@ -19,9 +19,12 @@
  *   - engine/vector-index.js   → for .near via registry.vectorIndex; the
  *                                builder never imports it directly
  *   - client/grouped-query-builder.js → produced by .groupBy(field)
- *   - client/match-engine.js   → produced by .match() and .combine();
- *                                extracted to keep this file under the
- *                                260-source-line gate
+ *   - client/match-engine.js   → produced by .match() and .combine()
+ *   - client/query-builder-residual.js → composeResidualFilter / decorate /
+ *                                touchingCandidateIds for the 260-line gate
+ *   - client/query-builder-vector-exec.js → attachScore / executeVectorPlan
+ *   - client/query-builder-where-exec.js → executeWherePlan (.where-only path)
+ *   - client/query-builder-terminals.js → first / count / distinct terminals
  *
  * Consumers (what relies on this):
  *   - client/proxy.js          → the hybrid get-proxy returns a bound chain
@@ -95,48 +98,26 @@
 import { QueryPlanner } from '../engine/query-planner.js';
 import { GroupedQueryBuilder } from './grouped-query-builder.js';
 import { executeMatch, executeCombined } from './match-engine.js';
+import {
+  BriQueryError,
+  NOT_IMPLEMENTED_V1
+} from '../engine/errors.js';
+import {
+  composeResidualFilter,
+  decorateResults,
+  touchingCandidateIds
+} from './query-builder-residual.js';
+import { executeVectorPlan } from './query-builder-vector-exec.js';
+import { executeWherePlan } from './query-builder-where-exec.js';
+import {
+  queryBuilderFirst,
+  queryBuilderCount,
+  queryBuilderDistinct
+} from './query-builder-terminals.js';
 
 // compileFilter lives in engine/filter-compiler.js — shared with the
 // query planner and the GroupedQueryBuilder so .where, .having, and the
 // planner's residual filter all agree on operator semantics.
-
-/**
- * Attach $cosine and $score as non-enumerable metadata on a result entity
- * produced by the `.near()` path.
- *
- * Used by: `_executeVectorPlan` only — `.combine` and `.match` paths use
- *   the parallel `attachMeta` helper in match-engine.js because they have
- *   richer metadata to attach ($matchHits, separated $score/$cosine when
- *   the blend is non-trivial). The two helpers honor the same convention
- *   intentionally so call sites that read entity.$cosine work uniformly
- *   regardless of which path produced the result.
- *
- * Why non-enumerable: the reactive-entity layer in engine/reactive.js
- * spreads / Object.assigns / JSON-stringifies these all over the place
- * (tests/e2e/crud.test.js cycles them through Object.keys repeatedly).
- * Enumerable transient ranking fields would leak into save() diffs and
- * toObject() output. Defining them with `enumerable: false` keeps the
- * persistence layer ignorant of these fields while still making them
- * trivially accessible at the call site.
- *
- * Why writable: false: the builder owns the score; mutating it after
- * the fact would silently desync from $matchHits / $provenance set by
- * other paths. Read-only is the right contract.
- *
- * @param {Object} entity - Reactive entity from wrapper.get
- * @param {number} score - Cosine similarity (also assigned to $score
- *   because the .near path has only one ranking signal)
- * @returns {Object} the same entity reference (mutated in place)
- */
-function attachScore(entity, score) {
-  Object.defineProperty(entity, '$cosine', {
-    value: score, enumerable: false, configurable: true, writable: false
-  });
-  Object.defineProperty(entity, '$score', {
-    value: score, enumerable: false, configurable: true, writable: false
-  });
-  return entity;
-}
 
 /**
  * Chainable query builder — the user-facing chain syntax produced by the
@@ -232,7 +213,7 @@ export class QueryBuilder {
    * Top-k cosine similarity over the collection's declared vector field
    * (UC-V1). Resolved at execution time via registry.vectorIndex(collection);
    * the actual search uses VectorIndex.searchFiltered or searchInTxn, picked
-   * by _executeVectorPlan based on the active transaction.
+   * by executeVectorPlan (query-builder-vector-exec.js) based on txn state.
    *
    * Composition:
    *   - With `.where`: planner's candidate set becomes the searchFiltered
@@ -265,10 +246,18 @@ export class QueryBuilder {
    */
   near(vector, k, opts) {
     if (!Array.isArray(vector) && !(vector instanceof Float32Array)) {
-      throw new Error('QueryBuilder.near: vector must be an array of numbers');
+      throw new BriQueryError({
+        code: 'NEAR_VECTOR_INVALID',
+        message: 'QueryBuilder.near: vector must be an array of numbers (or a Float32Array).',
+        details: { gotType: typeof vector }
+      });
     }
     if (typeof k !== 'number' || k <= 0) {
-      throw new Error(`QueryBuilder.near: k must be a positive number; got ${k}`);
+      throw new BriQueryError({
+        code: 'NEAR_K_INVALID',
+        message: `QueryBuilder.near: k must be a positive number; got ${k}.`,
+        details: { k }
+      });
     }
     return this._next({ near: { vector, k, opts: opts || null } });
   }
@@ -301,7 +290,11 @@ export class QueryBuilder {
    */
   match(stringFilter, k) {
     if (!stringFilter || typeof stringFilter !== 'object') {
-      throw new Error('QueryBuilder.match: requires a {field: substring} object');
+      throw new BriQueryError({
+        code: 'MATCH_FILTER_INVALID',
+        message: 'QueryBuilder.match: requires a {field: substring} object.',
+        details: { gotType: typeof stringFilter }
+      });
     }
     return this._next({ match: { filter: stringFilter, k } });
   }
@@ -340,9 +333,11 @@ export class QueryBuilder {
     if (!weights || typeof weights !== 'object'
         || typeof weights.alias !== 'number'
         || typeof weights.vector !== 'number') {
-      throw new Error(
-        'QueryBuilder.combine: requires {alias: number, vector: number}'
-      );
+      throw new BriQueryError({
+        code: 'COMBINE_WEIGHTS_INVALID',
+        message: 'QueryBuilder.combine: requires {alias: number, vector: number}.',
+        details: { got: weights }
+      });
     }
     return this._next({ combine: weights });
   }
@@ -365,6 +360,128 @@ export class QueryBuilder {
   }
 
   /**
+   * Edge-collection: filter to edges where any `from`/`to` field references
+   * any seed id (UC-G1). Resolves via the GraphIndex adjacency in the
+   * registry; the candidate set then composes with `.where`/`.confidence`/
+   * `.history` like any other constraint.
+   *
+   * Throws {BriQueryError} TOUCHING_NOT_AN_EDGE_COLLECTION when called on a
+   * collection that the registry has not registered as an edge collection
+   * — `.touching` is meaningless without `from`/`to` field semantics.
+   *
+   * @param {Array<string|Object>} seeds - Entities or $ID strings
+   * @returns {QueryBuilder}
+   * @implements UC-G1
+   */
+  touching(seeds) {
+    const ids = (seeds || []).map(s => typeof s === 'string' ? s : (s && s.$ID))
+      .filter(Boolean);
+    return this._next({ touching: ids });
+  }
+
+  /**
+   * Resolve named ref fields in one batched round-trip after the result
+   * set is built (UC-X1). Each named field is loaded from its target
+   * collection via `wrapper.get(null, $ID)` and reattached as a
+   * non-enumerable `_<field>` reactive entity on each row. The original
+   * field value (the $ID string) is preserved.
+   *
+   * The hydrate step is a post-execution decoration — it runs AFTER
+   * `.toArray()` would have produced its results. Failed hydrations
+   * (target doc missing) leave `_<field>` undefined; callers must check.
+   *
+   * @param {Array<string>} fields - Ref field names to resolve
+   * @returns {QueryBuilder}
+   * @implements UC-X1
+   */
+  hydrate(fields) {
+    const list = Array.isArray(fields) ? fields.filter(f => typeof f === 'string') : [];
+    return this._next({ hydrate: list });
+  }
+
+  /**
+   * Schema-conditional: filter to docs whose `$confidence` field >= threshold
+   * (UC-G1, UC-G2, UC-G6 read-side). Throws BriQueryError on collections
+   * that don't declare `$confidence` so a typo doesn't silently drop the
+   * filter.
+   *
+   * @param {number} threshold
+   * @returns {QueryBuilder}
+   * @throws {BriQueryError} when the collection has no $confidence field
+   */
+  confidence(threshold) {
+    const lc = this._ctx.registry.lifecycleFieldsOf?.(this._ctx.collection);
+    if (!lc || !lc.confidence) {
+      throw new BriQueryError({
+        code: 'CONFIDENCE_FIELD_NOT_DECLARED',
+        message: `QueryBuilder.confidence: collection '${this._ctx.collection}' has no $confidence field. Declare $confidence: '<fieldName>' on the schema to enable this filter.`,
+        details: { collection: this._ctx.collection }
+      });
+    }
+    return this._next({ confidence: { threshold, field: lc.confidence } });
+  }
+
+  /**
+   * Schema-conditional getter: include superseded docs (the default read
+   * filters them out via `$supersession IS NULL`). Spec §2.2 marks this a
+   * property, not a method; using a getter keeps the syntax consistent
+   * with `.history` on predicate accessors.
+   *
+   * Returns a NEW builder rather than mutating; reading `q.history` does
+   * not affect `q` itself.
+   *
+   * @returns {QueryBuilder} new builder with state.history true
+   */
+  get history() {
+    const lc = this._ctx.registry.lifecycleFieldsOf?.(this._ctx.collection);
+    if (!lc || !lc.supersession) {
+      throw new BriQueryError({
+        code: 'SUPERSESSION_FIELD_NOT_DECLARED',
+        message: `QueryBuilder.history: collection '${this._ctx.collection}' has no $supersession field. Declare $supersession: '<fieldName>' to enable history reads.`,
+        details: { collection: this._ctx.collection }
+      });
+    }
+    return this._next({ history: true });
+  }
+
+  /**
+   * Schema-conditional getter: hydrate `$provenance` onto each result.
+   * Spec §2.10 marks `$provenance` as non-persisted ranking metadata
+   * sourced from the schema-declared $provenance field.
+   *
+   * @returns {QueryBuilder} new builder with state.withProvenance true
+   */
+  get withProvenance() {
+    const lc = this._ctx.registry.lifecycleFieldsOf?.(this._ctx.collection);
+    if (!lc || !lc.provenance) {
+      throw new BriQueryError({
+        code: 'PROVENANCE_FIELD_NOT_DECLARED',
+        message: `QueryBuilder.withProvenance: collection '${this._ctx.collection}' has no $provenance field. Declare $provenance: '<fieldName>' to enable.`,
+        details: { collection: this._ctx.collection }
+      });
+    }
+    return this._next({ withProvenance: true });
+  }
+
+  /**
+   * Point-in-time view (spec §2.2 — deferred to v2 per §6.1).
+   *
+   * v1 throws BriQueryError NOT_IMPLEMENTED_V1 with a clear message so
+   * callers see an explicit signal rather than a silent miss-result.
+   *
+   * @param {Date|number} _t - As-of timestamp
+   * @returns {QueryBuilder}
+   * @throws {BriQueryError}
+   */
+  asOf(_t) {
+    throw new BriQueryError({
+      code: NOT_IMPLEMENTED_V1,
+      message: 'QueryBuilder.asOf is deferred to v2 per spec §6.1. v1 only supports current-time views; use .history to include superseded docs.',
+      details: {}
+    });
+  }
+
+  /**
    * Execute the chain.
    *
    * Two paths:
@@ -381,159 +498,71 @@ export class QueryBuilder {
    */
   async toArray() {
     const { collection, wrapper, registry } = this._ctx;
-    const { filter, near, match, combine, limit } = this._state;
+    const {
+      filter, near, match, combine, limit,
+      touching, hydrate, confidence, history, withProvenance
+    } = this._state;
+
+    // Pass the user's original filter to the planner so it can use the
+    // secondary index when the filter shape is index-friendly. Extra
+    // schema-conditional gates layer on top of plan.residualFilter
+    // AFTER planning — adding them to the input filter would force the
+    // planner into a residual-only path and disable index lookups.
+    const lc = registry.lifecycleFieldsOf?.(collection) || {};
+    const supersedeKey = (lc && lc.supersession) || null;
+    const adjacencyIds = touching && touching.length > 0
+      ? touchingCandidateIds(this._ctx, touching)
+      : null;
     const planner = new QueryPlanner(registry);
     const plan = planner.planWhere(collection, filter);
-
-    // Routing matrix:
-    //   .combine present → must have .match AND .near; weighted blend
-    //   .match + .near (no combine) → ambiguous; throw with diagnostic
-    //   .match alone → substring scan with recency tiebreak
-    //   .near alone → existing vector path
-    //   .where only → existing where path
+    // Layer the extra gates on top of any residual filter the planner
+    // produced. The combined residual is what the execution paths apply.
+    plan.residualFilter = composeResidualFilter({
+      planResidual: plan.residualFilter,
+      supersedeKey,
+      defaultHideSuperseded: !history,
+      confidence,
+      touching: adjacencyIds
+    });
+    /**
+     * Apply $provenance + ref `_field` hydration after the scan executors finish.
+     * @param {Array<Object>} rows - Raw hydrated rows before decoration
+     * @returns {Promise<Array<Object>>}
+     */
+    const applyResultDecoration = (rows) => decorateResults(rows, {
+      withProvenance: withProvenance ? lc.provenance : null,
+      hydrate, wrapper
+    });
     if (combine) {
       if (!match || !near) {
-        throw new Error(
-          'QueryBuilder.combine: requires both .match(...) and .near(...) ' +
-          'to have been declared earlier in the chain.'
-        );
+        throw new BriQueryError({
+          code: 'COMBINE_PRECONDITIONS_UNMET',
+          message: 'QueryBuilder.combine: requires both .match(...) and .near(...) to have been declared earlier in the chain.',
+          details: { hasMatch: !!match, hasNear: !!near }
+        });
       }
-      return this._executeCombinedPlan(plan, match, near, combine, limit);
+      return applyResultDecoration(
+        await this._executeCombinedPlan(plan, match, near, combine, limit)
+      );
     }
     if (match && near) {
-      throw new Error(
-        'QueryBuilder: .match and .near in the same chain require .combine ' +
-        'to specify how their scores blend. Add .combine({alias, vector}).'
-      );
-    }
-    if (match) return this._executeMatchPlan(plan, match, limit);
-    if (near)  return this._executeVectorPlan(plan, near, limit);
-    return this._executeWherePlan(plan, limit);
-  }
-
-  /**
-   * Execute a `.near` (with optional `.where`) using the planner output.
-   * The most-trafficked path in the builder — UC-V1 (vanilla top-k),
-   * UC-V2 (with .where prefilter), and UC-V4 (transaction-isolated reads)
-   * all flow through here.
-   *
-   * Three sub-paths chosen by plan + state shape:
-   *   1) plan.useIndex true (secondary index covers all .where fields):
-   *      hydrate ONLY the candidate set (one round-trip per id), then
-   *      feed the candidate-set predicate into searchFiltered. Hydration
-   *      cost is O(k), independent of collection size — UC-V1 acceptance
-   *      criterion 3 plus the bounded-hydration test in
-   *      tests/e2e/secondary-index.test.js.
-   *   2) plan.useIndex false BUT a residual filter exists (.where on
-   *      unindexed fields): fall back to full-collection hydration so
-   *      the residual filter can apply during the vector search. v1
-   *      scale acceptable; v2 may add a smarter "hydrate-only-vector-
-   *      hits" path that re-checks the filter post-hydration.
-   *   3) No filter: pure vector search via searchFiltered with no
-   *      predicate — the fastest path.
-   *
-   * Transaction integration:
-   *   When db._activeTxnId is set, switches to VectorIndex.searchInTxn
-   *   so the writer sees its own staged inserts (UC-V4); hydration
-   *   passes the txnId through to wrapper.get so doc bodies come from
-   *   the txn shadow state. opts.txnId on .near overrides — null forces
-   *   committed-only, '<id>' targets a specific txn.
-   *
-   * Why a single function instead of three: the cosine search call site
-   * is identical except for the predicate / k; splitting would duplicate
-   * the metadata-attach logic at the bottom and risk drift between paths.
-   *
-   * @param {Object} plan - From QueryPlanner.planWhere
-   * @param {Object} near - Vector clause {vector, k, opts}
-   * @param {number|undefined} limit - Outer .limit if present
-   * @returns {Promise<Array<Object>>} hydrated result entities with
-   *   $cosine + $score attached (via attachScore)
-   * @throws {Error} when the collection has no vector field declared
-   */
-  async _executeVectorPlan(plan, near, limit) {
-    const { collection, wrapper, registry, getDb } = this._ctx;
-    const index = registry.vectorIndex(collection);
-    if (!index) {
-      throw new Error(
-        `QueryBuilder.near: collection '${collection}' has no vector field ` +
-        `declared. Call db.schema('${collection}', { ...embedding: { type: 'vector', dims: N } }).`
-      );
-    }
-
-    // Active txnId (if any) drives both the index merge path and hydration.
-    // Inside a txn, we want searchInTxn (committed + pending) and we want
-    // wrapper.get to read txn-shadow doc bodies. Per-query opts on .near
-    // can override: opts.txnId === null forces committed-only search even
-    // when an active txn is set; opts.txnId === '<id>' targets a specific
-    // (possibly non-active) transaction.
-    const db = getDb ? getDb() : null;
-    let txnId;
-    if (near.opts && 'txnId' in near.opts) {
-      txnId = near.opts.txnId;  // explicit override (may be null)
-    } else {
-      txnId = db && db._activeTxnId;
-    }
-    const getOpts = txnId ? { txnId } : undefined;
-
-    /**
-     * Hydrate a single $ID through the wrapper, respecting the active txn.
-     * @param {string} id
-     * @returns {Promise<Object|null>}
-     */
-    const hydrate = (id) => getOpts ? wrapper.get(null, id, getOpts) : wrapper.get(null, id);
-
-    // Forward an HNSW efSearch override (v2 §6.2 tuning knob) when the
-    // caller passed one via .near(v, k, { efSearch }). The wrapper
-    // builds an opts object only when efSearch is present so v1-shape
-    // tests asserting on the exact arity of searchFiltered keep working.
-    const searchOpts = near.opts && typeof near.opts.efSearch === 'number'
-      ? { efSearch: near.opts.efSearch }
-      : undefined;
-    /**
-     * Run a vector search over the index, picking the committed path or the
-     * txn-merging path based on active txnId. Forwards the optional
-     * efSearch override resolved above.
-     * @param {number} kArg - top-k size
-     * @param {Function|null} pred - optional predicate
-     * @returns {Array<{id:string, score:number}>}
-     */
-    const search = (kArg, pred) => txnId
-      ? index.searchInTxn(near.vector, kArg, txnId, pred, searchOpts)
-      : index.searchFiltered(near.vector, kArg, pred, searchOpts);
-
-    let hits;
-    const docCache = new Map();
-    if (plan.useIndex) {
-      const candidates = plan.candidateIds;
-      if (plan.residualFilter) {
-        await Promise.all([...candidates].map(async id => {
-          const doc = await hydrate(id);
-          if (doc) docCache.set(id, doc);
-        }));
-        hits = search(near.k,
-          (id) => candidates.has(id) && plan.residualFilter(docCache.get(id)));
-      } else {
-        hits = search(near.k, (id) => candidates.has(id));
-      }
-    } else if (plan.residualFilter) {
-      const all = await wrapper.get(`${collection}S`, getOpts);
-      for (const doc of all) {
-        if (doc && doc.$ID) docCache.set(doc.$ID, doc);
-      }
-      hits = search(near.k, (id) => {
-        const doc = docCache.get(id);
-        return !!doc && plan.residualFilter(doc);
+      throw new BriQueryError({
+        code: 'COMBINE_REQUIRED_FOR_HYBRID',
+        message: 'QueryBuilder: .match and .near in the same chain require .combine to specify how their scores blend. Add .combine({alias, vector}).',
+        details: {}
       });
-    } else {
-      hits = search(near.k, null);
     }
-
-    const out = [];
-    for (const { id, score } of hits) {
-      const entity = docCache.get(id) || await hydrate(id);
-      if (entity) out.push(attachScore(entity, score));
+    if (match) {
+      return applyResultDecoration(
+        await this._executeMatchPlan(plan, match, limit)
+      );
     }
-    return typeof limit === 'number' ? out.slice(0, limit) : out;
+    if (near) {
+      return applyResultDecoration(
+        await executeVectorPlan(this._ctx, plan, near, limit)
+      );
+    }
+    return applyResultDecoration(await executeWherePlan(this._ctx, plan, limit));
   }
 
   /**
@@ -575,104 +604,31 @@ export class QueryBuilder {
   }
 
   /**
-   * Execute a `.where`-only chain (no `.near` / `.match` / `.combine`).
-   * If the planner found an index hit, hydrates only the candidate set and
-   * applies the residual filter post-hydration. Otherwise falls back to
-   * the engine's group-get over the full collection with the filter as a
-   * residual JS predicate.
-   *
-   * @param {Object} plan - From QueryPlanner.planWhere
-   * @param {number|undefined} limit
-   * @returns {Promise<Array<Object>>}
-   */
-  async _executeWherePlan(plan, limit) {
-    const { collection, wrapper } = this._ctx;
-    if (plan.useIndex) {
-      // Hydrate only the candidate set; apply residual filter post-hydration.
-      const ids = [...plan.candidateIds];
-      const docs = await Promise.all(ids.map(id => wrapper.get(null, id)));
-      const filtered = plan.residualFilter
-        ? docs.filter(doc => doc && plan.residualFilter(doc))
-        : docs.filter(Boolean);
-      return typeof limit === 'number' ? filtered.slice(0, limit) : filtered;
-    }
-    const all = await wrapper.get(`${collection}S`);
-    const filtered = plan.residualFilter ? all.filter(plan.residualFilter) : all;
-    return typeof limit === 'number' ? filtered.slice(0, limit) : filtered;
-  }
-
-  /**
    * Convenience terminal: first match or `null` if the result set is empty.
-   *
-   * Composition: works on every other chain (where / near / match /
-   * combine / limit). Internally awaits toArray() and returns the head
-   * — there's no separate "limit 1" optimization yet because the chain
-   * already truncates appropriately for vector and match paths; pure
-   * .where could optimize but the savings at v1 scale are negligible.
    *
    * @returns {Promise<Object|null>}
    */
   async first() {
-    const arr = await this.toArray();
-    return arr.length > 0 ? arr[0] : null;
+    return queryBuilderFirst(this);
   }
 
   /**
    * Terminal: count of matching docs (UC-X3).
    *
-   * Composition: works with .where (and operator filters via the shared
-   * filter-compiler). DOES NOT compose with .near — the spec scopes
-   * "count of similar vectors" out of v1 because the semantics aren't
-   * well-defined (count of all? count above some threshold? count where
-   * cosine is in some range?). Throws with a diagnostic when .near is
-   * present so the user makes the policy explicit instead.
-   *
    * @returns {Promise<number>}
-   * @throws {Error} when .near is in the chain
    */
   async count() {
-    if (this._state.near) {
-      throw new Error('QueryBuilder.count() does not compose with .near (yet)');
-    }
-    const arr = await this.toArray();
-    return arr.length;
+    return queryBuilderCount(this);
   }
 
   /**
    * Terminal: distinct values of `field` across the result set (UC-X3).
    *
-   * Order preservation: insertion order, NOT sort order. Spec example
-   * uses .distinct for unique-id enumeration where order doesn't matter;
-   * imposing sort would surprise callers who expect "the natural order
-   * the matches came in".
-   *
-   * Null/undefined values: dropped silently (no entries for absent
-   * fields). The Set + push pattern ensures one entry per distinct value
-   * and stable order.
-   *
-   * Composition: same restriction as count — does not compose with .near.
-   *
-   * @param {string} field - Name of the field whose distinct values to collect
-   * @returns {Promise<Array>} distinct values in encounter order
-   * @throws {Error} when .near is in the chain
+   * @param {string} field
+   * @returns {Promise<Array>}
    */
   async distinct(field) {
-    if (this._state.near) {
-      throw new Error('QueryBuilder.distinct() does not compose with .near (yet)');
-    }
-    const arr = await this.toArray();
-    const seen = new Set();
-    const out = [];
-    for (const doc of arr) {
-      if (!doc) continue;
-      const v = doc[field];
-      if (v === undefined || v === null) continue;
-      if (!seen.has(v)) {
-        seen.add(v);
-        out.push(v);
-      }
-    }
-    return out;
+    return queryBuilderDistinct(this, field);
   }
 
   /**

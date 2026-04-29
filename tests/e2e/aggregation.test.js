@@ -181,6 +181,39 @@ describe('UC-X3: aggregation', () => {
     expect(untagged).toHaveLength(1);
   });
 
+  test('filter operators: $in requires an array (compileFilter guard)', async () => {
+    db = await freshDB();
+    db.schema('memoryArtifact', {
+      tag: { type: String, required: false }
+    });
+    await db.add.memoryArtifact({ tag: 'x' });
+    await expect(
+      db.get.memoryArtifactS.where({ tag: { $in: 'not-array' } }).toArray()
+    ).rejects.toThrow(/\$in expects an array/);
+  });
+
+  test('filter operators: unknown operator throws', async () => {
+    db = await freshDB();
+    db.schema('memoryArtifact', {
+      tag: { type: String, required: false }
+    });
+    await db.add.memoryArtifact({ tag: 'x' });
+    await expect(
+      db.get.memoryArtifactS.where({ tag: { $bogus: 1 } }).toArray()
+    ).rejects.toThrow(/Unsupported filter operator/);
+  });
+
+  test('groupBy.having rejects non-object filter (shared compileFilter guard)', async () => {
+    db = await freshDB();
+    db.schema('memoryArtifact', {
+      type: { type: String, required: true }
+    });
+    await db.add.memoryArtifact({ type: 'fact' });
+    await expect(
+      db.get.memoryArtifactS.groupBy('type').count().having(7).toArray()
+    ).rejects.toThrow(/compileFilter: unsupported filter type number/);
+  });
+
   test('count of distinct + groupBy compose with .where', async () => {
     db = await freshDB();
     db.schema('memoryArtifact', {

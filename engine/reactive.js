@@ -159,9 +159,10 @@ export function watchForChanges({ wrapper, populate, txnId }, rootObj) {
         }
 
         if (isObjectOrArray(value) && Object.keys(value).length) {
-          if (isObjectOrArray(target) && isObjectOrArray(value)) {
-            changes.push([path2, Array.isArray(value) ? [] : {}, undeclared]);
-          }
+          // When replacing with a nested object, stage an empty scaffold before
+          // mapObjectOrArray emits leaf tuples (targets are always reactive
+          // object/array roots — see get-trap recursion).
+          changes.push([path2, Array.isArray(value) ? [] : {}, undeclared]);
           const entries = mapObjectOrArray(value, path2, oldVal);
           changes.push(...entries);
         } else {

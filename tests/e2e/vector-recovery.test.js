@@ -180,6 +180,65 @@ describe('VectorIndex codec — v1 → v2 backwards compatibility', () => {
       .toThrow(/unsupported format version 99/);
   });
 
+  test('cosine returns 0 when either vector has zero magnitude', () => {
+    expect(cosine([1, 0], [0, 0])).toBe(0);
+    expect(cosine([0, 0], [0, 0])).toBe(0);
+  });
+
+  test('unpackIndex throws on invalid VIDX magic', () => {
+    const badMagic = Buffer.alloc(32);
+    badMagic.writeUInt32BE(0, 0);
+    expect(() => unpackIndex(badMagic)).toThrow(/invalid magic/);
+  });
+
+  test('unpackIndex restores free-slot bookkeeping when serialization lists freed indexes', () => {
+    const idx = new VectorIndex({ dims: DIMS, initialCapacity: 16 });
+    idx.add('keep', makeVec('keep'));
+    idx.add('drop', makeVec('drop'));
+    idx.remove('drop');
+    const u = unpackIndex(idx.serialize());
+    expect(u.freeSlots.length).toBeGreaterThan(0);
+  });
+
+  test('packIndex works when topology bucket is transiently missing', () => {
+    const idx = new VectorIndex({ dims: DIMS, initialCapacity: 16 });
+    idx.add('solo', makeVec('solo'));
+    delete idx._neighbors;
+    expect(() => packIndex(idx)).not.toThrow();
+  });
+
+  test('packIndex writes fallback entry sentinel when entry fields are omitted', () => {
+    const idx = new VectorIndex({ dims: DIMS, initialCapacity: 8 });
+    delete idx._entryPoint;
+    delete idx._entryLevel;
+    delete idx._levels;
+    const buf = packIndex(idx);
+    const u = unpackIndex(buf);
+    expect(u.hnsw.entryPoint).toBe(-1);
+    expect(u.hnsw.entryLevel).toBe(-1);
+  });
+
+  test('unpackIndex skips oversized level tails when levelsLen corrupts beyond capacity', () => {
+    const idx = new VectorIndex({ dims: 2, initialCapacity: 8 });
+    const base = Buffer.from(idx.serialize());
+    /** Walk payload to locate `levelsLen` in the v2 tail (capacity follows entryLevel). */
+    let o = 4 + 4 + 4;
+    o += 4 + base.readUInt32LE(o);
+    o += 4 + 4;
+    let pc = base.readUInt32LE(o); o += 4;
+    while (pc-- > 0) {
+      const il = base.readUInt32LE(o); o += 4 + il + 4;
+    }
+    const fc = base.readUInt32LE(o); o += 4;
+    o += fc * 4;
+    o += idx._capacity * idx.dims * 4;
+    o += 4 + 4 + 4 + 4 + 4;
+    const patched = Buffer.alloc(base.length + 4000);
+    base.copy(patched);
+    patched.writeUInt32LE(idx._capacity + 50, o);
+    expect(() => unpackIndex(patched)).not.toThrow();
+  });
+
   test('v1 rebuild handles the empty-index edge case', () => {
     // An empty index can still be serialized and round-tripped; the
     // rebuild path must short-circuit cleanly when there are no slots

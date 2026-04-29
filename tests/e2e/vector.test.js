@@ -10,6 +10,8 @@
  *   - dimension mismatch on insert returns a typed validation error
  *   - dimension mismatch on query throws a typed query error
  *   - empty collection yields empty results, not crashes
+ *   - post-checkpoint WAL tail (no final snapshot on exit) restores vectors
+ *     through recovery replay — exercises inhouse-recovery applyVectorWrite
  *   - full document body returned without secondary round-trips
  *   - the legacy db.get.{collection}S(...) call form still works
  *
@@ -22,7 +24,14 @@
  */
 import { jest } from '@jest/globals';
 import { createDB } from '../../client/index.js';
+import { spawn } from 'child_process';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import fs from 'fs/promises';
+import { once } from 'node:events';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const VECTOR_WAL_CHILD = path.resolve(HERE, 'vector-wal-recovery-child.mjs');
 
 const TEST_DATA_DIR = './test-data-vector';
 
@@ -134,21 +143,36 @@ describe('Vector Search (UC-V1)', () => {
   });
 
   test('dimension mismatch on insert is rejected', async () => {
-    // A 4-dim vector when schema declared 8 dims must not silently store.
-    // The behavior contract: schema validator returns a descriptive error.
+    // The validator throws BriValidationError with code VECTOR_DIMS_MISMATCH
+    // (typed-error contract from spec §2.11; see engine/errors.js).
     const validate = (await import('../../utils/schema/index.js')).default;
+    const { BriValidationError, VECTOR_DIMS_MISMATCH } =
+      await import('../../engine/errors.js');
     const schema = { embedding: { type: 'vector', dims: DIMS } };
-    const err = validate(schema, { embedding: [1, 2, 3, 4] });
-    expect(err).not.toBeNull();
-    expect(err).toMatch(/dim/i);
+    let thrown;
+    try { validate(schema, { embedding: [1, 2, 3, 4] }); }
+    catch (e) { thrown = e; }
+    expect(thrown).toBeInstanceOf(BriValidationError);
+    expect(thrown.code).toBe(VECTOR_DIMS_MISMATCH);
+    expect(thrown.message).toMatch(/dim/i);
   });
 
   test('non-finite values in embedding are rejected', async () => {
     const validate = (await import('../../utils/schema/index.js')).default;
+    const { BriValidationError, VECTOR_INVALID_VALUE } =
+      await import('../../engine/errors.js');
     const schema = { embedding: { type: 'vector', dims: 3 } };
-    expect(validate(schema, { embedding: [1, NaN, 3] })).not.toBeNull();
-    expect(validate(schema, { embedding: [1, Infinity, 3] })).not.toBeNull();
-    expect(validate(schema, { embedding: [1, 2, 3] })).toBeNull();
+    const expectThrow = (val, code) => {
+      let thrown;
+      try { validate(schema, { embedding: val }); }
+      catch (e) { thrown = e; }
+      expect(thrown).toBeInstanceOf(BriValidationError);
+      expect(thrown.code).toBe(code);
+    };
+    expectThrow([1, NaN, 3], VECTOR_INVALID_VALUE);
+    expectThrow([1, Infinity, 3], VECTOR_INVALID_VALUE);
+    // Valid case completes silently — no exception.
+    expect(() => validate(schema, { embedding: [1, 2, 3] })).not.toThrow();
   });
 
   test('query vector with wrong dims throws typed error', async () => {
@@ -417,6 +441,38 @@ describe('Vector Persistence (Risk 1)', () => {
     }
   }
 
+  /**
+   * Child helper for vector-wal-recovery-child.mjs — stdout READY before exit().
+   *
+   * Domain: WAL replay routing (applyVectorWrite) only executes when WAL
+   * lines exist after snapshot.walLine; an unclean exit avoids the final
+   * disconnect snapshot so the surviving tail survives on disk for recover().
+   *
+   * Technical: listens on stdout until READY appears.
+   *
+   * @param {import('child_process').ChildProcessWithoutNullStreams} child
+   * @returns {Promise<void>}
+   */
+  function waitVectorWalChildReady(child) {
+    return new Promise((resolve, reject) => {
+      let buf = '';
+      const onData = (chunk) => {
+        buf += chunk.toString();
+        if (buf.includes('READY')) {
+          child.stdout.off('data', onData);
+          resolve();
+        }
+      };
+      child.stdout.on('data', onData);
+      child.on('error', reject);
+      child.on('exit', (code, sig) => {
+        if (!buf.includes('READY')) {
+          reject(new Error(`vector wal child exited before READY (code=${code} sig=${sig})`));
+        }
+      });
+    });
+  }
+
   test('vector index survives process restart via snapshot', async () => {
     const dir = './test-data-vector-persist-1';
     await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
@@ -554,4 +610,109 @@ describe('Vector Persistence (Risk 1)', () => {
 
     await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
   });
+
+  test('v2 snapshot reattaches toString on nested objects with $ID (loadSnapshotV2 prototypes)', async () => {
+    const dir = './test-data-vector-persist-nested-id';
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+
+    let aliceId;
+    await withDB(dir, async (db) => {
+      const alice = await db.add.user({ name: 'Alice' });
+      aliceId = alice.$ID;
+      await db.add.user({ name: 'Bob', buddy: { $ID: aliceId } });
+      await db._store.createSnapshot();
+    });
+
+    await withDB(dir, async (db) => {
+      const rows = await db.get.userS();
+      const bob = rows.find((r) => r.name === 'Bob');
+      expect(bob).toBeDefined();
+      expect(bob.buddy && bob.buddy.$ID).toBe(aliceId);
+      expect(String(bob.buddy)).toBe(aliceId);
+      expect(bob.buddy.toObject().$ID).toBe(aliceId);
+    });
+
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+  });
+
+  test('hardDelete emits WAL DELETE and updates catalog inside instrumented adapter', async () => {
+    const dir = './test-data-vector-hard-delete-live';
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+
+    await withDB(dir, async (db) => {
+      db.schema('memWalHardDel', {
+        t:      { type: String, required: true },
+        embedding: { type: 'vector', dims: PERSIST_DIMS, required: false }
+      });
+      const emb = makeVec('hard-delete-adapter', PERSIST_DIMS);
+      const d = await db.add.memWalHardDel({ t: 'one', embedding: emb });
+      const ct = db._store.coldTier;
+      const origDelete = ct.deleteDoc.bind(ct);
+      let flaky = true;
+      ct.deleteDoc = (key) =>
+        flaky
+          ? (flaky = false, Promise.reject(Object.assign(new Error('cold flake'), { code: 'ETEST' })))
+          : origDelete(key);
+      await db._store.hardDelete(d.$ID);
+      ct.deleteDoc = origDelete;
+      const rows = (await db.get.memWalHardDelS()).filter(Boolean);
+      expect(rows).toHaveLength(0);
+      const hits = await db.get.memWalHardDelS.near(emb, 2).toArray();
+      expect(hits).toHaveLength(0);
+    });
+
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+  });
+
+  test('hardDelete skips type-catalog sRem when key has no underscore segment', async () => {
+    const dir = './test-data-vector-hard-delete-noseg';
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+    await withDB(dir, async (db) => {
+      db.schema('memWalHardDel', {
+        t: { type: String, required: true },
+        embedding: { type: 'vector', dims: PERSIST_DIMS, required: false }
+      });
+      await db._store.hardDelete('FLATNOUSKEY');
+    });
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+  });
+
+  test('post-checkpoint WAL tail restores vector index after unclean exit (applyVectorWrite / applyVectorDelete)', async () => {
+    const dir = './test-data-vector-wal-post-checkpoint';
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+
+    const child = spawn('node',
+      ['--experimental-specifier-resolution=node', VECTOR_WAL_CHILD, dir],
+      { stdio: ['ignore', 'pipe', 'pipe'] }
+    );
+    let stderr = '';
+    child.stderr.on('data', (d) => { stderr += d.toString(); });
+
+    const exitPromise = once(child, 'exit');
+    await waitVectorWalChildReady(child);
+    const [code] = await exitPromise;
+    expect(code).toBe(0);
+
+    const embPre = [1, 0, 0, 0];
+    const embPost = [0, 1, 0, 0];
+
+    await withDB(dir, async (db) => {
+      db.schema('vecWalChunk', {
+        tag: { type: String, required: true },
+        embedding: { type: 'vector', dims: 4, required: false }
+      });
+      const rows = await db.get.vecWalChunkS().then(r => r.sort((a, b) => a.tag.localeCompare(b.tag)));
+      expect(rows.map(d => d.tag)).toEqual(['post']);
+      const [hPost] = await db.get.vecWalChunkS.near(embPost, 2);
+      expect(hPost.tag).toBe('post');
+      const rowsAll = await db.get.vecWalChunkS();
+      expect(rowsAll.every(d => d.tag !== 'pre')).toBe(true);
+    });
+
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+    if (stderr.length > 0) {
+      // Surface child stderr only on failure elsewhere; stdout path is nominal.
+      void stderr;
+    }
+  }, 20_000);
 });

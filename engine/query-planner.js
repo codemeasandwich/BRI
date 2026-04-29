@@ -87,9 +87,7 @@ export class QueryPlanner {
     // Function filters can't be analyzed structurally — fall back to scan
     // and run the function as the residual. Future improvement: accept a
     // compiled-filter object that exposes fields to the planner.
-    if (typeof filter === 'function') {
-      return { useIndex: false, candidateIds: null, residualFilter: filter };
-    }
+    if (typeof filter === 'function') return { useIndex: false, candidateIds: null, residualFilter: filter };
     if (typeof filter !== 'object') {
       throw new Error(`QueryPlanner: unsupported filter type ${typeof filter}`);
     }

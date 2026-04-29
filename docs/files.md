@@ -9,6 +9,11 @@ docs/
 ├── fts.md
 ├── graph.md
 ├── indexes.md
+├── migration.md
+├── observability.md
+├── proxy-conventions.md
+├── schema-extensions.md
+├── transactions.md
 └── vector.md
 ```
 
@@ -45,3 +50,23 @@ End-user walkthrough of the cancellation cascade (UC-X2, §10 non-negotiable). C
 ### `graph.md`
 
 End-user walkthrough of the knowledge-graph surface (UC-G1 slice). Covers the `$edge` schema block (with the from/to-as-collection-constraint vs field-name semantics), predicate-name reserved list (§0.4) and collision detection, predicate access mechanics (`alice.works_at` for read, `alice.works_at(target, attrs)` for write), how writes flow through middleware, how reads use the GraphIndex for O(degree) lookup, and v1 limitations with pointers to follow-up slices (inverse, multi-hop, supersession, polymorphic refs).
+
+### `schema-extensions.md`
+
+Reference for the new schema vocabulary v1 introduces: the `'vector'` / `'ref'` / `'ref|string'` / `'predicate'` field types, the collection-level options (`$indexes`, `$supersession`, `$confidence`, `$provenance`, `$edge`), and field-level `cascadeOn`. Includes the reserved-name list and the schema load-time validation that rejects collisions.
+
+### `transactions.md`
+
+What `db.rec()` / `db.fin()` / `db.nop()` / `db.pop()` guarantee for vector + graph state, the deferred-linking transaction model from spec §7.1, and the cancellation cascade contract from spec §2.8 (including the in-flight txn rollback for the cancelled session). Lists the WAL record types added in v1.
+
+### `proxy-conventions.md`
+
+Reference for the spec §3.5 entity property-access lookup algorithm. Lists the reserved chain-method names, the precedence order (`$`-prefixed → `and` → reserved → `inverse` → `related` → declared field → predicate → throw), and a debugging guide for "why did `entity.foo` throw?".
+
+### `migration.md`
+
+How an existing Bri project adopts vector + graph: which existing surfaces still work unchanged, the four-step adoption path (declare schemas → opt-in to chain syntax → adopt predicate proxy → wire cascade scopes), the typed-error contract change (validator throws instead of returning `string|null`), and the worker-thread opt-in.
+
+### `observability.md`
+
+What gets logged, where to find diagnostic accessors, how to inspect the WAL by record type, and what the worker thread exposes via `workerDiagnostics()`. v1 is intentionally minimal — there is no metrics SDK, no tracing endpoint; this page documents the read-only signals available.

@@ -20,6 +20,7 @@
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --testPathIgnorePatterns='/scale\\.test\\.js$'",
     "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage --testPathIgnorePatterns='/scale\\.test\\.js$'",
     "test:scale": "node --experimental-vm-modules node_modules/jest/bin/jest.js --testPathPattern='/scale\\.test\\.js$'",
+    "jsdoc-check": "node scripts/jsdoc-check.js",
     "release": "bash scripts/publish.sh",
     "prepare": "git config core.hooksPath .hooks"
   },

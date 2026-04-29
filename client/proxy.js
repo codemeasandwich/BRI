@@ -28,6 +28,7 @@
  *   - engine/cascade.js            → createCascade (db.cascade.{scope})
  *   - engine/graph-algo.js         → createAlgo (db.algo.degree, future PPR)
  *   - client/query-builder.js      → QueryBuilder (chainable .where/.near/...)
+ *   - client/proxy-operations.js → createOperationProxy (extracted line-count)
  *   - client/txn-lifecycle.js      → createTxnLifecycle (rec/fin/nop/pop with
  *                                    vector-index commit/rollback hooks)
  *
@@ -71,129 +72,8 @@ import { vectorIndexMiddleware } from '../engine/vector-middleware.js';
 import { createCascade } from '../engine/cascade.js';
 import { createAlgo } from '../engine/graph-algo.js';
 import { QueryBuilder } from './query-builder.js';
+import { createOperationProxy } from './proxy-operations.js';
 import { createTxnLifecycle } from './txn-lifecycle.js';
-
-/**
- * Build a per-operation proxy for the non-`get` collection verbs
- * (`db.add.{coll}`, `db.set.{coll}`, `db.del.{coll}` — `db.sub.{coll}` and
- * `db.pin.{coll}` use simpler bind-only proxies declared inline in
- * createDBInterface). Each accessed collection name returns a callable
- * that runs the operation through the middleware chain so validation,
- * vector + graph + secondary-index sync, and transaction-id injection
- * all fire automatically.
- *
- * Lifecycle: one Proxy per opName (add / set / del). The Proxy wraps an
- * empty function as the target so the inner Proxy traps can fire on both
- * property access (per-collection callable) and apply (the function
- * call that follows). Symbols and ill-formed collection names are
- * rejected up front to avoid surprising downstream errors.
- *
- * Why route through middleware here (instead of letting the engine
- * wrapper own the chain): the engine wrapper is schema-agnostic and
- * doesn't know about the registry. Middleware lives in the client layer
- * where the registry was constructed; running the chain at the proxy
- * boundary means any future middleware (e.g. observability hooks, audit
- * logging) gets fired uniformly across user-facing calls.
- *
- * @param {Function} operation - Underlying engine wrapper method (unused
- *   directly here; the middleware's final handler calls wrapper.{op}
- *   via closure access in createDBInterface)
- * @param {string} opName - Operation tag ('add' | 'set' | 'del')
- * @param {Object} middleware - Middleware runner from createMiddleware()
- * @param {Function} getDb - Lazy db accessor; resolves to the db object
- *   constructed by createDBInterface so middleware can read
- *   db._activeTxnId etc.
- * @returns {Proxy}
- */
-function createOperationProxy(operation, opName, middleware, getDb) {
-  return new Proxy(function() {}, {
-    /**
-     * Proxy get trap: returns a per-collection callable for the operation.
-     * @param {Function} target - Underlying empty function (proxy target)
-     * @param {string|symbol} prop - Collection name accessed on the proxy
-     * @returns {Function|undefined}
-     */
-    get(target, prop) {
-      // Validate collection name
-      if (typeof prop === 'symbol') {
-        return undefined;
-      }
-      if (!collectionNamePattern.test(prop)) {
-        throw new Error(`"${prop} is not a good collection name"`);
-      }
-
-      // Return a function that runs through middleware
-      return function(...args) {
-        const db = getDb();
-
-        // Build context for middleware
-        const ctx = {
-          operation: opName,
-          type: prop,
-          args: args,
-          opts: {},
-          db: db,
-          result: undefined
-        };
-
-        // Extract opts from args based on operation type
-        // For 'get': get(type, where, opts) - opts is 3rd arg or where could be opts
-        // For 'add': add(type, data, opts) - opts is 3rd arg
-        // For 'set': set(type, data, opts) - opts is 3rd arg
-        // For 'del': del(type, $ID, deletedBy) - no opts currently
-
-        if (opName === 'get') {
-          // where could be: string ($ID), object (query or opts), or undefined
-          const where = args[0];
-          const explicitOpts = args[1];
-
-          if (explicitOpts && typeof explicitOpts === 'object') {
-            ctx.opts = { ...explicitOpts };
-          } else if (where && typeof where === 'object' && 'txnId' in where && !where.$ID) {
-            // where is actually an opts object (has txnId key, even if null/false)
-            ctx.opts = { ...where };
-            ctx.args = [undefined, ctx.opts];
-          }
-        } else if (opName === 'add' || opName === 'set') {
-          const data = args[0];
-          const optsArg = args[1];
-
-          if (optsArg && typeof optsArg === 'object') {
-            ctx.opts = { ...optsArg };
-          }
-        }
-
-        // Run through middleware chain
-        return middleware.run(ctx, (ctx) => {
-          // Rebuild args with potentially modified opts
-          let finalArgs;
-
-          if (opName === 'get') {
-            const where = ctx.args[0];
-            // If opts has txnId and where is undefined (group call), pass opts as 2nd arg
-            if (Object.keys(ctx.opts).length > 0) {
-              finalArgs = [where, ctx.opts];
-            } else {
-              finalArgs = [where];
-            }
-          } else if (opName === 'add' || opName === 'set') {
-            const data = ctx.args[0];
-            if (Object.keys(ctx.opts).length > 0) {
-              finalArgs = [data, ctx.opts];
-            } else {
-              finalArgs = [data];
-            }
-          } else {
-            // del and others - pass through as-is for now
-            finalArgs = ctx.args;
-          }
-
-          return operation.call(operation, prop, ...finalArgs);
-        });
-      };
-    }
-  });
-}
 
 /**
  * Create a hybrid get-proxy: keeps the legacy callable API for backwards
@@ -252,7 +132,10 @@ function createGetProxy(wrapper, registry, middleware, getDb) {
   const CHAIN_METHODS = new Set([
     'where', 'near', 'limit', 'toArray', 'first', 'then',
     'count', 'distinct', 'groupBy',
-    'match', 'combine'
+    'match', 'combine',
+    // Spec §2.2 chain-method completion (see client/query-builder.js):
+    'touching', 'hydrate', 'confidence',
+    'history', 'withProvenance', 'asOf'
   ]);
 
   return new Proxy(function() {}, {
@@ -323,7 +206,19 @@ function createGetProxy(wrapper, registry, middleware, getDb) {
           const builder = new QueryBuilder({
             collection, wrapper, registry, getDb
           });
-          return builder[builderProp].bind(builder);
+          // Spec §2.2 marks `history` and `withProvenance` as PROPERTY
+          // accessors — getters that return a derived builder. Functions
+          // need .bind; getters return a builder that we forward as-is.
+          // Detect by reading the property value on the prototype: a
+          // getter-defined property's descriptor has `get`; a regular
+          // method is a plain function on the value.
+          const proto = Object.getPrototypeOf(builder);
+          const desc = Object.getOwnPropertyDescriptor(proto, builderProp);
+          if (desc && typeof desc.get === 'function') {
+            return builder[builderProp];
+          }
+          const m = builder[builderProp];
+          return m.bind(builder);
         },
         /**
          * Apply trap: invoking the proxy with parens preserves the legacy
@@ -454,6 +349,11 @@ export function createDBInterface(wrapper, store) {
     // Active transaction ID for this db instance — read by middleware to
     // auto-inject txnId into ctx.opts and by lifecycle hooks to clear on fin/nop.
     _activeTxnId: null,
+    // Optional sessionId attached at db.rec({sessionId}) — read by
+    // db.cascade.session(id) to identify and cancel an in-flight txn that
+    // belongs to the cancelled session before sweeping committed state
+    // (spec §2.8 / non-negotiable §0.3 #5).
+    _activeTxnSessionId: null,
 
     // Lifecycle methods (rec/fin/nop/pop/txnStatus) are spread in below from
     // createTxnLifecycle to keep this file focused on routing + proxies.

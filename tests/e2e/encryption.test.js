@@ -707,7 +707,7 @@ describe('End-to-End Encrypted Persistence', () => {
 describe('serializeEntryEncrypted', () => {
   test('produces encrypted output', () => {
     const entry = createSetEntry('KEY', '{"secret":"value"}');
-    const line = serializeEntryEncrypted(entry, null, TEST_KEY);
+    const line = serializeEntryEncrypted(entry, TEST_KEY);
 
     const parts = line.split('|');
     expect(parts.length).toBe(3);
@@ -720,7 +720,7 @@ describe('serializeEntryEncrypted', () => {
 
   test('can be decrypted by deserializeEntry', () => {
     const entry = createSetEntry('KEY', '{"secret":"value"}');
-    const line = serializeEntryEncrypted(entry, null, TEST_KEY);
+    const line = serializeEntryEncrypted(entry, TEST_KEY);
 
     const parsed = deserializeEntry(line, TEST_KEY);
 

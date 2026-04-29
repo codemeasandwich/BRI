@@ -4,7 +4,8 @@
 wal/
 ├── entry.js
 ├── writer.js
-└── reader.js
+├── reader.js
+└── record-types.js
 ```
 
 ## Files
@@ -41,3 +42,7 @@ WAL reader for recovery and integrity verification.
 - `replay(afterLine, handlers)` - Replay with callbacks
 - `verifyIntegrity()` - Check pointer chain
 - `getLineCount()` - Total entry count
+
+### `record-types.js`
+
+Canonical WAL `action` name strings — document ops (SET, DELETE, …) plus index-level names (VECTOR_ADD, INDEX_INSERT, …) for observability and recovery routing per spec §3.3. Exports `WAL_RECORD_TYPES` and named re-exports for each literal.

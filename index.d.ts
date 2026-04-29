@@ -334,4 +334,283 @@ export function createDB(options?: CreateDBOptions): Promise<Database>;
  */
 export function getDB(options?: CreateDBOptions): Promise<Database>;
 
+// =====================================================================
+// Vector + Graph v1 surface (spec §2)
+// =====================================================================
+
+// ---- Schema vocabulary (spec §2.1) ----------------------------------
+
+/** Bri's schema-vocabulary string-typed field types. */
+export type BriFieldTypeString =
+  | 'email'
+  | 'ref'
+  | 'ref|string'
+  | 'predicate'
+  | 'vector';
+
+/** Field declaration accepted by `db.schema(collection, schema)`. */
+export interface BriFieldDecl {
+  type: any | BriFieldTypeString;
+  required?: boolean;
+  enum?: any[];
+  /** For 'ref' / 'ref|string': name of the target collection. */
+  to?: string;
+  /** For 'vector': required positive integer dimensionality. */
+  dims?: number;
+  /** For 'vector': v1 supports 'cosine' only. */
+  metric?: 'cosine';
+  /** For Object: nested schema. */
+  properties?: Record<string, BriFieldDecl>;
+  /** For Array: items type constructor. */
+  items?: any;
+  /** For predicate: collection name where the predicate is registered. */
+  collection?: string;
+  /** Pre-validation transform. */
+  get?: (value: any) => any;
+  /** Pre-write transform. */
+  set?: (value: any) => any;
+  /** Field-level cascade-scope opt-in (spec §2.8). */
+  cascadeOn?: string;
+}
+
+/** Edge collection $edge block. */
+export interface BriEdgeBlock {
+  /** Subject-side collection (or 'A | B' polymorphic). */
+  from: string;
+  /** Object-side collection (or 'A | B' polymorphic; 'string' = literal). */
+  to: string;
+  /** Field name on the edge document holding the predicate value. */
+  predicate?: string;
+  /** Allowed predicate values, or '*' for open. v1 routes only explicit lists. */
+  predicates?: string[] | '*';
+  /** When true, `(from, to, predicate)` is canonicalised lexicographically. */
+  symmetric?: boolean;
+  /** When true, `(from, to, predicate)` is unique → upsert semantics. */
+  unique?: boolean;
+}
+
+/** Schema declaration accepted by `db.schema(collection, schema)`. */
+export type BriSchema = {
+  [field: string]: BriFieldDecl;
+} & {
+  /** Compound + single-field secondary indexes. */
+  $indexes?: string[][];
+  /** Names the supersession backref field. Enables `.history`. */
+  $supersession?: string;
+  /** Names the numeric confidence field. Enables `.confidence(t)`. */
+  $confidence?: string;
+  /** Names the provenance ids field. Enables `.withProvenance`. */
+  $provenance?: string;
+  /** Marks the collection as an edge collection. */
+  $edge?: BriEdgeBlock;
+};
+
+// ---- QueryBuilder (spec §2.2) ---------------------------------------
+
+/**
+ * Reactive entity returned from a chain query. Carries non-enumerable
+ * ranking metadata when chain methods produce ranked results.
+ */
+export interface ScoredEntity extends ReactiveEntity {
+  /** Cosine similarity from `.near` / `.combine`. */
+  $cosine?: number;
+  /** Composite score (cosine alone unless `.combine` weighted). */
+  $score?: number;
+  /** Substring match attribution from `.match`. */
+  $matchHits?: { field: string; value: any };
+  /** Provenance ids hydrated by `.withProvenance`. */
+  $provenance?: string[];
+}
+
+export type BriFilterValue =
+  | string | number | boolean | Date | null
+  | { $ne?: any; $in?: any[]; $gte?: any; $gt?: any; $lte?: any; $lt?: any; $exists?: boolean }
+  | { $or: Record<string, any>[] };
+
+export type BriFilter =
+  | Record<string, BriFilterValue>
+  | ((doc: any) => boolean);
+
+/**
+ * Options forwarded to the underlying VectorIndex search.
+ */
+export interface BriNearOptions {
+  /** null forces committed-only; a string targets a specific txn. */
+  txnId?: string | null;
+  /** HNSW query-time candidate-set size override (v2 §6.2). */
+  efSearch?: number;
+}
+
+/**
+ * Chainable query builder produced by `db.get.{collection}S` access.
+ *
+ * The chain is immutable per link — each method returns a new builder so
+ * parallel call sites starting from the same accessor don't leak state.
+ * The builder is thenable; awaiting it is equivalent to `.toArray()`.
+ */
+export interface QueryBuilder<T extends ReactiveEntity = ScoredEntity>
+  extends PromiseLike<T[]> {
+  where(filter: BriFilter): QueryBuilder<T>;
+  near(vector: number[] | Float32Array, k: number,
+       opts?: BriNearOptions): QueryBuilder<T>;
+  match(stringFilter: Record<string, string>, k?: number): QueryBuilder<T>;
+  combine(weights: { alias: number; vector: number }): QueryBuilder<T>;
+  touching(seedIds: Array<string | { $ID: string }>): QueryBuilder<T>;
+  confidence(threshold: number): QueryBuilder<T>;
+  hydrate(fields: string[]): QueryBuilder<T>;
+  limit(n: number): QueryBuilder<T>;
+  /** Schema-conditional: requires `$supersession`. */
+  readonly history: QueryBuilder<T>;
+  /** Schema-conditional: requires `$provenance`. */
+  readonly withProvenance: QueryBuilder<T>;
+  /** Deferred to v2 — throws BriQueryError NOT_IMPLEMENTED_V1. */
+  asOf(t: Date | number): QueryBuilder<T>;
+
+  count(): Promise<number>;
+  distinct(field: string): Promise<any[]>;
+  groupBy(field: string): GroupedQueryBuilder;
+
+  toArray(): Promise<T[]>;
+  first(): Promise<T | null>;
+}
+
+export interface GroupedQueryBuilder {
+  count(): Promise<Array<{ [k: string]: any; count: number }>>;
+  sum(field: string): Promise<Array<{ [k: string]: any; sum: number }>>;
+  having(filter: BriFilter): GroupedQueryBuilder;
+  toArray(): Promise<any[]>;
+}
+
+// ---- Predicate proxy (spec §2.3 / §2.4) -----------------------------
+
+/**
+ * Callable + thenable accessor returned for `entity.{predicate}` when
+ * `predicate` is a registered predicate from this collection's $edge.
+ *   - call `entity.predicate(target, attrs?)` to write an edge
+ *   - await `entity.predicate` to read targets
+ *   - await `entity.predicate.$` to read edge documents themselves
+ */
+export interface PredicateAccessor<TTarget = ReactiveEntity, TEdge = ReactiveEntity>
+  extends PromiseLike<TTarget[]> {
+  (target: TTarget | string, attrs?: Record<string, any>): Promise<TEdge>;
+  /** Awaitable: edge documents (with confidence/provenance/etc.). */
+  readonly $: PromiseLike<TEdge[]>;
+  limit(n: number): PromiseLike<TTarget[]>;
+  /** Schema-conditional. */
+  readonly history: PromiseLike<TTarget[]>;
+  /** Schema-conditional. */
+  readonly withProvenance: PromiseLike<TTarget[]>;
+  /** Schema-conditional. */
+  confidence(threshold: number): PromiseLike<TTarget[]>;
+}
+
+// ---- db.algo (spec §2.7) --------------------------------------------
+
+export interface DegreeAlgoArgs {
+  collection: string;
+  via: string;
+  weighted?: string;
+  top?: number;
+}
+
+export interface PPRAlgoArgs {
+  seeds: Array<string | ReactiveEntity>;
+  via: string;
+  k?: number;
+  damping?: number;
+  iterations?: number;
+  edgeFilter?: Record<string, any>;
+  edgeWeight?: (edge: any) => number;
+}
+
+export interface AlgoNamespace {
+  degree(args: DegreeAlgoArgs): Promise<Array<{ entity: ReactiveEntity; degree: number }>>;
+  /** Deferred to v3 — throws NOT_IMPLEMENTED until then. */
+  ppr(args: PPRAlgoArgs): Promise<Array<{ entity: ReactiveEntity; score: number }>>;
+}
+
+// ---- db.cascade (spec §2.8) -----------------------------------------
+
+export interface CascadeResult {
+  deleted: number;
+  byCollection: Record<string, number>;
+}
+
+export interface CascadeByFieldArgs {
+  collections: string[];
+  filter: Record<string, any>;
+  opts?: { atomic?: boolean; txnId?: string | null };
+}
+
+/**
+ * Indexed by scope name: `db.cascade.session(id)`, `db.cascade.tenant(id)`, etc.
+ * Each scope must be opted in by at least one schema's `cascadeOn` flag.
+ */
+export interface CascadeNamespace {
+  byField(args: CascadeByFieldArgs): Promise<CascadeResult>;
+  [scope: string]: ((id: string, opts?: { atomic?: boolean; txnId?: string | null })
+                    => Promise<CascadeResult>) | any;
+}
+
+// ---- db.schema (spec §2.1) ------------------------------------------
+
+export interface SchemaNamespace {
+  declareEdge(collectionName: string, options: BriEdgeBlock & {
+    predicates?: string[] | '*';
+  }): void;
+}
+
+// ---- Error class hierarchy (spec §2.11) -----------------------------
+
+export type BriErrorCode =
+  | 'VECTOR_DIMS_MISMATCH'
+  | 'VECTOR_INVALID_VALUE'
+  | 'VECTOR_QUERY_DIMS_MISMATCH'
+  | 'VECTOR_FIELD_NOT_DECLARED'
+  | 'REF_NOT_FOUND'
+  | 'REF_FORMAT_INVALID'
+  | 'EDGE_ENDPOINT_INVALID'
+  | 'PREDICATE_NOT_REGISTERED'
+  | 'CHAIN_CROSSES_COLLECTION'
+  | 'RESERVED_NAME_COLLISION'
+  | 'CASCADE_SCOPE_UNKNOWN'
+  | 'INDEX_FIELD_NOT_DECLARED'
+  | 'WAL_INDEX_REPLAY_FAILED'
+  | 'NOT_IMPLEMENTED_V1';
+
+export interface BriErrorInit {
+  message: string;
+  code: BriErrorCode | string;
+  details?: Record<string, any>;
+}
+
+export class BriError extends Error {
+  code: string;
+  details?: Record<string, any>;
+  constructor(init: BriErrorInit);
+}
+export class BriValidationError extends BriError {}
+export class BriQueryError extends BriError {}
+export class BriProxyError extends BriError {}
+export class BriSchemaError extends BriError {}
+export class BriRecoveryError extends BriError {}
+
+// ---- Database augmentation (spec §2 surface on the main interface) --
+// The augmentation lives via interface merging on the Database
+// declaration above (TypeScript merges `interface Database` clauses in
+// the same module). The members below extend it.
+
+export interface Database {
+  /**
+   * Spec §2.1 — declare a schema for a collection. Required to enable
+   * vector / graph / cascade / chain features. Existing collections
+   * without a schema continue to work via the legacy callable forms.
+   */
+  schema(collection: string, schema: BriSchema): void;
+  /** Spec §2.7 graph algorithms namespace. */
+  readonly algo: AlgoNamespace;
+  /** Spec §2.8 cancellation cascade namespace. */
+  readonly cascade: CascadeNamespace;
+}
+
 export default createDB;

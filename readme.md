@@ -26,7 +26,7 @@ This Bri database provides an easy-to-use interface for performing CRUD (Create,
   - [Transactions](#transactions)
   - [Middleware (Plugins)](#middleware-plugins)
   - [Schema Validation](#schema-validation)
-  - [Vector Search](docs/vector.md)
+  - [Vector + Graph v1](#vector--graph-v1)
   - [JSS (JsonSuperSet) Serialization](#jss-jsonsuperset-serialization)
 - [TypeScript Support](#typescript-support)
 - [Environment Variables](#environment-variables)
@@ -462,6 +462,39 @@ if (error) {
 - `set`: Transform function when writing
 - `properties`: Nested schema for Object types
 - `items`: Type for Array items
+
+### Vector + Graph v1
+
+Bri ships a single-process, schema-driven substrate for vector search
+and knowledge-graph traversal. Pure-JS HNSW under the hood, transactional
+isolation via deferred linking, schema-scoped cancellation cascades.
+
+```js
+db.schema('memoryArtifact', {
+  type:      { type: String, required: true },
+  embedding: { type: 'vector', dims: 1536 },
+  superseded_by_id: { type: 'ref', to: 'memoryArtifact', required: false },
+  source_session_id: { type: String, cascadeOn: 'session' },
+  $supersession: 'superseded_by_id'
+});
+
+const top5 = await db.get.memoryArtifactS
+  .where({ type: 'fact' })
+  .near(queryVec, 5)
+  .confidence(0.7);
+
+await alice.works_at(acme);                    // predicate proxy write
+const employees = await acme.inverse.works_at; // inverse read
+```
+
+Capability docs (start with [docs/README.md](docs/README.md)):
+- [vector.md](docs/vector.md) — `.near` / `.match` / `.combine`
+- [graph.md](docs/graph.md) — `$edge` schemas, predicate proxy
+- [transactions.md](docs/transactions.md) — `rec/fin/nop/pop` + cascade
+- [schema-extensions.md](docs/schema-extensions.md) — full vocabulary
+- [migration.md](docs/migration.md) — adopting in an existing project
+
+Spec compliance is tracked in [todo/Vector.md](todo/Vector.md).
 
 ### JSS (JsonSuperSet) Serialization
 

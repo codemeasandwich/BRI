@@ -76,7 +76,7 @@ export class WALWriter {
     }
 
     this.fileHandle = await fs.open(segmentPath, 'a');
-    const stats = await fs.stat(segmentPath).catch(() => ({ size: 0 }));
+    const stats = await this.fileHandle.stat();
     this.currentSize = stats.size;
   }
 
@@ -137,7 +137,7 @@ export class WALWriter {
     // pointer = hash(lastPointer, entryJson)
     // If encryption enabled, entry portion is encrypted with AAD = timestamp|pointer
     const line = this.encryptionKey
-      ? serializeEntryEncrypted(entry, this.lastPointer, this.encryptionKey)
+      ? serializeEntryEncrypted(entry, this.encryptionKey, this.lastPointer)
       : serializeEntry(entry, this.lastPointer);
     const lineWithNewline = line + '\n';
     const bytes = Buffer.byteLength(lineWithNewline, 'utf8');

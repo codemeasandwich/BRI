@@ -262,9 +262,31 @@ describe('Middleware System', () => {
 
       expect(logs.some(l => l.includes('[RESULT]'))).toBe(true);
     });
+
+    test('default options use BRI prefix and omit result payload when logResults omitted', async () => {
+      const mw = createMiddleware();
+      const logs = [];
+      const originalLog = console.log;
+      console.log = (...args) => logs.push(args.join(' '));
+      mw.use(loggingMiddleware());
+      await mw.run({ operation: 'add', type: 'deflog' }, async () => {});
+      console.log = originalLog;
+      expect(logs.some(l => l.includes('[BRI]') && l.includes('add.deflog'))).toBe(true);
+      expect(logs.some(l => /completed in \d+ms$/.test(l) && l.includes('add.deflog'))).toBe(true);
+    });
   });
 
   describe('validationMiddleware', () => {
+    test('implicit default validators map when factory is called with no args', async () => {
+      const mw = createMiddleware();
+      mw.use(validationMiddleware());
+      let ran = false;
+      await mw.run({ operation: 'add', type: 'noValidatorType', args: [{ ok: 1 }] }, async () => {
+        ran = true;
+      });
+      expect(ran).toBe(true);
+    });
+
     test('validates on add', async () => {
       const mw = createMiddleware();
 
@@ -330,6 +352,31 @@ describe('Middleware System', () => {
       await mw.run({ operation: 'get', type: 'skiptype', args: [] }, async () => {});
       // Should not throw
     });
+
+    test('add/set with no registered validator skips validation inner block', async () => {
+      const mw = createMiddleware();
+      mw.use(
+        validationMiddleware({
+          unrelated: () => ['fail']
+        })
+      );
+      let ran = false;
+      await mw.run({ operation: 'add', type: 'orph', args: [{ ok: 1 }] }, async () => {
+        ran = true;
+      });
+      expect(ran).toBe(true);
+    });
+
+    test('set operation with no matching validator key still runs final handler', async () => {
+      const mw = createMiddleware();
+      mw.use(validationMiddleware({ onlyAdd: () => ['x'] }));
+      let ran = false;
+      await mw.run(
+        { operation: 'set', type: 'anything', args: [{ $ID: 'KGLE_x', v: 1 }] },
+        async () => { ran = true; }
+      );
+      expect(ran).toBe(true);
+    });
   });
 
   describe('hooksMiddleware', () => {
@@ -382,6 +429,25 @@ describe('Middleware System', () => {
 
       expect(types).toContain('wildcard1');
       expect(types).toContain('wildcard2');
+    });
+
+    test('registering hooks twice appends without recreating buckets', async () => {
+      const mw = createMiddleware();
+      const hooks = hooksMiddleware();
+      mw.use(hooks);
+      let n = 0;
+      hooks.before('get', 'dupbucket', async () => { n++; });
+      hooks.before('get', 'dupbucket', async () => { n++; });
+
+      await mw.run({ operation: 'get', type: 'dupbucket' }, async () => {});
+      expect(n).toBe(2);
+
+      let m = 0;
+      hooks.after('del', 'dupaft', async () => { m++; });
+      hooks.after('del', 'dupaft', async () => { m++; });
+
+      await mw.run({ operation: 'del', type: 'dupaft' }, async () => {});
+      expect(m).toBe(2);
     });
   });
 });

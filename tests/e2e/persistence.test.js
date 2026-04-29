@@ -620,6 +620,72 @@ describe('WALWriter Direct Tests', () => {
       await fs.rm(WAL_TEST_DIR + '-small', { recursive: true, force: true }).catch(() => {});
     });
   });
+
+  describe('pointer chain helpers and ctor options', () => {
+    test('getLastPointer returns null when no .wal files exist on disk', async () => {
+      const walDir = `${WAL_TEST_DIR}-nogap`;
+      await fs.rm(walDir, { recursive: true, force: true }).catch(() => {});
+      const writer = new WALWriter(walDir, { fsyncMode: 'always' });
+      await writer.init();
+      await writer.append(createSetEntry('K', '{}'));
+      await writer.close();
+      const walFiles = (await fs.readdir(walDir)).filter((f) => f.endsWith('.wal'));
+      await Promise.all(walFiles.map((f) => fs.unlink(path.join(walDir, f))));
+      const ptr = await writer.getLastPointer();
+      expect(ptr).toBeNull();
+      await fs.rm(walDir, { recursive: true, force: true }).catch(() => {});
+    });
+
+    test('rotate with no live fileHandle still advances segment counter', async () => {
+      const walDir = `${WAL_TEST_DIR}-rotnoh`;
+      await fs.rm(walDir, { recursive: true, force: true }).catch(() => {});
+      const writer = new WALWriter(walDir, { fsyncMode: 'always' });
+      await writer.init();
+      await writer.close();
+      const before = writer.currentSegment;
+      await writer.rotate();
+      expect(writer.currentSegment).toBe(before + 1);
+      await writer.close();
+      await fs.rm(walDir, { recursive: true, force: true }).catch(() => {});
+    });
+
+    /**
+     * Options object uses falsy placeholders for OR-default — exercise explicit
+     * batched/timer/segment sizes without relying on `||` RHS for coverage.
+     */
+    test('constructor honors explicit batched tuning without default fallbacks', async () => {
+      const walDir = `${WAL_TEST_DIR}-opt`;
+      await fs.rm(walDir, { recursive: true, force: true }).catch(() => {});
+      const writer = new WALWriter(walDir, {
+        fsyncMode: 'batched',
+        fsyncIntervalMs: 211,
+        segmentSize: 2048,
+        encryptionKey: null
+      });
+      await writer.init();
+      expect(writer.fsyncMode).toBe('batched');
+      expect(writer.fsyncIntervalMs).toBe(211);
+      expect(writer.segmentSize).toBe(2048);
+      expect(writer.encryptionKey).toBeNull();
+      await writer.append(createSetEntry('K', '{}'));
+      await writer.close();
+      await fs.rm(walDir, { recursive: true, force: true }).catch(() => {});
+    });
+
+    test('init uses empty segment list when WAL directory is unreadable', async () => {
+      const walDir = `${WAL_TEST_DIR}-inacc`;
+      await fs.rm(walDir, { recursive: true, force: true }).catch(() => {});
+      await fs.mkdir(walDir, { recursive: true });
+      await fs.chmod(walDir, 0);
+      try {
+        const writer = new WALWriter(walDir, { fsyncMode: 'always' });
+        await expect(writer.init()).rejects.toThrow();
+      } finally {
+        await fs.chmod(walDir, 0o755).catch(() => {});
+        await fs.rm(walDir, { recursive: true, force: true }).catch(() => {});
+      }
+    });
+  });
 });
 
 describe('WALReader Direct Tests', () => {

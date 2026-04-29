@@ -220,6 +220,27 @@ describe('UC-V3: combined alias + embedding via .combine', () => {
     expect(results.map(r => r.$ID)).toContain(aliasOnly.$ID);
   });
 
+  test('.combine excludes candidates whose alias and vector scores are both zero', async () => {
+    db = await freshDB();
+    db.schema('kgEntity', {
+      name:      { type: String, required: true },
+      aliases:   { type: Array,  required: false, items: String },
+      embedding: { type: 'vector', dims: DIMS, required: false }
+    });
+    const queryVec = makeVec('uniq-combine-none');
+    await db.add.kgEntity({
+      name:      'neither-axis',
+      aliases:   ['no overlap with fts query phrase'],
+      // No embedding indexed — cosine contribution is treated as zero.
+    });
+    const out = await db.get.kgEntityS
+      .where({ name: 'neither-axis' })
+      .match({ aliases: 'API gateway' })
+      .near(queryVec, 8)
+      .combine({ alias: 1, vector: 1 });
+    expect(out).toHaveLength(0);
+  });
+
   test('audit-trail components on each result ($score, $cosine, $matchHits)', async () => {
     db = await freshDB();
     db.schema('kgEntity', {

@@ -21,6 +21,11 @@
  *   (deletes hit committed state directly).
  */
 
+import {
+  BriSchemaError, BriValidationError,
+  CASCADE_SCOPE_UNKNOWN
+} from './errors.js';
+
 /**
  * Build the db.cascade namespace for a public db interface.
  *
@@ -45,7 +50,28 @@ export function createCascade({ registry, getDb }) {
   async function cascadeScope(scope, id, opts = {}) {
     const entries = registry.cascadeEntriesFor(scope);
     if (entries.length === 0) {
-      return { deleted: 0, byCollection: {} };
+      // Per spec §2.11: db.cascade.{unknownScope}(id) must throw
+      // CASCADE_SCOPE_UNKNOWN — silently no-op'ing here would mask
+      // schema typos and look like a successful cleanup when nothing
+      // happened. The known-scope set is whatever was opted in via
+      // schema-level `cascadeOn: 'X'` declarations; if none exist,
+      // the scope is genuinely unknown.
+      throw new BriSchemaError({
+        code: CASCADE_SCOPE_UNKNOWN,
+        message: `db.cascade.${scope}(id): no schema declares any field with cascadeOn: '${scope}'. Either declare cascadeOn on a field or use db.cascade.byField({collections, filter}) for ad-hoc cascades.`,
+        details: { scope }
+      });
+    }
+    // Cancellation cascade per spec §2.8 / non-negotiable §0.3 #5: if a
+    // session-scoped cascade fires while that same session has an open
+    // transaction, that txn's staged writes belong to the session being
+    // cancelled and MUST be discarded before the committed-state sweep
+    // runs. Other sessions' txns are left alone (we only cancel ours).
+    const db = getDb && getDb();
+    if (db && scope === 'session' && db._activeTxnId &&
+        db._activeTxnSessionId === id) {
+      try { await db.nop(); }
+      catch (_) { /* best-effort — cascade continues even if nop fails */ }
     }
     return runCascade({
       entries,
@@ -68,9 +94,11 @@ export function createCascade({ registry, getDb }) {
    */
   async function cascadeByField(args) {
     if (!args || !Array.isArray(args.collections) || !args.filter) {
-      throw new Error(
-        'cascade.byField: requires { collections: [...], filter: {...} }'
-      );
+      throw new BriValidationError({
+        code: 'CASCADE_ARGS_INVALID',
+        message: 'cascade.byField: requires { collections: [...], filter: {...} }.',
+        details: { gotKeys: args && Object.keys(args) }
+      });
     }
     const entries = args.collections.map(collection => ({ collection }));
     return runCascade({
@@ -120,17 +148,34 @@ async function runCascade({ entries, filterFor, opts, getDb }) {
     db.rec();
     txnOwned = true;
   }
+  // Resolve effective txnId for both reads and deletes.
+  //
+  // Spec §2.8: cascade must NOT delete documents staged inside ANOTHER
+  // (non-cancelled) session's transaction. The simplest correct behavior
+  // is to bypass any active transaction when reading + deleting committed
+  // state, unless the caller explicitly opted in with `{atomic: true}`
+  // (in which case we just opened our own txn) or passed an explicit
+  // `txnId` value (overrides apply unchanged).
+  //
+  // Bypassing means reads see only committed state — staged-but-uncommitted
+  // docs from another session's txn are invisible — and deletes target
+  // only those committed rows. The other session's txn is therefore
+  // unaffected.
+  const effectiveOpts = { ...opts };
+  if (!('txnId' in effectiveOpts) && !txnOwned) {
+    effectiveOpts.txnId = null;
+  }
   const byCollection = {};
   let deleted = 0;
   try {
     for (const entry of entries) {
       const filter = filterFor(entry);
-      const matchedIds = await collectMatchingIds(db, entry.collection, filter, opts);
+      const matchedIds = await collectMatchingIds(db, entry.collection, filter, effectiveOpts);
       for (const id of matchedIds) {
         // db.del.{collection}(id) goes through middleware so vector +
         // graph + secondary indexes all sync as part of each delete.
-        if ('txnId' in opts) {
-          await db.del[entry.collection](id, undefined, { txnId: opts.txnId });
+        if ('txnId' in effectiveOpts) {
+          await db.del[entry.collection](id, undefined, { txnId: effectiveOpts.txnId });
         } else {
           await db.del[entry.collection](id);
         }

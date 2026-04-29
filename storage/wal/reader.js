@@ -10,6 +10,10 @@ import fs from 'fs/promises';
 import { createReadStream, readFileSync } from 'fs';
 import readline from 'readline';
 import { deserializeEntry, hashPointer, WALOp } from './entry.js';
+import {
+  isVectorRecord,
+  isSecondaryIndexRecord
+} from './record-types.js';
 
 /**
  * Reads and replays WAL entries for recovery
@@ -107,6 +111,11 @@ export class WALReader {
           handlers.onSRem(entry.target, entry.member);
           break;
         default:
+          // Index-/vector-tier markers (§3.3) are orthogonal to doc replay;
+          // silently skip until a layered consumer handles them explicitly.
+          if (isVectorRecord(entry.action) || isSecondaryIndexRecord(entry.action)) {
+            break;
+          }
           console.warn(`WAL: Unknown action: ${entry.action}`);
       }
 

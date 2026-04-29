@@ -94,7 +94,7 @@ function vecAt(index, slot) {
  * @returns {number} best slot found (always defined, never -1 unless
  *   epSlot was -1 — and the caller never invokes us on an empty graph)
  */
-function greedySearchOne(index, query, epSlot, layer) {
+export function greedySearchOne(index, query, epSlot, layer) {
   let cur = epSlot;
   let curScore = cosine(query, vecAt(index, cur));
   // Loop until a full neighbour scan produces no improvement.
@@ -303,14 +303,11 @@ function packSlots(chosen) {
  * @param {number} layer
  * @param {number} M - Cap at this layer (level 0 uses 2*M)
  */
-function addNeighbor(index, fromSlot, toSlot, layer, M) {
+export function addNeighbor(index, fromSlot, toSlot, layer, M) {
   const lists = index._neighbors[fromSlot];
-  if (!lists || layer >= lists.length || !lists[layer]) {
-    // Should not happen — _neighbors[fromSlot] is allocated on insert
-    // for every layer up to the node's level — but guard so a corrupted
-    // topology surfaces a defined error rather than a TypeError.
-    return;
-  }
+  // Corrupt-graph guard: `_neighbors[fromSlot]` must exist through insertNode layered
+  // layered allocation — if lists or layer row is missing, skip rather than throw.
+  if (!lists || layer >= lists.length || !lists[layer]) return;
   const cur = lists[layer];
   // Quick path: still room — append.
   if (cur.length < M) {
@@ -420,6 +417,28 @@ export function insertNode(index, slot) {
 }
 
 /**
+ * Map level-0 `{slot,score}` rows to `{id,score}` for the public vector
+ * search surface, skipping tombstoned slots. Split from {@link searchHNSW}
+ * so the same pruning can be exercised after deliberate corruption between
+ * `searchLayer` and id mapping during recovery/integration tests.
+ *
+ * @param {Object} index
+ * @param {Array<{slot:number, score:number}>} layer0
+ * @param {number} k
+ * @returns {Array<{id:string, score:number}>}
+ */
+export function finalizeHNSWResults(index, layer0, k) {
+  const out = [];
+  for (let i = 0; i < layer0.length && i < k; i++) {
+    const slot = layer0[i].slot;
+    const id = index._idAt[slot];
+    if (id === null) continue;
+    out.push({ id, score: layer0[i].score });
+  }
+  return out;
+}
+
+/**
  * Top-k nearest-neighbour search, predicate-aware.
  *
  * Algorithm:
@@ -448,23 +467,20 @@ export function insertNode(index, slot) {
 export function searchHNSW(index, query, k, predicate = null, ef) {
   if (index._entryPoint === -1 || index._size === 0) return [];
   const effectiveEf = Math.max(ef ?? index._hnswEfSearch, k);
-  // Phase 1 — descend.
   let ep = index._entryPoint;
   for (let L = index._entryLevel; L > 0; L--) {
     ep = greedySearchOne(index, query, ep, L);
   }
-  // Phase 2 — wide search at level 0.
   const layer0 = searchLayer(index, query, ep, effectiveEf, 0, predicate);
-  // searchLayer already returns similarity-desc. Truncate to k and
-  // map slot→id for the public return shape.
-  const out = [];
-  for (let i = 0; i < layer0.length && i < k; i++) {
-    const slot = layer0[i].slot;
-    const id = index._idAt[slot];
-    if (id === null) continue;        // belt-and-braces tombstone guard
-    out.push({ id, score: layer0[i].score });
-  }
-  return out;
+  return finalizeHNSWResults(index, layer0, k);
 }
 
-export default { searchLayer, selectNeighborsHeuristic, insertNode, searchHNSW };
+export default {
+  searchLayer,
+  selectNeighborsHeuristic,
+  insertNode,
+  searchHNSW,
+  greedySearchOne,
+  finalizeHNSWResults,
+  addNeighbor
+};

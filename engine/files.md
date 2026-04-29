@@ -30,7 +30,8 @@ engine/
 ├── vector-index-hnsw-state.js
 ├── vector-index-rng.js
 ├── vector-index-txn.js
-└── vector-middleware.js
+├── vector-middleware.js
+└── errors.js
 ```
 
 ## Files
@@ -40,7 +41,9 @@ engine/
 Engine factory creating operation wrappers.
 
 **Exports:**
-- `createEngine(store)` - Create engine instance
+- `createEngine(store)` — Create engine instance
+- `VectorIndex`, `GraphIndex` — Optional advanced constructors for benchmarking, deterministic txn-buffer assertions, or extensions (applications normally use vectors/graphs via `createDB().schema(...)` instead)
+- `export * from './errors.js'` — BriError hierarchy and error-code constants (same module path `engine/errors.js` used throughout the codebase)
 - Re-exports from constants, helpers, types, reactive
 
 ### `constants.js`
@@ -272,3 +275,10 @@ Schema-scoped cancellation cascade — the §10 NON-NEGOTIABLE. `createCascade({
 **Exports:**
 - `createCascade({registry, getDb})` - Returns the Proxy-backed cascade namespace
 - `default` - Same as createCascade
+
+### `errors.js`
+
+Typed error classes for the vector + graph surface (spec §2.11). Exports `BriError` and subclasses `BriValidationError`, `BriQueryError`, `BriProxyError`, `BriSchemaError`, `BriRecoveryError`, plus frozen string constants (`VECTOR_DIMS_MISMATCH`, `CASCADE_SCOPE_UNKNOWN`, etc.) so catch sites can branch on `error.code` without regexing messages.
+
+**Exports:**
+- Error classes and `ERROR_CODES` / individual code re-exports

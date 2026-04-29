@@ -36,14 +36,12 @@ export function vectorIndexMiddleware(registry) {
    */
   return async function vectorMw(ctx, next) {
     // PRE: validate the body against any registered schema before persisting.
-    // Throws on validation error so the engine never sees the invalid write.
+    // The validator throws BriValidationError directly — the engine never
+    // sees an invalid write because the typed error short-circuits the chain.
     if (ctx.operation === 'add' || ctx.operation === 'set') {
       const data = ctx.args[0];
       if (data && typeof data === 'object') {
-        const err = registry.validate(ctx.type, data);
-        if (err) {
-          throw new Error(`Validation failed for ${ctx.type}: ${err}`);
-        }
+        registry.validate(ctx.type, data);
       }
     }
 
@@ -56,18 +54,20 @@ export function vectorIndexMiddleware(registry) {
     const isEdge = !!registry.edgeSpec?.(ctx.type);
     const needsPreFetch = (hasSecondary || isEdge) &&
                           (ctx.operation === 'set' || ctx.operation === 'del');
+    // Pre-fetch keyed by resolved $ID — when target resolves to empty (del of
+    // malformed body, etc.), skip the lookup; preDoc stays null.
     if (needsPreFetch) {
       const target = ctx.args[0];
       const targetId = typeof target === 'string' ? target : target?.$ID;
-      if (targetId) {
-        try {
-          preDoc = await ctx.db.get[ctx.type.replace(/S$/, '')](targetId);
-          if (preDoc && preDoc.toObject) preDoc = preDoc.toObject();
-        } catch (_) {
-          // Pre-fetch failure is not fatal — the secondary-index sync will
-          // be a best-effort skip on this op rather than blocking the write.
-          preDoc = null;
-        }
+      try {
+        preDoc = targetId
+          ? await ctx.db.get[ctx.type.replace(/S$/, '')](targetId)
+          : null;
+        if (preDoc && preDoc.toObject) preDoc = preDoc.toObject();
+      } catch (_) {
+        // Pre-fetch failure is not fatal — the secondary-index sync will
+        // be a best-effort skip on this op rather than blocking the write.
+        preDoc = null;
       }
     }
 

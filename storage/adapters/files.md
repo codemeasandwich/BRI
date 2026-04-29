@@ -5,6 +5,7 @@ adapters/
 ├── inhouse.js
 ├── inhouse-crud.js
 ├── inhouse-txn.js
+├── inhouse-vector-wal-route.js
 └── inhouse-recovery.js
 ```
 
@@ -39,6 +40,11 @@ CRUD operations with transaction awareness.
 - `sAdd(setName, member, options)` - Add to set
 - `sMembers(setName, options)` - Get set members
 - `sRem(setName, member, options)` - Remove from set
+- `hardDelete(key)` - Append WAL `DELETE`, remove from hot tier, drop cold ghost, prune type-catalog set membership, synchronise vector index (distinct from soft `db.del` which renames keys)
+
+### `inhouse-vector-wal-route.js`
+
+Shared helpers: build prefix→collection map from the vector registry and remove a `$ID` from the matching VectorIndex — used by `recover()` replay and `hardDelete()`.
 
 ### `inhouse-txn.js`
 
@@ -57,8 +63,8 @@ Transaction API delegation.
 Recovery and snapshot methods.
 
 **Methods:**
-- `recover()` - Load snapshot + replay WAL; routes vector ops in WAL records into the loaded vector indices
-- `loadSnapshotV2(docs, cols)` - Load v2 format
+- `recover()` - Load snapshot + replay WAL; routes vector SET/DELETE WAL records via `inhouse-vector-wal-route`; on WAL `DELETE`, also removes the doc id from the type catalog set (`VENK?`, etc.)
+- `loadSnapshotV2(docs, cols)` - Load v2 format; attaches root `$ID` protos then runs `attachToString()` from `engine/helpers.js` for nested refs
 - `loadVectorState(serializedIndices, schemas)` - Load v3 vector indices and schemas into the store's vector registry
 - `getSnapshotState()` - Prepare snapshot data; emits v3 if any vector or secondary index state exists, v2 otherwise
 - `createSnapshot()` - Create snapshot and rotate WAL

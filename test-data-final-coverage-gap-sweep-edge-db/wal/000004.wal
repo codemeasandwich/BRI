@@ -1,0 +1,4 @@
+1777477024391|8c27c155|{"action":"SET","target":"SWON_qy2x1c0","value":"{\"name\":\"Alice\",\"$ID\":\"SWON_qy2x1c0\",\"createdAt<!D>\":1777477024391,\"updatedAt<!D>\":1777477024391}"}
+1777477024391|9d42c0e5|{"action":"SADD","target":"SWON?","member":"qy2x1c0"}
+1777477024392|809ca6a4|{"action":"SET","target":"SWON_097nv39","value":"{\"name\":\"Bob\",\"$ID\":\"SWON_097nv39\",\"createdAt<!D>\":1777477024392,\"updatedAt<!D>\":1777477024392}"}
+1777477024392|b0c0b6bb|{"action":"SADD","target":"SWON?","member":"097nv39"}

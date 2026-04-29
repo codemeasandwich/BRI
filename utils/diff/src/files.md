@@ -6,6 +6,7 @@ src/
 ├── traverse.js
 ├── path.js
 ├── match.js
+├── patch.js
 ├── apply.js
 └── watch.js
 ```
@@ -34,6 +35,10 @@ Path-based navigation utilities.
 Object comparison utilities.
 - `isPartialMatch(subset, source)` - Check if all subset keys match in source
 - `isDeepEqual(a, b)` - Deep equality check for objects, arrays, primitives
+
+### `patch.js`
+
+JSON Patch helpers — `pathToPointer` and `createPatch` building RFC‑6902 operations from flattened path/value tuples (uses `UNDECLARED` + `traverse` primitives).
 
 ### `apply.js`
 

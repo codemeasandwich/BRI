@@ -1,5 +1,5 @@
 /**
- * BRI Engine - Core database engine factory
+ * @file BRI Engine — core database engine factory.
  *
  * Creates the internal wrapper with all CRUD operations.
  */
@@ -23,7 +23,21 @@ export function createEngine(store) {
 }
 
 // Re-export utilities
+export { createIdGenerator } from './id.js';
 export { type2Short } from './types.js';
 export * from './constants.js';
 export * from './helpers.js';
 export { watchForChanges } from './reactive.js';
+
+/**
+ * Advanced: direct access for extensions, benchmarking, and deterministic
+ * transaction-buffer tests. Normal applications use schema-backed vectors via
+ * `createDB`; these exports expose the underlying index types without reaching
+ * for deep import paths outside `package.json` exports.
+ */
+export { VectorIndex } from './vector-index.js';
+export { GraphIndex } from './graph-index.js';
+
+// Typed-error surface (`utils/schema`, middleware, predicates) resolves through
+// the same `./engine` specifier as `createEngine`; re-export alongside.
+export * from './errors.js';

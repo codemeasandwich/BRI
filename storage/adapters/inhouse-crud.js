@@ -4,10 +4,15 @@
 
 import {
   createSetEntry,
+  createDeleteEntry,
   createRenameEntry,
   createSAddEntry,
   createSRemEntry
 } from '../wal/entry.js';
+import {
+  buildPrefixToVectorCollectionMap,
+  removeFromVectorIndicesForKey
+} from './inhouse-vector-wal-route.js';
 
 /**
  * Creates CRUD operation methods for InHouseAdapter
@@ -126,6 +131,34 @@ export function createCrudMethods() {
       const entry = createSRemEntry(setName, member);
       await this.wal.append(entry);
       this.hotTier.sRem(setName, member);
+    },
+
+    /**
+     * Permanently delete a document key: append WAL DELETE, remove from hot
+     * tier, drop cold copy, and synchronise vector indices. Used by recovery
+     * stress tests and tooling; the public db.del path remains soft-delete
+     * (rename + audit) and does not emit WAL DELETEs.
+     *
+     * Domain: recovery replays WAL DELETE into applyVectorDelete — this method
+     * emits the same bytes so unclean-exit + replay scenarios can shrink the
+     * live index exactly as replay would.
+     *
+     * @param {string} key - Document $ID
+     * @returns {Promise<void>}
+     */
+    async hardDelete(key) {
+      const entry = createDeleteEntry(key);
+      await this.wal.append(entry);
+      this.hotTier.delete(key);
+      this.coldTier.deleteDoc(key).catch(() => {});
+      const segs = key.split('_');
+      if (segs.length >= 2) {
+        const shortType = segs[0];
+        const member = segs[segs.length - 1];
+        this.hotTier.sRem(`${shortType}?`, member);
+      }
+      const prefixMap = buildPrefixToVectorCollectionMap(this._vectorRegistry);
+      removeFromVectorIndicesForKey(this, prefixMap, key);
     }
   };
 }

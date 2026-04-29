@@ -10,12 +10,14 @@
  *
  * Property-access lookup (§3.5), fall-through order:
  *   1. Built-ins (toJSON/toJSS/save/etc.) — handled upstream by reactive proxy
- *   2. `and` — handled upstream (back-compat single-hop ref population)
+ *   2. `and` — handled upstream solely in reactive.js (never forwarded here)
  *   3. `inverse` — return InverseProxy whose .{predicate} reads incoming
  *   4. `related` — return RelatedAccessor over all outgoing predicates
  *   5. Declared field — return raw value (reactive proxy fall-through)
  *   6. Registered predicate (subject side) — return PredicateAccessor
- *   7. Otherwise — return undefined; reactive proxy continues
+ *   7. Otherwise — return undefined; reactive proxy continues. Declared
+ *      schema fields shadow predicates and are routed as data reads because
+ *      reactive.js invokes predicate resolution only when (!(name in target)).
  *
  * @implements UC-G1 (one-hop read + write + .limit + .$ + inverse + related)
  */
@@ -24,6 +26,10 @@ import { type2Short } from '../engine/types.js';
 import { expand as runExpand } from './graph-expand.js';
 import { makeChainProxy } from './chain-walk.js';
 import { makeInverseProxy, makeRelatedAccessor } from './predicate-inverse-related.js';
+import {
+  BriProxyError, BriValidationError,
+  EDGE_ENDPOINT_INVALID
+} from './errors.js';
 
 /**
  * Decide whether a property access on an entity should be resolved by the
@@ -38,9 +44,7 @@ import { makeInverseProxy, makeRelatedAccessor } from './predicate-inverse-relat
  */
 export function resolvePredicateAccess(target, name, registry, wrapper) {
   if (!target || !target.$ID) return undefined;
-  // 'and' is the existing single-hop ref proxy — let the reactive layer
-  // keep handling it.
-  if (name === 'and') return undefined;
+  // `and`, `toJSON`, `save`, etc. are resolved in reactive.js before routing here.
 
   // Resolve the entity's own collection from its $ID prefix; many of the
   // routes below depend on it.
@@ -84,10 +88,9 @@ export function resolvePredicateAccess(target, name, registry, wrapper) {
     return makeChainProxy({ target, registry, wrapper, subjectCollection });
   }
 
-  // Declared fields on the entity are not predicates.
-  if (name in target) return undefined;
+  // findEdge / predicate accessors — reactive.js only calls predicate resolution
+  // after (!(name in target)), so a non-predicate duplicate field routes as data.
   if (!subjectCollection) return undefined;
-  // Find the matching edge collection (if any) for this predicate name.
   const edgeCollection = registry.predicateEdge(subjectCollection, name);
   if (!edgeCollection) return undefined;
   // Resolved — return a PredicateAccessor bound to this entity + edge.
@@ -198,10 +201,11 @@ async function writeEdge(ctx, target, attrs) {
   const { subjectId, edgeCollection, predicate, edgeSpec, getDb } = ctx;
   const targetId = typeof target === 'string' ? target : (target && target.$ID);
   if (!targetId) {
-    throw new Error(
-      `Predicate '${predicate}': target must be an entity (with $ID) or a string $ID; ` +
-      `got ${typeof target}`
-    );
+    throw new BriValidationError({
+      code: EDGE_ENDPOINT_INVALID,
+      message: `Predicate '${predicate}': target must be an entity (with $ID) or a string $ID; got ${typeof target}.`,
+      details: { predicate, gotType: typeof target }
+    });
   }
   const doc = {
     [edgeSpec.from]: subjectId,
@@ -213,11 +217,18 @@ async function writeEdge(ctx, target, attrs) {
   // + vector + graph index sync) runs identically to a direct user call.
   // Without this the graph adjacency would never be populated and reads
   // would see no targets.
+  // getDb/getDb.attach is assigned by client/proxy.js after the db singleton
+  // exists. The only reachable failure mode from createDB callers is `getDb`
+  // absent (standalone engine wrappers without `_getDb`).
   const db = getDb && getDb();
-  if (!db || !db.add || !db.add[edgeCollection]) {
-    throw new Error(
-      `Predicate proxy could not access db.add.${edgeCollection} for edge write`
-    );
+  if (!db || !db.add) {
+    throw new BriProxyError({
+      code: 'EDGE_COLLECTION_UNREACHABLE',
+      message:
+        `Predicate proxy could not access db.add for edge write. ` +
+        `Ensure entities are resolved through createDB's reactive envelope (wrapper._getDb populated).`,
+      details: { edgeCollection }
+    });
   }
   return db.add[edgeCollection](doc);
 }
@@ -241,11 +252,10 @@ async function readTargets(ctx, k) {
     for (let i = 0; i < edges.length && i < targets.length; i++) {
       const edge = edges[i];
       const value = edge && edge[field];
-      if (value !== undefined && targets[i]) {
-        Object.defineProperty(targets[i], '$provenance', {
-          value, enumerable: false, configurable: true, writable: false
-        });
-      }
+      if (value === undefined || !targets[i]) continue;
+      Object.defineProperty(targets[i], '$provenance', {
+        value, enumerable: false, configurable: true, writable: false
+      });
     }
   }
   return targets;

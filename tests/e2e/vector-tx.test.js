@@ -154,6 +154,18 @@ describe('UC-V4: Vector transaction isolation', () => {
     expect(finalIds).not.toContain(discard.$ID);
   });
 
+  test('vector index middleware stages delete removal while txn open (removeStaged path)', async () => {
+    db = await freshDB();
+    const v = makeVec('del-staged-vec');
+    const doc = await db.add.memoryArtifact({ type: 'fact', embedding: v });
+    db.rec();
+    await db.del.memoryArtifact(doc.$ID);
+    // Outside the committed slot: near must not resolve the staged-deleted id.
+    const scoped = await db.get.memoryArtifactS.near(v, 5, { txnId: null });
+    expect(scoped.some((h) => h.$ID === doc.$ID)).toBe(false);
+    await db.nop();
+  });
+
   test('crash mid-txn recovers to pre-txn state', async () => {
     db = await freshDB();
     const baseVec = makeVec('crash-base');

@@ -16,6 +16,12 @@
  *      cannot map to two different edge collections from the same subject.
  */
 
+import {
+  BriSchemaError,
+  RESERVED_NAME_COLLISION,
+  INDEX_FIELD_NOT_DECLARED
+} from './errors.js';
+
 /**
  * Reserved proxy / chain names per spec §0.4. Predicate names colliding with
  * these are rejected at schema-load time. The list is FROZEN as part of v1
@@ -53,10 +59,11 @@ export function buildEdgeSpec(collection, schemaDef) {
     }
   }
   if (refFields.length < 2) {
-    throw new Error(
-      `Schema '${collection}' declares $edge but has fewer than two ` +
-      `ref fields; need exactly two ref fields (from + to) in declaration order.`
-    );
+    throw new BriSchemaError({
+      code: 'EDGE_REF_FIELDS_MISSING',
+      message: `Schema '${collection}' declares $edge but has fewer than two ref fields; need exactly two ref fields (from + to) in declaration order.`,
+      details: { collection, refFieldsFound: refFields.length }
+    });
   }
   const fromField = refFields[0].field;
   const toField = refFields[1].field;
@@ -69,12 +76,25 @@ export function buildEdgeSpec(collection, schemaDef) {
   if (predicates) {
     for (const name of predicates) {
       if (RESERVED_PROXY_NAMES.has(name)) {
-        throw new Error(
-          `Schema '${collection}' declares predicate '${name}' which is ` +
-          `reserved by the proxy surface (chain methods, save, etc.). ` +
-          `Rename the predicate at the schema level.`
-        );
+        throw new BriSchemaError({
+          code: RESERVED_NAME_COLLISION,
+          message: `Schema '${collection}' declares predicate '${name}' which is reserved by the proxy surface (chain methods, save, etc.). Rename the predicate at the schema level. See engine/schema-edge-declare.js → RESERVED_PROXY_NAMES for the full list.`,
+          details: { collection, predicate: name }
+        });
       }
+    }
+  }
+  // Per spec §2.1.4: ref-field names must also not collide with reserved
+  // proxy names. A field named `history` would shadow the supersession
+  // chain method on entity reads. Check at declare-time so the schema
+  // author sees the problem before any data is written.
+  for (const { field } of refFields) {
+    if (RESERVED_PROXY_NAMES.has(field)) {
+      throw new BriSchemaError({
+        code: RESERVED_NAME_COLLISION,
+        message: `Schema '${collection}' declares ref field '${field}' which is reserved by the proxy surface. Rename the field at the schema level.`,
+        details: { collection, field }
+      });
     }
   }
 
@@ -109,11 +129,11 @@ export function registerPredicateRouting(predicatesBySubject, edge, edgeCollecti
   const map = predicatesBySubject.get(edge.from);
   for (const pred of predicates) {
     if (map.has(pred) && map.get(pred) !== edgeCollection) {
-      throw new Error(
-        `Predicate '${pred}' is registered on both ` +
-        `'${map.get(pred)}' and '${edgeCollection}' as edges from ` +
-        `'${edge.from}'. Each predicate must map to one edge collection.`
-      );
+      throw new BriSchemaError({
+        code: 'PREDICATE_AMBIGUOUS',
+        message: `Predicate '${pred}' is registered on both '${map.get(pred)}' and '${edgeCollection}' as edges from '${edge.from}'. Each predicate must map to one edge collection.`,
+        details: { predicate: pred, fromCollection: edge.from, edgeCollections: [map.get(pred), edgeCollection] }
+      });
     }
     map.set(pred, edgeCollection);
   }
@@ -159,11 +179,11 @@ export function collectLifecycleFields(collection, schemaDef) {
     const fieldName = schemaDef[flag];
     if (typeof fieldName !== 'string') continue;
     if (!Object.prototype.hasOwnProperty.call(schemaDef, fieldName)) {
-      throw new Error(
-        `Schema '${collection}' declares ${flag}: '${fieldName}' but ` +
-        `'${fieldName}' is not a declared field. Available fields: ` +
-        `${Object.keys(schemaDef).filter(k => !k.startsWith('$')).join(', ')}.`
-      );
+      throw new BriSchemaError({
+        code: INDEX_FIELD_NOT_DECLARED,
+        message: `Schema '${collection}' declares ${flag}: '${fieldName}' but '${fieldName}' is not a declared field. Available fields: ${Object.keys(schemaDef).filter(k => !k.startsWith('$')).join(', ')}.`,
+        details: { collection, flag, fieldName }
+      });
     }
     lifecycle[flag.slice(1)] = fieldName;
   }
@@ -198,12 +218,11 @@ export function registerInversePredicateRouting(predicatesByObject, edge, edgeCo
     const map = predicatesByObject.get(objCollection);
     for (const pred of predicates) {
       if (map.has(pred) && map.get(pred) !== edgeCollection) {
-        throw new Error(
-          `Predicate '${pred}' inverse-registered on both ` +
-          `'${map.get(pred)}' and '${edgeCollection}' as edges to ` +
-          `'${objCollection}'. Each (collection, predicate) pair must map to ` +
-          `one edge collection.`
-        );
+        throw new BriSchemaError({
+          code: 'PREDICATE_AMBIGUOUS',
+          message: `Predicate '${pred}' inverse-registered on both '${map.get(pred)}' and '${edgeCollection}' as edges to '${objCollection}'. Each (collection, predicate) pair must map to one edge collection.`,
+          details: { predicate: pred, objCollection, edgeCollections: [map.get(pred), edgeCollection] }
+        });
       }
       map.set(pred, edgeCollection);
     }

@@ -13,15 +13,23 @@
 import JSS from '../../utils/jss/index.js';
 import crypto from 'crypto';
 import * as aesGcm from '../../crypto/aes-gcm.js';
+import { SET, DELETE, RENAME, SADD, SREM } from './record-types.js';
 
-/** WAL operation types */
-export const WALOp = {
-  SET: 'SET',
-  DELETE: 'DELETE',
-  RENAME: 'RENAME',
-  SADD: 'SADD',
-  SREM: 'SREM'
-};
+/**
+ * Document-level WAL action names (producer/consumer handshake with WALReader).
+ *
+ * Wired to `./record-types.js` so the canonical string vocabulary is defined
+ * once and WAL classification helpers stay aligned with persisted lines.
+ *
+ * @readonly
+ */
+export const WALOp = Object.freeze({
+  SET,
+  DELETE,
+  RENAME,
+  SADD,
+  SREM
+});
 
 /**
  * Hash for pointer chain (8 chars of sha256)
@@ -148,11 +156,11 @@ export function deserializeEntry(line, encryptionKey = null) {
 /**
  * Serialize entry with encryption: {timestamp}|{pointer}|{base64(encrypted)}
  * @param {Object} entry - Entry to serialize
- * @param {string|null} [prevPointer=null] - Previous pointer for chain
  * @param {Buffer} encryptionKey - 32-byte encryption key
+ * @param {string|null} [prevPointer=null] - Previous pointer for chain
  * @returns {string} Encrypted serialized line
  */
-export function serializeEntryEncrypted(entry, prevPointer = null, encryptionKey) {
+export function serializeEntryEncrypted(entry, encryptionKey, prevPointer = null) {
   const timestamp = Date.now();
   const entryJson = JSS.stringify(entry);
   const pointer = hashPointer(prevPointer, entryJson);

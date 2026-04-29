@@ -203,11 +203,71 @@ describe('UC-X2: cascade.session', () => {
     expect(result.deleted).toBe(0);
   });
 
-  test('cascade with no cascadeOn-eligible collections returns 0 — does not throw', async () => {
+  test('cascade.session(X) cancels the in-flight txn owned by session X', async () => {
+    // Per spec §2.8 / non-negotiable §0.3 #5: a session-scoped cascade
+    // that fires while THAT session has an open transaction must roll
+    // back the staged writes before sweeping committed state. This test
+    // exercises the contract end-to-end: open a txn tagged with sessionId,
+    // stage some adds, fire cascade.session(sessionId), assert the txn is
+    // gone (db._activeTxnId nulled) and the staged writes are not present.
+    db = await freshDB();
+    db.schema('memoryArtifact', {
+      type:              { type: String, required: true },
+      content:           { type: String, required: false },
+      source_session_id: { type: String, required: false, cascadeOn: 'session' }
+    });
+    // Some pre-existing committed-state for the session (so cascade has
+    // something to delete after the txn rollback).
+    await db.add.memoryArtifact({ type: 'fact', content: 'committed', source_session_id: 'S1' });
+
+    db.rec({ sessionId: 'S1' });
+    await db.add.memoryArtifact({ type: 'fact', content: 'staged-1', source_session_id: 'S1' });
+    await db.add.memoryArtifact({ type: 'fact', content: 'staged-2', source_session_id: 'S1' });
+
+    await db.cascade.session('S1');
+
+    expect(db._activeTxnId).toBe(null);
+    expect(db._activeTxnSessionId).toBe(null);
+    const remaining = await db.get.memoryArtifactS();
+    // Cancellation cascade invariant: no doc with source_session_id === S1
+    // remains visible across collections (§8 #10).
+    for (const row of remaining) {
+      expect(row.source_session_id).not.toBe('S1');
+    }
+  });
+
+  test("cascade.session(X) does NOT touch session Y's open transaction", async () => {
+    // Spec §2.8: "NOT delete documents staged inside another (non-cancelled)
+    // session's transaction." Concurrent-session model in v1: only one txn
+    // active at a time, so the test asserts the simpler property: when the
+    // active txn belongs to Y, cascade.session(X) does NOT call nop().
+    db = await freshDB();
+    db.schema('memoryArtifact', {
+      type:              { type: String, required: true },
+      source_session_id: { type: String, required: false, cascadeOn: 'session' }
+    });
+    db.rec({ sessionId: 'Y' });
+    await db.add.memoryArtifact({ type: 'fact', source_session_id: 'X' });
+
+    const yTxnId = db._activeTxnId;
+    expect(yTxnId).toBeTruthy();
+
+    await db.cascade.session('X');
+
+    expect(db._activeTxnId).toBe(yTxnId);
+    expect(db._activeTxnSessionId).toBe('Y');
+    await db.fin();
+  });
+
+  test('cascade.{unknownScope} throws CASCADE_SCOPE_UNKNOWN per spec §2.11', async () => {
     db = await freshDB();
     db.schema('memoryArtifact', { type: { type: String, required: true } });
     await db.add.memoryArtifact({ type: 'fact' });
-    const result = await db.cascade.session('S1');
-    expect(result.deleted).toBe(0);
+    let thrown;
+    try { await db.cascade.session('S1'); }
+    catch (e) { thrown = e; }
+    expect(thrown).toBeDefined();
+    expect(thrown.code).toBe('CASCADE_SCOPE_UNKNOWN');
+    expect(thrown.message).toContain('cascadeOn');
   });
 });

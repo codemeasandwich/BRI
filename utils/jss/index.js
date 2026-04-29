@@ -1,5 +1,13 @@
-// JsonSuperSet - Extended JSON serialization with special type support
+/**
+ * @file JsonSuperSet — extended JSON serialization with typed tags (Date,
+ *       Error, Map, Set, RegExp, cycles).
+ */
 
+/**
+ * Encode a plain object or array into JSS tagged key/value form before JSON serialization.
+ * @param {object|Array} obj - Root value to encode
+ * @returns {object|Array} Encoded structure using `<!tag>` key suffixes for typed leaves
+ */
 function encode(obj) {
   const tagLookup = {
     '[object RegExp]': 'R',
@@ -11,7 +19,16 @@ function encode(obj) {
   };
   const visited = new WeakMap();
 
-  function encodeValue(value, currentPath = '') {
+  /**
+   * Recursive encoder — emits typed tuples or nested plain structures for one subtree.
+   * @param {*} value - Current node to encode
+   * @param {string} currentPath - Path segment string used for circular-reference bookkeeping
+   * @returns {Array|string|number|boolean|null|Object} Internal encode tuple / intermediate structure: typed leaf `[tag, payload]` (`tag` one of `R/D/E/U/M/S`), cycle marker `['P', path]`, heterogeneously tagged arrays `[ '[types]', vals ]`, or plain nested POJO/array shells with `''` marks for JSON-safe scalars.
+   */
+  function encodeValue(value, currentPath) {
+    // Recursive calls always pass the path segment (`key` or childPath); encode()
+    // never invokes this with only one argument, so omitting optional path
+    // normalization keeps the bytecode free of unreachable default-arg branches.
     const type = typeof value;
     const tag = tagLookup[Object.prototype.toString.call(value)];
 
@@ -21,8 +38,8 @@ function encode(obj) {
       if ('R' === tag) return [tag, value.toString()];
       if ('U' === tag) return [tag, null];
       if ('S' === tag) return [tag, Array.from(value)];
-      if ('M' === tag) return [tag, Object.fromEntries(value)];
-      return [tag, JSON.stringify(value)];
+      /* Remaining builtin tag among Map/Set is Map — Set returned above */
+      return [tag, Object.fromEntries(value)];
     } else if (type === 'object' && value !== null) {
       if (visited.has(value)) {
         return ['P', visited.get(value)];
@@ -76,14 +93,29 @@ function encode(obj) {
   return result;
 }
 
+/**
+ * Serialize an object to JSS extended JSON text.
+ * @param {object|Array} obj - Root value
+ * @returns {string} JSON string of encoded form
+ */
 function stringify(obj) {
   return JSON.stringify(encode(obj));
 }
 
+/**
+ * Parse JSS extended JSON text back into JavaScript values.
+ * @param {string} encoded - JSON text produced by {@link stringify}
+ * @returns {object|Array|string|number|boolean|null} Root after decoding — always plain JS data plus restored builtins (Date/RegExp/Map/Set/Error), cycle repairs applied afterward via pointer replay (never leaves JSON-only wrappers at the root).
+ */
 function parse(encoded) {
   return decode(JSON.parse(encoded));
 }
 
+/**
+ * Detect whether the decoded object shape represents a homogeneous numeric-key array.
+ * @param {object} obj - Parsed plain object before array coercion
+ * @returns {boolean} True when every own key is numeric after stripping tags
+ */
 function checkIfArray(obj) {
   return Object.keys(obj).every(key => {
     const numericKey = key.replace(/<!.*>/, '');
@@ -91,6 +123,11 @@ function checkIfArray(obj) {
   });
 }
 
+/**
+ * Decode JSS intermediate representation (plain object tree) into JavaScript values.
+ * @param {object|Array} data - Parsed JSON object tree
+ * @returns {object|Array|string|number|boolean|null} Root payload — object graph or array reconstructed from JSS tags; primitives only appear when the encoded payload truly rooted at a primitive (unusual for `encode`, common after recursive descent inside objects).
+ */
 function decode(data) {
   const result = checkIfArray(data) ? [] : {};
   const pointers2Res = [];
@@ -120,6 +157,13 @@ function decode(data) {
   };
   const visited = new Map();
 
+  /**
+   * Decode one keyed entry — restores typed leaves and walks nested objects.
+   * @param {string} name - Logical property name (without tag suffix)
+   * @param {string|undefined} tag - Type tag from key suffix or tuple metadata
+   * @param {*} val - Raw JSON subtree for this property
+   * @returns {string|number|boolean|null|undefined|Date|RegExp|Error|Map|Set|Array|Object} Value represented by this `(name, tag, val)` triple after delegating to `tagLookup`, tuple-expanding heterogeneous arrays, or recursively decoding nested POJO fragments (cycles deferred until pointer fix-up).
+   */
   function decodeValue(name, tag, val) {
     // `this` is the current path context (e.g., "documents/POST_1")
     const currentPath = this ? `${this}/${name}` : name;
@@ -155,11 +199,11 @@ function decode(data) {
       visited.set(val, {});
       const result = {};
       for (const key in val) {
-        const [nam, tag] = parseKeyWithTags(key);
+        const [nam, tagFromKey] = parseKeyWithTags(key);
         const decodedValue = decodeValue.call(
           currentPath,
           nam,
-          tag,
+          tagFromKey,
           val[key]
         );
         result[nam] = decodedValue;
@@ -171,6 +215,11 @@ function decode(data) {
     }
   }
 
+  /**
+   * Split a serialized object key into base name and optional `<!tag>` suffix.
+   * @param {string} key - Raw object key possibly ending with `<!tag>`
+   * @returns {[string, string|undefined]} Base key and tag when present
+   */
   function parseKeyWithTags(key) {
     const match = key.match(/(.+)(<!(.+)>)/);
     if (match) {
@@ -188,6 +237,12 @@ function decode(data) {
   return result;
 }
 
+/**
+ * Resolve pointer placeholders after the main decode pass — wires cyclic graphs.
+ * @param {object} obj - Root decoded object
+ * @param {[string, string]} tuple - `[refPath, attrPath]` JSON-pointer-like paths
+ * @returns {object} Same root object with attribute rewired to reference target
+ */
 function changeAttributeReference(obj, [refPath, attrPath]) {
   const refKeys = refPath.split('/');
   const attrKeys = attrPath.split('/');

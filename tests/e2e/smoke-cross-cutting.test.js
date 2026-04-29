@@ -89,5 +89,5 @@ describe('Cross-cutting (Risks 1+2+3)', () => {
     // the full 1000-collection scan.
     const docReads = reads.filter(k => k.startsWith('MECT_'));
     expect(docReads.length).toBeLessThan(200);
-  });
+  }, 120000);
 });

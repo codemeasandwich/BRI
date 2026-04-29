@@ -1,3 +1,8 @@
+/**
+ * @file JSON Patch helpers — path pointers (`pathToPointer`) and structural
+ *       `createPatch` built from flattened traverse tuples.
+ */
+
 import { UNDECLARED } from './symbols.js';
 import { isPlainObject, flattenToPathValues } from './traverse.js';
 
@@ -6,7 +11,7 @@ import { isPlainObject, flattenToPathValues } from './traverse.js';
  * @param {Array} path - Array of keys/indices
  * @returns {string} - JSON Pointer string (e.g., '/foo/bar/0')
  */
-function pathToPointer(path) {
+export function pathToPointer(path) {
   if (path.length === 0) return '';
   return '/' + path.map(p => String(p).replace(/~/g, '~0').replace(/\//g, '~1')).join('/');
 }

@@ -156,12 +156,16 @@ async function readInverseEdges(ctx) {
  * targets the field value may be a literal string — those pass through
  * unchanged since v1's predicate proxy is entity-target-oriented.
  *
+ * Exported (not merely internal): integration tests target the falsy-ID
+ * branch when an edge omits one endpoint field — a path that does not arise
+ * from validated schema inserts but remains defensive against partial docs.
+ *
  * @param {Array<Object>} edges
  * @param {string} fieldName - Either the from-field or to-field
  * @param {Object} wrapper
  * @returns {Promise<Array<Object>>}
  */
-async function hydrateEndpoints(edges, fieldName, wrapper) {
+export async function hydrateEndpoints(edges, fieldName, wrapper) {
   const targets = await Promise.all(
     edges.map(edge => {
       const targetId = edge && edge[fieldName];

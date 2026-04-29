@@ -280,12 +280,15 @@ export function createSchemaRegistry(store) {
      *
      * @param {string} collection
      * @param {Object} doc
-     * @returns {string|null} Error message or null if valid / no schema
+     * @returns {void}
+     * @throws {BriValidationError} on schema-validation failure (typed-error
+     *         migration: validator now throws — see utils/schema/index.js
+     *         file docblock for the full migration note)
      */
     validate(collection, doc) {
       const schema = schemas.get(collection);
-      if (!schema) return null;
-      return validate(schema, doc);
+      if (!schema) return;
+      validate(schema, doc);
     },
 
     /**

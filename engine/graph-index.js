@@ -88,7 +88,7 @@ export class GraphIndex {
    * @param {Object} doc - Edge document (must have $ID and the edge fields)
    */
   insertEdge(collection, doc) {
-    const spec = this._edgeSpec.get(collection);
+    const spec = this.edgeSpecFor(collection);
     if (!spec || !doc || !doc.$ID) return;
     const subjectId = doc[spec.from];
     const objectId = doc[spec.to];
@@ -106,7 +106,7 @@ export class GraphIndex {
    * @param {Object} doc
    */
   removeEdge(collection, doc) {
-    const spec = this._edgeSpec.get(collection);
+    const spec = this.edgeSpecFor(collection);
     if (!spec || !doc || !doc.$ID) return;
     const subjectId = doc[spec.from];
     const objectId = doc[spec.to];

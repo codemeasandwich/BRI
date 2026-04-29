@@ -92,15 +92,15 @@ export class GroupedQueryBuilder {
     let rows = [];
     for (const [key, docsInGroup] of groups) {
       const row = { [this._field]: key };
-      if (agg.kind === 'count') {
-        row.count = docsInGroup.length;
-      } else if (agg.kind === 'sum') {
+      if (agg.kind === 'sum') {
         let sum = 0;
         for (const d of docsInGroup) {
           const v = d[agg.field];
           if (typeof v === 'number') sum += v;
         }
         row.sum = sum;
+      } else {
+        row.count = docsInGroup.length;
       }
       rows.push(row);
     }

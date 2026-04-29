@@ -40,6 +40,10 @@ import { ensureTopology, dropNode, rebuildTopology } from './vector-index-hnsw-s
 import {
   stageAdd, stageRemove, commitTxn, rollbackTxn, popStagedOp, searchInTxnMerged
 } from './vector-index-txn.js';
+import {
+  BriValidationError, BriQueryError, BriSchemaError,
+  VECTOR_DIMS_MISMATCH, VECTOR_QUERY_DIMS_MISMATCH
+} from './errors.js';
 
 // HNSW parameter defaults — chosen per spec §3.1 / §6.2 to match the
 // canonical Malkov & Yashunin recommendations and the v2 latency budgets.
@@ -83,10 +87,18 @@ export class VectorIndex {
     seed = null
   } = {}) {
     if (typeof dims !== 'number' || dims <= 0) {
-      throw new Error(`VectorIndex requires positive 'dims'; got ${dims}`);
+      throw new BriSchemaError({
+        code: 'VECTOR_DIMS_INVALID',
+        message: `VectorIndex requires positive 'dims'; got ${JSON.stringify(dims)}. Schema's 'vector' field must declare { dims: <positive integer> }.`,
+        details: { dims }
+      });
     }
     if (metric !== 'cosine') {
-      throw new Error(`VectorIndex v2 supports metric='cosine' only; got ${metric}`);
+      throw new BriSchemaError({
+        code: 'VECTOR_METRIC_UNSUPPORTED',
+        message: `VectorIndex v1 supports metric='cosine' only; got '${metric}'. Use { metric: 'cosine' } in the schema or omit the field — cosine is the default.`,
+        details: { metric }
+      });
     }
     this.dims = dims;
     this.metric = metric;
@@ -119,14 +131,15 @@ export class VectorIndex {
    *
    * @param {string} id
    * @param {ArrayLike<number>} vector
-   * @throws {Error} on dims mismatch
+   * @throws {BriValidationError} VECTOR_DIMS_MISMATCH on dims mismatch
    */
   add(id, vector) {
     if (vector.length !== this.dims) {
-      throw new Error(
-        `VectorIndex.add: vector dimension mismatch for ${id}: ` +
-        `expected ${this.dims}, got ${vector.length}.`
-      );
+      throw new BriValidationError({
+        code: VECTOR_DIMS_MISMATCH,
+        message: `VectorIndex.add: vector dimension mismatch for '${id}'. Schema declares ${this.dims}, value has ${vector.length}. Re-embed with the configured model or check the schema dims declaration.`,
+        details: { id, expected: this.dims, got: vector.length }
+      });
     }
     let slot = this._slotOf.get(id);
     if (slot !== undefined) {
@@ -187,14 +200,15 @@ export class VectorIndex {
    * @param {Object} [opts]
    * @param {number} [opts.efSearch]
    * @returns {Array<{id:string, score:number}>}
-   * @throws {Error} on dims mismatch
+   * @throws {BriQueryError} VECTOR_QUERY_DIMS_MISMATCH on dims mismatch
    */
   searchFiltered(query, k, predicate, opts) {
     if (query.length !== this.dims) {
-      throw new Error(
-        `VectorIndex.search: query vector dimension mismatch: ` +
-        `expected ${this.dims}, got ${query.length}.`
-      );
+      throw new BriQueryError({
+        code: VECTOR_QUERY_DIMS_MISMATCH,
+        message: `VectorIndex.search: query vector dims ${query.length} do not match collection's vector field dims ${this.dims}. Re-embed the query with the same model the collection was indexed with.`,
+        details: { expected: this.dims, got: query.length }
+      });
     }
     if (k <= 0 || this._size === 0) return [];
     const ef = opts && typeof opts.efSearch === 'number' ? opts.efSearch : undefined;
@@ -277,10 +291,11 @@ export class VectorIndex {
    */
   searchInTxn(query, k, txnId, predicate = null, opts) {
     if (query.length !== this.dims) {
-      throw new Error(
-        `VectorIndex.searchInTxn: query vector dimension mismatch: ` +
-        `expected ${this.dims}, got ${query.length}.`
-      );
+      throw new BriQueryError({
+        code: VECTOR_QUERY_DIMS_MISMATCH,
+        message: `VectorIndex.searchInTxn: query vector dims ${query.length} do not match collection's vector field dims ${this.dims}. Re-embed the query with the same model the collection was indexed with.`,
+        details: { expected: this.dims, got: query.length }
+      });
     }
     return searchInTxnMerged(this, query, k, txnId, predicate, opts,
       (q, kArg, pred, optsArg) => this.searchFiltered(q, kArg, pred, optsArg));

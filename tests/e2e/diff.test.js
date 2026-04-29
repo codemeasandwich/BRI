@@ -306,6 +306,23 @@ describe('Diff Utilities', () => {
 
       expect(result.items.length).toBe(2);
     });
+
+    test('reuses existing nested object when applying second path under same key', () => {
+      const result = applyChanges(
+        [
+          [['s', 'p'], 1],
+          [['s', 'q'], 2]
+        ],
+        {}
+      );
+      expect(result.s.p).toBe(1);
+      expect(result.s.q).toBe(2);
+    });
+
+    test('materializes numeric path segment without source as array scaffold', () => {
+      const result = applyChanges([[['hole', 0, 'z'], '!']], {});
+      expect(result.hole[0].z).toBe('!');
+    });
   });
 
   describe('createChangeTracker', () => {
@@ -468,6 +485,48 @@ describe('Diff Utilities', () => {
       const tracker = createChangeTracker({ items: [1, 2, 3] });
       tracker.items = [];
 
+      const changes = tracker.getChanges();
+      expect(changes.length).toBeGreaterThan(0);
+    });
+
+    /**
+     * Array-of-objects indexing uses parseInt(nextPath segment) vs string keys — only
+     * exercised when traversing into a staged object under a numeric slot.
+     */
+    test('array index path unwraps nested object properties for proxies', () => {
+      const tracker = createChangeTracker({
+        rows: [{ cell: 'a' }]
+      });
+      tracker.rows[0].cell = 'b';
+      const changes = tracker.getChanges();
+      expect(changes.some((c) => c[0][0] === 'rows')).toBe(true);
+    });
+
+    /**
+     * Prototype-visible keys have no own property (hasOwnProperty false) → oldVal
+     * records UNDECLARED despite an inherited sentinel value underneath.
+     */
+    test('set on inherited key records UNDECLARED previous value context', () => {
+      const proto = Object.create(Object.prototype);
+      proto.branchOwnOnly = 'inherited-val';
+      const bag = Object.create(proto);
+      const tracker = createChangeTracker(bag);
+      tracker.branchOwnOnly = 'own-val';
+      const changes = tracker.getChanges().filter((c) =>
+        JSON.stringify(c[0]).includes('branchOwnOnly')
+      );
+      expect(changes.length).toBeGreaterThan(0);
+      expect(changes.some((c) => c[2] === UNDECLARED)).toBe(true);
+    });
+
+    /**
+     * Functions are tracked objects; assigning a keyed object skips the plain/plain
+     * scaffold push (nested replace on a typeof-function target).
+     */
+    test('assigning object onto function carrier skips inner scaffold branch', () => {
+      function ApiHost() {}
+      const tracker = createChangeTracker(ApiHost);
+      tracker.handlers = { route: '/' };
       const changes = tracker.getChanges();
       expect(changes.length).toBeGreaterThan(0);
     });

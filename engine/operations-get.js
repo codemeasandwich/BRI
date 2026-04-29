@@ -18,11 +18,16 @@ import { watchForChanges } from './reactive.js';
 export function createGetOperation(store, wrapper) {
 
   /**
-   * Retrieves items from the database by type and selector
-   * @param {string} type - The entity type (e.g., 'user', 'userS' for groups)
-   * @param {string|Object|Array|Function} where - Selector: ID string, query object, array of IDs, or filter function
-   * @param {Object} opts - Options including txnId for transactions
-   * @returns {Promise} Promise resolving to item(s) with populate() and .and proxy
+   * Retrieves items from the database by type and selector.
+   *
+   * @param {string} type - Singular collection (`user`) or plural group accessor (`userS`, ends with `S`)
+   * @param {string|Object|Array|Function} where - Selector: typed `$ID`, query object, ID array, predicate function, etc.
+   * @param {Object} opts - Options (e.g. `txnId` for transactional reads)
+   * @returns {Promise} Promise extended with `.populate` / `.and`:
+   *   The async **fulfillment value** depends on the selector:
+   *   - **Singular path** (`where` narrows to one typed `$ID` containing `_`): fulfills **`null`** when the row is absent or fails `checkMatch` against the parsed body; otherwise fulfills the **reactive entity proxy** returned by `watchForChanges` wrapping the JSS-parsed document (`toObject`, `toString`, change tracking, predicate routing — see `engine/reactive.js`).
+   *   - **Group / plural path** (`type` ends with `S`, ID array, or membership listing): fulfills an **array** of per-row entities — each element is the fulfillment of `wrapper.get(null, $ID)` after ID normalization / filtering (`where` predicate or `isMatch`), so each entry matches the singular reactive shape above (not a bare POJO snapshot unless the row truly resolves that way).
+   *   The returned promise object has **own** `.populate` (relation expansion) and `.and` (Proxy sugar calling the same populate) attached for chaining.
    */
   return function get(type, where, opts = {}) {
     // Extract txnId from opts (3rd arg) or from where if it has txnId
@@ -57,13 +62,16 @@ export function createGetOperation(store, wrapper) {
       else
         throw new Error(`Type ${type} does not match ID:${where}`);
     } else if ('object' === typeof where) {
+      // $ID branch: constrain by typed id. Otherwise singular calls turn plain
+      // filter objects into checkMatch predicates; group (*.S) calls keep literals
+      // so downstream whereIsQueryObj paths can use deep isMatch filtering.
       if (where.$ID) {
         if (where.$ID.startsWith(type2Short(type))) {
           $ID = where.$ID;
         } else {
           throw new Error(`Type ${type} does not match ID:${where.$ID}`);
         }
-      } else if (!where.txnId && !Array.isArray(where)) {
+      } else if (!where.txnId && !Array.isArray(where) && !isGroupCall) {
         const matchThis = where;
         where = (source) => checkMatch(matchThis, source);
       }
@@ -72,9 +80,15 @@ export function createGetOperation(store, wrapper) {
     const groupCall = (type && type.endsWith('S')) || this.groupCall;
 
     /**
-     * Populates referenced entities in the result
-     * @param {string|Array} key - Key(s) to populate
-     * @returns {Promise} Promise with populated data and chainable populate()
+     * Expands foreign-key fields on an already-materialized `.get` result by awaiting nested `wrapper.get(null, ref)` loads.
+     *
+     * Preconditions: awaits the outer `result` promise — i.e. operates on whatever singular entity or entity array `.get` settled with.
+     *
+     * @param {string|Array<string>} key - One relation field name or several fields to hydrate in one batch.
+     * @returns {Promise} Extended Promise (`output.populate === populate`) whose fulfillment value is:
+     *   - **Passthrough**: if the fulfilled payload is falsy, or a group query produced an empty row array, fulfills with that same value (`null`, `undefined`, or `[]`) without issuing nested reads.
+     *   - **Singular row**: fulfills with **`percent[MAKE_COPY]`** — the reactive merge fork created by the reactive proxy (`engine/reactive.js`) — after shallow-cloning `percent` and assigning each requested field from the **fulfillment** of `wrapper.get(null, id)` (or `Promise.all` across ids when the stored field is an array of `$ID`s). Nested loads resolve to the same engine entity shape as top-level `.get` (reactive proxies + nested `.populate`/`.and`).
+     *   - **Plural rows**: when `result` fulfilled with an array, maps `processEntry` across rows and fulfills with a **parallel array** of merged forks (same per-row semantics as singular).
      */
     const populate = key => {
       const keys = 'string' === typeof key ? [key] : key;
@@ -88,8 +102,9 @@ export function createGetOperation(store, wrapper) {
         if (!percent || (groupCall && 0 === percent.length)) {
           return percent;
         }
-        // Get the reactive copy before Object.assign strips the proxy
-        const copy = percent[MAKE_COPY] || Object.assign({}, percent);
+        // Reactive wrappers always expose MAKE_COPY via the Proxy get trap so
+        // populate can fork a nested proxy bundle for merge results.
+        const copy = percent[MAKE_COPY];
         percent = Object.assign({}, percent);
 
         return Promise.all(
@@ -131,7 +146,12 @@ export function createGetOperation(store, wrapper) {
             return x;
           }
           const adb = JSS.parse(x);
-          if ("object" === where && !checkMatch(where, adb)) {
+          if (
+            typeof where === 'object' &&
+            where !== null &&
+            !Array.isArray(where) &&
+            !checkMatch(where, adb)
+          ) {
             return null;
           }
 
@@ -193,7 +213,17 @@ export function createGetOperation(store, wrapper) {
     result.populate = populate;
 
     result.and = new Proxy({}, {
-      get(target, prop) {
+      /**
+       * Implements `result.and.<field>` as pure syntax sugar: **`return result.populate(field)`** — same closure, same fulfillment semantics as calling `.populate` explicitly on this `.get` promise.
+       *
+       * Therefore the promise settles exactly as documented on `populate`:
+       * singular merged **`percent[MAKE_COPY]`** fork with nested `wrapper.get` results wired in, group **`Array`** of those merges, or **`null` / `undefined` / `[]`** passthrough when the outer row materialization yielded nothing to expand.
+       *
+       * @param {object} _target - Unused Proxy target (`new Proxy` handler contract)
+       * @param {string|symbol} prop - Relation field name forwarded to `populate`
+       * @returns {Promise} Same extended Promise instance `populate(prop)` returns (`then` fulfillment per rules above; own `.populate` chain intact)
+       */
+      get(_target, prop) {
         return result.populate(prop);
       }
     });

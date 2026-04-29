@@ -382,6 +382,14 @@ describe('Memory Management', () => {
       expect(docs).toContain('TYPE2_ghi');
     });
 
+    test('listDocs swallows ENOENT when cold directory is removed after construction', async () => {
+      await coldFiles.writeDoc('TYPE_rm', '{}');
+      await fs.rm(path.join(coldTestDir, 'cold'), { recursive: true, force: true });
+      const docs = await coldFiles.listDocs();
+      expect(Array.isArray(docs)).toBe(true);
+      expect(docs).toEqual([]);
+    });
+
     test('listDocs returns empty array when no cold dir', async () => {
       const newCold = new ColdTierFiles('./nonexistent-cold-dir');
       const docs = await newCold.listDocs();
@@ -482,6 +490,12 @@ describe('Memory Management', () => {
       cache.rename('OLD_key', 'NEW_key');
       expect(cache.has('OLD_key')).toBe(false);
       expect(cache.has('NEW_key')).toBe(true);
+    });
+
+    test('rename is no-op when old key is absent', async () => {
+      const cache = new HotTierCache({ maxMemoryMB: 64 });
+      cache.rename('missing_old', 'NEW_key');
+      expect(cache.has('NEW_key')).toBe(false);
     });
 
     test('markClean sets dirty flag to false', async () => {
@@ -676,6 +690,166 @@ describe('Memory Management', () => {
       cache.documents.set('COLD_key', { cold: true, key: 'COLD_key' });
       // Should not throw
       cache.markClean('COLD_key');
+    });
+
+    /**
+     * Eviction uses several guard branches — needsEviction noop, skipping cold/dirty slots,
+     * early exit when freed memory dips below target, and inner apply only while the slot is still hot.
+     * HotTierCache does not expose per-entry sizing; tests seed `documents` + `usedMemory` the same way
+     * as other direct tests (`cache.documents.set` cold refs), then invoke public evict/onEvict hooks.
+     */
+    test('evict() returns when needsEviction is false', async () => {
+      const cache = new HotTierCache({ maxMemoryMB: 64, evictionThreshold: 0.95 });
+      await cache.set('LOW$', '{}');
+      expect(cache.needsEviction()).toBe(false);
+      await cache.evict();
+      expect(cache.has('LOW$')).toBe(true);
+    });
+
+    test('eviction skips cold placeholder entries during candidate enumeration', async () => {
+      const evicted = [];
+      const cache = new HotTierCache({
+        maxMemoryMB: 1,
+        evictionThreshold: 0.5,
+        async onEvict(key, data) {
+          evicted.push(key);
+        }
+      });
+      cache.maxMemory = 5000;
+      cache.evictionThreshold = 0.5;
+      cache.documents.set('COLD$', { cold: true, key: 'COLD$' });
+      const body = '"x"';
+      cache.documents.set('HOT$', {
+        data: body,
+        size: 3000,
+        lastAccess: 2,
+        accessCount: 1,
+        dirty: false,
+        cold: false
+      });
+      cache.usedMemory = 3000;
+      expect(cache.needsEviction()).toBe(true);
+      await cache.evict();
+      expect(evicted).toContain('HOT$');
+      expect(cache.isCold('HOT$')).toBe(true);
+      expect(cache.isCold('COLD$')).toBe(true);
+    });
+
+    test('eviction skips dirty hot entries until only clean docs are candidates', async () => {
+      const evicted = [];
+      const cache = new HotTierCache({
+        maxMemoryMB: 64,
+        evictionThreshold: 0.5,
+        async onEvict(key) {
+          evicted.push(key);
+        }
+      });
+      cache.maxMemory = 6000;
+      const body = '"x"';
+      cache.documents.set('DIRTY$', {
+        data: body,
+        size: 3000,
+        lastAccess: 2,
+        accessCount: 1,
+        dirty: true,
+        cold: false
+      });
+      cache.documents.set('CLEAN$', {
+        data: body,
+        size: 3000,
+        lastAccess: 1,
+        accessCount: 1,
+        dirty: false,
+        cold: false
+      });
+      cache.usedMemory = 6000;
+      await cache.evict();
+      expect(evicted).toEqual(['CLEAN$']);
+      expect(cache.has('DIRTY$')).toBe(true);
+      expect(cache.isCold('CLEAN$')).toBe(true);
+    });
+
+    test('eviction exits early once usedMemory reaches target threshold', async () => {
+      let evictions = 0;
+      const cache = new HotTierCache({
+        maxMemoryMB: 64,
+        evictionThreshold: 0.5,
+        async onEvict() {
+          evictions++;
+        }
+      });
+      cache.maxMemory = 100000;
+      cache.evictionThreshold = 0.5;
+      const row = (lastAccess) => ({
+        data: '"x"',
+        size: 20000,
+        lastAccess,
+        accessCount: 1,
+        dirty: false,
+        cold: false
+      });
+      cache.documents.set('A$', row(3));
+      cache.documents.set('B$', row(2));
+      cache.documents.set('C$', row(1));
+      cache.usedMemory = 60000;
+      await cache.evict();
+      expect(evictions).toBe(1);
+      expect(cache.needsEviction()).toBe(false);
+    });
+
+    test('eviction skips apply when predecessor onEvict removed that candidate key', async () => {
+      let evictions = 0;
+      const cache = new HotTierCache({
+        maxMemoryMB: 64,
+        evictionThreshold: 0.5,
+        async onEvict(key) {
+          evictions++;
+          if (key === 'K1$') cache.documents.delete('K2$');
+        }
+      });
+      cache.maxMemory = 100000;
+      const row = (lastAccess, size = 45000) => ({
+        data: '"x"',
+        size,
+        lastAccess,
+        accessCount: 1,
+        dirty: false,
+        cold: false
+      });
+      cache.documents.set('K1$', row(1));
+      cache.documents.set('K2$', row(10));
+      cache.usedMemory = 90000;
+      await cache.evict();
+      expect(evictions).toBe(1);
+      expect(cache.has('K1$')).toBe(true);
+      expect(cache.isCold('K1$')).toBe(true);
+      expect(cache.has('K2$')).toBe(false);
+    });
+
+    test('evict resolves with evicted===0 when all hot rows are dirty', async () => {
+      let evictedCalls = 0;
+      const cache = new HotTierCache({
+        maxMemoryMB: 64,
+        evictionThreshold: 0.9999,
+        async onEvict() {
+          evictedCalls++;
+        }
+      });
+      cache.maxMemory = 8000;
+      cache.evictionThreshold = 0.99;
+      cache.documents.set('ONLY$', {
+        data: '"x"',
+        size: 8000,
+        lastAccess: 1,
+        accessCount: 1,
+        dirty: true,
+        cold: false
+      });
+      cache.usedMemory = 8000;
+      expect(cache.needsEviction()).toBe(true);
+      await cache.evict();
+      expect(evictedCalls).toBe(0);
+      expect(cache.has('ONLY$')).toBe(true);
     });
   });
 });

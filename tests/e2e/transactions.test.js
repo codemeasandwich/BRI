@@ -556,6 +556,30 @@ describe('TransactionManager Direct Tests', () => {
       expect(txnManager.get(txnId, 'OLD_key')).toBe('{"data":"test"}');
     });
 
+    test('pop RENAME skips document restore when NEW key holds no shadow value', async () => {
+      const txnId = txnManager.rec();
+      txnManager.rename(txnId, 'GHOST_OLD', 'GHOST_NEW');
+
+      await txnManager.pop(txnId);
+
+      expect(txnManager.get(txnId, 'GHOST_OLD')).toBeUndefined();
+    });
+
+    test('pop RENAME without _prevRenames does not replay renames snapshot', async () => {
+      const txnId = txnManager.rec();
+      txnManager.set(txnId, 'snap_k', '{"p":true}');
+      txnManager.rename(txnId, 'snap_k', 'snap_k2');
+
+      const txn = txnManager.getTxn(txnId);
+      const renameAction = txn.actions.find((a) => a.action === 'RENAME');
+      expect(renameAction._prevRenames).toBeDefined();
+      delete renameAction._prevRenames;
+
+      await txnManager.pop(txnId);
+
+      expect(txn.renames.has('snap_k')).toBe(true);
+    });
+
     test('reverses SADD action', async () => {
       const txnId = txnManager.rec();
       txnManager.sAdd(txnId, 'SET?', 'member');
@@ -602,6 +626,14 @@ describe('TransactionManager Direct Tests', () => {
 
     test('removes transaction from pending', async () => {
       const txnId = txnManager.rec();
+      await txnManager.fin(txnId);
+      expect(txnManager.hasTxn(txnId)).toBe(false);
+    });
+
+    test('fin tolerates missing txn WAL file (unlink catch on ENOENT)', async () => {
+      const txnId = txnManager.rec();
+      const txn = txnManager.getTxn(txnId);
+      await fs.unlink(txn.walFile);
       await txnManager.fin(txnId);
       expect(txnManager.hasTxn(txnId)).toBe(false);
     });

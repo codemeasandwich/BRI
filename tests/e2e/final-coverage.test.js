@@ -5,7 +5,13 @@
  */
 
 import { createDB } from '../../client/index.js';
-import { createEngine } from '../../engine/index.js';
+import {
+  createEngine,
+  createIdGenerator,
+  VectorIndex,
+  attachToString,
+  checkMatch
+} from '../../engine/index.js';
 import { createStore } from '../../storage/index.js';
 import { InHouseAdapter } from '../../storage/adapters/inhouse.js';
 import { validateConfig } from '../../storage/interface.js';
@@ -13,6 +19,12 @@ import { LocalPubSub } from '../../storage/pubsub/local.js';
 import { jest } from '@jest/globals';
 import fs from 'fs/promises';
 import path from 'path';
+import { compileFilter } from '../../engine/filter-compiler.js';
+import { QueryPlanner } from '../../engine/query-planner.js';
+import { executeCombined, executeMatch } from '../../client/match-engine.js';
+import { GroupedQueryBuilder } from '../../client/grouped-query-builder.js';
+import { walkChain, makeChainProxy } from '../../engine/chain-walk.js';
+import { vectorIndexMiddleware } from '../../engine/vector-middleware.js';
 
 // Import from diff index.js to cover re-exports
 import {
@@ -25,10 +37,69 @@ import {
   flattenToPathValues,
   isPlainObject,
   isPartialMatch,
-  isDeepEqual
+  isDeepEqual,
+  createPatch,
+  pathToPointer
 } from '../../utils/diff/index.js';
+import { createOperationProxy } from '../../client/proxy-operations.js';
+import { makeRng, pickLevel } from '../../engine/vector-index-rng.js';
+import { hydrateEndpoints, makeRelatedAccessor } from '../../engine/predicate-inverse-related.js';
+import {
+  queryBuilderFirst,
+  queryBuilderCount,
+  queryBuilderDistinct
+} from '../../client/query-builder-terminals.js';
+import { decorateResults } from '../../client/query-builder-residual.js';
+import { resolvePredicateAccess } from '../../engine/predicate-proxy.js';
+import { HotTierCache } from '../../storage/hot-tier/cache.js';
+import { WALWriter } from '../../storage/wal/writer.js';
+import { BriSchemaError, BriValidationError } from '../../engine/errors.js';
+import { createSchemaRegistry } from '../../engine/schema-registry.js';
 
 const TEST_DATA_DIR = './test-data-final-coverage';
+
+describe('Final Coverage — query-builder terminal helpers', () => {
+  test('queryBuilderFirst returns first row or null for empty', async () => {
+    const hit = { $ID: 'ONE' };
+    await expect(
+      queryBuilderFirst({
+        toArray: async () => [hit]
+      })
+    ).resolves.toBe(hit);
+    await expect(
+      queryBuilderFirst({
+        toArray: async () => []
+      })
+    ).resolves.toBeNull();
+  });
+
+  test('queryBuilderCount without near composes with toArray length', async () => {
+    await expect(
+      queryBuilderCount({
+        _state: {},
+        toArray: async () => [{}, {}]
+      })
+    ).resolves.toBe(2);
+  });
+
+  test('queryBuilderDistinct skips null rows and nullish field values', async () => {
+    const out = await queryBuilderDistinct(
+      {
+        _state: {},
+        toArray: async () => [
+          null,
+          { k: 1 },
+          { k: null },
+          { k: undefined },
+          { k: 1 },
+          { other: 9 }
+        ]
+      },
+      'k'
+    );
+    expect(out).toEqual([1]);
+  });
+});
 
 describe('Final Coverage - Diff Index Re-exports', () => {
   test('all exports from utils/diff/index.js are accessible', () => {
@@ -43,6 +114,125 @@ describe('Final Coverage - Diff Index Re-exports', () => {
     expect(typeof isPlainObject).toBe('function');
     expect(typeof isPartialMatch).toBe('function');
     expect(typeof isDeepEqual).toBe('function');
+    expect(typeof createPatch).toBe('function');
+    expect(typeof pathToPointer).toBe('function');
+  });
+
+  test('createPatch and pathToPointer cover non-objects, escapes, JSON Pointer edge', () => {
+    expect(createPatch(NaN, NaN)).toEqual([]);
+    expect(createPatch({ x: 1 }, 42)).toEqual([{ op: 'remove', path: '/x' }]);
+    expect(createPatch(undefined, { b: true })).toEqual([
+      { op: 'add', path: '/b', value: true }
+    ]);
+    expect(createPatch({ z: 9 }, { z: 11 })).toEqual([
+      { op: 'replace', path: '/z', value: 11 }
+    ]);
+    expect(pathToPointer([])).toBe('');
+    expect(pathToPointer(['a/b', '~'])).toBe('/a~1b/~0');
+    expect(pathToPointer(['~x'])).toBe('/~0x');
+  });
+});
+
+describe('Final Coverage — createOperationProxy noop target invocation', () => {
+  test('calling the Proxy as a function invokes the internal noop target', async () => {
+    const mw = {
+      async run(ctx, cb) {
+        return cb(ctx);
+      }
+    };
+    const addPx = createOperationProxy(
+      jest.fn(async () => 'ok'),
+      'add',
+      mw,
+      () => ({})
+    );
+    expect(await addPx()).toBeUndefined();
+    const out = await addPx.user({});
+    expect(out).toBe('ok');
+  });
+});
+
+describe('Final Coverage — vector-index-rng (pickLevel ln guard)', () => {
+  test('pickLevel substitutes Number.MIN_VALUE when rng returns 0', () => {
+    const lvl = pickLevel(() => 0, 16);
+    const expected = Math.floor(
+      -Math.log(Number.MIN_VALUE) * (1 / Math.log(16))
+    );
+    expect(lvl).toBe(expected);
+    expect(Number.isNaN(lvl)).toBe(false);
+  });
+
+  test('makeRng(seed) emits identical draws for identical seed', () => {
+    const u = makeRng(999_888_777);
+    const v = makeRng(999_888_777);
+    expect(u()).toBe(v());
+    expect(u()).toBe(v());
+  });
+});
+
+describe('Final Coverage — predicate inverse / related drains', () => {
+  test('hydrateEndpoints skips rows with empty endpoint id field', async () => {
+    const out = await hydrateEndpoints(
+      [
+        { subject_id: 'S', object_id_or_literal: '' },
+        {
+          subject_id: 'T',
+          object_id_or_literal: 'TARGET_X'
+        }
+      ],
+      'object_id_or_literal',
+      {
+        get: jest.fn(async (_collection, id) =>
+          id === 'TARGET_X' ? { $ID: id, name: 'ok' } : null
+        )
+      }
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].name).toBe('ok');
+  });
+
+  test('related.$ skips edge ids whose document body failed to load', async () => {
+    const wrapper = {
+      get: jest.fn(async (collection, id) => {
+        if (collection === 'kgTriple') {
+          if (id === '__missing_doc__') return null;
+          return {
+            $ID: id,
+            subject_id: 'SEED',
+            predicate: 'knows',
+            object_id_or_literal: 'OZ_ENTITY'
+          };
+        }
+        if (collection == null && id === 'OZ_ENTITY') {
+          return { $ID: id, name: 'OzResolved' };
+        }
+        return null;
+      })
+    };
+    const graphIndex = {
+      outgoing: jest.fn(() => ['__missing_doc__', 'EDGE_ok'])
+    };
+    const registry = {
+      graphIndex: () => graphIndex,
+      predicatesForSubject: () => [['knows', 'kgTriple']],
+      edgeSpec: jest.fn(() => ({
+        from: 'subject_id',
+        to: 'object_id_or_literal'
+      }))
+    };
+    const acc = makeRelatedAccessor({
+      target: { $ID: 'SEED' },
+      registry,
+      wrapper,
+      subjectCollection: 'kgEntity'
+    });
+    const edges = await acc.$;
+    expect(edges.map(e => e.$ID)).toEqual(['EDGE_ok']);
+    const targets = await acc;
+    expect(targets.every(t => t && t.$ID)).toBe(true);
+    expect(targets).toHaveLength(1);
+    expect(targets[0].name).toBe('OzResolved');
+    expect(wrapper.get).toHaveBeenCalledWith('kgTriple', '__missing_doc__');
   });
 });
 
@@ -1544,6 +1734,59 @@ describe('Final Coverage - DELETE WAL Replay (lines 123-125)', () => {
     await store.disconnect();
   });
 
+  test('WAL replay onDelete swallows cold deleteDoc rejection once', async () => {
+    const { ColdTierFiles } = await import('../../storage/cold-tier/files.js');
+    const { createDeleteEntry, serializeEntry } = await import('../../storage/wal/entry.js');
+    const orig = ColdTierFiles.prototype.deleteDoc;
+    let rejectOnce = true;
+    ColdTierFiles.prototype.deleteDoc = function patchDelete(key) {
+      if (rejectOnce) {
+        rejectOnce = false;
+        return Promise.reject(new Error('simulated cold delete failure'));
+      }
+      return orig.call(this, key);
+    };
+    try {
+      let store = await createStore({
+        type: 'inhouse',
+        config: {
+          dataDir: DELETE_WAL_DIR,
+          maxMemoryMB: 64,
+          snapshotIntervalMs: 999999999
+        }
+      });
+
+      await store.set('replay_coldrej_k', JSON.stringify({ n: 1 }));
+
+      const walDir = path.join(DELETE_WAL_DIR, 'wal');
+      const walFiles = await fs.readdir(walDir);
+      const activeWal = walFiles.find(f => f.endsWith('.wal'));
+      const walContent = await fs.readFile(path.join(walDir, activeWal), 'utf8');
+      const lines = walContent.split('\n').filter(l => l.trim());
+      const lastPointer = lines.length > 0 ? lines[lines.length - 1].split('|')[1] : null;
+      await fs.appendFile(
+        path.join(walDir, activeWal),
+        serializeEntry(createDeleteEntry('replay_coldrej_k'), lastPointer) + '\n'
+      );
+
+      await store.wal.close();
+      store.pubsub.clear();
+      store.initialized = false;
+
+      store = await createStore({
+        type: 'inhouse',
+        config: {
+          dataDir: DELETE_WAL_DIR,
+          maxMemoryMB: 64
+        }
+      });
+      expect(await store.get('replay_coldrej_k')).toBeNull();
+      await store.disconnect();
+    } finally {
+      ColdTierFiles.prototype.deleteDoc = orig;
+    }
+  });
+
   test('onDelete also removes from cold tier if doc was evicted', async () => {
     const { createDeleteEntry, serializeEntry } = await import('../../storage/wal/entry.js');
 
@@ -2006,5 +2249,497 @@ describe('Final Coverage - WAL Reader Verify Integrity Read Error (line 141)', (
 
     // Restore permissions
     await fs.chmod(path.join(walDir, activeWal), 0o644);
+  });
+});
+
+/**
+ * Direct imports of engine/client helpers (same pattern as secondary-index and
+ * aggregation E2E tests) to hit synchronous branches that async user flows
+ * rarely exercise (throw lines in compileFilter, defensive combine guard, etc.).
+ */
+describe('Final Coverage — engine/client drain (sync + fault injection)', () => {
+  const DRAIN = './test-data-final-coverage-drain';
+
+  afterEach(async () => {
+    await fs.rm(DRAIN, { recursive: true, force: true }).catch(() => {});
+  });
+
+  test('compileFilter throws on bad $in, unknown op, and non-object filter', () => {
+    expect(() => compileFilter({ z: { $in: 'not-array' } })).toThrow(/\$in expects an array/);
+    expect(() => compileFilter({ z: { $unknownOp: 1 } })).toThrow(/Unsupported filter operator/);
+    expect(() => compileFilter(/** @type {*} */ (Symbol('x')))).toThrow(/unsupported filter type symbol/);
+  });
+
+  test('QueryPlanner handles function filters and missing secondaryIndexManager without throwing', () => {
+    const pred = doc => doc.ok;
+    const r1 = new QueryPlanner({}).planWhere('c', pred);
+    expect(r1.useIndex).toBe(false);
+    expect(r1.residualFilter).toBe(pred);
+    const r2 = new QueryPlanner({
+      secondaryIndexManager() {
+        return null;
+      }
+    }).planWhere('c', { a: 1 });
+    expect(r2.useIndex).toBe(false);
+    expect(r2.residualFilter({ a: 1 })).toBe(true);
+  });
+
+  test('executeCombined throws when registry has no vector index (defensive guard)', async () => {
+    await expect(executeCombined({
+      plan: { useIndex: false, candidateIds: null, residualFilter: () => true },
+      match: { filter: { t: 'x' } },
+      near: { vector: [1], k: 2 },
+      weights: { alias: 1, vector: 1 },
+      limit: undefined,
+      collection: 'noVecHere',
+      registry: {
+        vectorIndex() {
+          return null;
+        }
+      },
+      wrapper: {}
+    })).rejects.toThrow(/no vector field/);
+  });
+
+  test('GroupedQueryBuilder skips null docs and sums only numeric fields', async () => {
+    const gb = new GroupedQueryBuilder(
+      {
+        toArray: async () => [
+          { gk: 'A', amt: 1 },
+          null,
+          { gk: 'A', amt: 'skip' },
+          { gk: 'A', amt: 2 }
+        ]
+      },
+      'gk',
+      { agg: { kind: 'sum', field: 'amt' } }
+    );
+    const rows = await gb.toArray();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual({ gk: 'A', sum: 3 });
+  });
+
+  test('walkChain: maxDepth=1 short-circuit flat array when no successor ref exists', async () => {
+    const wrapper = {
+      /** @returns {Promise<null>} */
+      get(_a, id) {
+        void id;
+        return Promise.resolve(null);
+      }
+    };
+    const chain = await walkChain({
+      target: { $ID: 'only', nextHop: undefined },
+      field: 'nextHop',
+      wrapper,
+      maxDepth: 1
+    });
+    expect(Array.isArray(chain)).toBe(true);
+    expect(chain).toHaveLength(1);
+  });
+
+  test('makeChainProxy rejects non-ref fields with a rejecting thenable', async () => {
+    const registry = {
+      get: () => ({
+        title: { type: String }
+      })
+    };
+    const proxy = makeChainProxy({
+      target: { $ID: 'SEED_1' },
+      registry,
+      wrapper: {},
+      subjectCollection: 'docRow'
+    });
+    await expect((async () => {
+      await /** @type {{ then: Function }} */ (proxy.title);
+    })()).rejects.toThrow(/not a 'ref' field/);
+    expect(proxy[Symbol('x')]).toBeUndefined();
+  });
+
+  test('vectorIndexMiddleware: failed pre-fetch uses insert path on set when secondary exists', async () => {
+    const db = await createDB({ storeConfig: { dataDir: DRAIN, maxMemoryMB: 48 } });
+    db.schema('idxRow', {
+      tag: { type: String, required: true },
+      $indexes: [['tag']]
+    });
+    const mw = vectorIndexMiddleware(db._registry);
+    const mgr = db._registry.secondaryIndexManager();
+    let insertCalls = 0;
+    const origIns = mgr.insert.bind(mgr);
+    mgr.insert = (type, entity) => {
+      insertCalls++;
+      return origIns(type, entity);
+    };
+
+    /** ctx.db getter pre-fetch deliberately throws — engine path when read fails mid-set. */
+    const ctx = {
+      operation: 'set',
+      type: 'idxRow',
+      args: [{ $ID: 'IDX_test1', tag: 'b' }],
+      db: {
+        get: {
+          idxRow: async () => {
+            throw new Error('forced prefetch skip');
+          }
+        }
+      },
+      opts: {},
+      result: undefined
+    };
+    await mw(ctx, async () => {
+      ctx.result = { $ID: 'IDX_test1', tag: 'b' };
+    });
+    expect(insertCalls).toBe(1);
+    mgr.insert = origIns;
+    await db.disconnect();
+  });
+
+  test('vectorIndexMiddleware: edge collection set removes prior graph arc then inserts new arc', async () => {
+    // Mirrors engine/vector-middleware.js POST sync for `$edge` collections: replace
+    // must call graph.removeEdge with the pre-fetch document, then insertEdge with
+    // the post-write entity. Covers the branch guarded by entity.$ID after `set`.
+    const removeEdge = jest.fn();
+    const insertEdge = jest.fn();
+    const registry = {
+      validate() {},
+      secondaryIndexManager() {
+        return { collections() { return []; } };
+      },
+      edgeSpec(/** @type {string} */ type) {
+        return type === 'kgTriple'
+          ? { from: 'subject_id', to: 'object_id_or_literal', predicate: 'predicate' }
+          : undefined;
+      },
+      vectorFieldOf() {
+        return null;
+      },
+      graphIndex() {
+        return { removeEdge, insertEdge };
+      }
+    };
+    const mw = vectorIndexMiddleware(registry);
+    const preFetched = {
+      $ID: 'EDGE_g',
+      subject_id: 'OldS',
+      object_id_or_literal: 'OldO',
+      predicate: 'knows'
+    };
+    const postEntity = {
+      $ID: 'EDGE_g',
+      subject_id: 'NewS',
+      object_id_or_literal: 'NewO',
+      predicate: 'knows'
+    };
+    const ctx = {
+      operation: 'set',
+      type: 'kgTriple',
+      args: [postEntity],
+      db: {
+        get: {
+          kgTriple: async () => preFetched
+        }
+      },
+      opts: {},
+      result: undefined
+    };
+    await mw(ctx, async () => {
+      ctx.result = postEntity;
+    });
+    expect(removeEdge).toHaveBeenCalledWith('kgTriple', preFetched);
+    expect(insertEdge).toHaveBeenCalledWith('kgTriple', postEntity);
+  });
+
+  test('cascade.byField atomic: delete failure triggers nop in catch path', async () => {
+    const db = await createDB({ storeConfig: { dataDir: DRAIN, maxMemoryMB: 48 } });
+    db.schema('killRow', { v: { type: String, required: true } });
+    await db.add.killRow({ v: 'one' });
+    let armed = false;
+    const failDel = async (/** @type {*} */ ctx, /** @type {Function} */ next) => {
+      if (armed && ctx.operation === 'del' && ctx.type === 'killRow') {
+        throw new Error('simulated del failure');
+      }
+      await next();
+    };
+    db.use(failDel);
+    armed = true;
+    await expect(
+      db.cascade.byField({
+        collections: ['killRow'],
+        filter: { v: 'one' },
+        opts: { atomic: true }
+      })
+    ).rejects.toThrow(/simulated del failure/);
+    armed = false;
+    db.middleware.remove(failDel);
+    await db.disconnect();
+  });
+
+  test('createIdGenerator genid retries when first candidate $ID is taken', async () => {
+    let checks = 0;
+    const store = {
+      get: async ($ID) => {
+        checks++;
+        return checks === 1 ? '{"x":1}' : null;
+      }
+    };
+    const { genid } = createIdGenerator(store);
+    const id = await genid('USER');
+    expect(id).toMatch(/^USER_[a-z0-9]+$/);
+    expect(checks).toBeGreaterThanOrEqual(2);
+  });
+
+  test('executeMatch skips non-string match filter entries and skips null docs', async () => {
+    const docs = [
+      null,
+      { $ID: 'DOC_a', title: 'hello', updatedAt: new Date('2020-01-01') },
+      { $ID: 'DOC_b', title: 'nope', updatedAt: new Date('2021-01-01') },
+      { $ID: 'DOC_c', title: ['x'], updatedAt: new Date('2022-01-01') }
+    ];
+    const wrapper = {
+      get: jest.fn(async (t) => {
+        if (t === 'matchXS') return docs;
+        return [];
+      })
+    };
+    const out = await executeMatch({
+      plan: { useIndex: false, candidateIds: null, residualFilter: null },
+      match: { filter: { ignore: 42, title: 'ell' }, k: 10 },
+      limit: undefined,
+      collection: 'matchX',
+      wrapper
+    });
+    expect(out.length).toBeGreaterThan(0);
+    expect(out.some(d => d.$ID === 'DOC_a')).toBe(true);
+  });
+
+  test('executeMatch index plan + residual; rankCompare updatedAt tiebreak', async () => {
+    const d1 = { $ID: 'P_1', t: 'q', updatedAt: new Date('2010-01-01') };
+    const d2 = { $ID: 'P_2', t: 'q', updatedAt: new Date('2020-01-01') };
+    const wrapper = {
+      get: jest.fn(async (col, id) => {
+        if (id === 'P_1') return d1;
+        if (id === 'P_2') return d2;
+        return null;
+      })
+    };
+    const out = await executeMatch({
+      plan: {
+        useIndex: true,
+        candidateIds: ['P_1', 'P_2'],
+        residualFilter: (d) => d.$ID === 'P_2'
+      },
+      match: { filter: { t: 'q' }, k: 5 },
+      collection: 'mt',
+      wrapper
+    });
+    expect(out).toHaveLength(1);
+  });
+
+  test('executeCombined ranks alias-only embedding-missing docs (cosine 0)', async () => {
+    const embedding = new Array(8).fill(0);
+    embedding[0] = 1;
+    const doc = {
+      $ID: 'CB_1',
+      label: 'findme',
+      updatedAt: new Date(),
+      embedding
+    };
+    const { VectorIndex } = await import('../../engine/vector-index.js');
+    const index = new VectorIndex({ dims: 8 });
+    index.add('CB_1', embedding);
+    const wrapper = {
+      get: jest.fn(async () => [doc])
+    };
+    const out = await executeCombined({
+      plan: { useIndex: false, candidateIds: null, residualFilter: null },
+      match: { filter: { label: 'find' }, k: 5 },
+      near: { vector: embedding, k: 5 },
+      weights: { alias: 0.5, vector: 0.5 },
+      limit: undefined,
+      collection: 'cbCol',
+      registry: {
+        vectorIndex: () => index
+      },
+      wrapper
+    });
+    expect(out.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+/**
+ * Targets remaining istanbul gaps (operations-get object filter, cascade
+ * Symbol routing, WAL readdir catches, decorator null-rows, orphan-prefix
+ * predicate routes, standalone writeEdge unreachable-db guard, vectors, cache).
+ */
+describe('Final Coverage — statement gap sweep', () => {
+  const GAP = './test-data-final-coverage-gap-sweep';
+
+  afterEach(async () => {
+    await fs.rm(GAP, { recursive: true, force: true }).catch(() => {});
+  });
+
+  test('singular get rejects when object filter mismatches hydrated doc', async () => {
+    const db = await createDB({ storeConfig: { dataDir: GAP, maxMemoryMB: 48 } });
+    db.schema('gapThing', { name: { type: String } });
+    const t = await db.add.gapThing({ name: 'ok' });
+    await expect(db.get.gapThing({ $ID: t.$ID, name: 'nope' })).resolves.toBeNull();
+    await db.add.gapThing({ name: 'other' });
+    const filtered = await db.get.gapThingS({ name: 'ok' });
+    expect(filtered.map((x) => x.$ID)).toEqual([t.$ID]);
+    await db.disconnect();
+  });
+
+  test('db.cascade get trap returns undefined for Symbol property keys', async () => {
+    const db = await createDB({ storeConfig: { dataDir: GAP + '-cascade', maxMemoryMB: 32 } });
+    expect(typeof db.cascade.byField).toBe('function');
+    expect(db.cascade[Symbol('noop')]).toBeUndefined();
+    await db.disconnect();
+  });
+
+  test('decorateResults skips null rows for provenance and hydrate passes', async () => {
+    const targ = { $ID: 'BUD_xx', lab: true };
+    const wrapper = {
+      get: jest.fn(async () => targ)
+    };
+    await decorateResults(
+      [null, { tag: '_', buddy: 'BUD_xx', pv: [{ who: 'p' }] }],
+      { withProvenance: 'pv', hydrate: ['buddy'], wrapper }
+    );
+    expect(wrapper.get).toHaveBeenCalledWith(null, 'BUD_xx');
+  });
+
+  test('resolvePredicateAccess orphan prefix: inverse related chain are undefined', async () => {
+    const db = await createDB({ storeConfig: { dataDir: GAP + '-orph', maxMemoryMB: 32 } });
+    db.schema('solo', { v: String });
+    const reg = db._registry;
+    const noop = {};
+    noop._registry = reg;
+    const orphan = { $ID: 'ORPH_xx' };
+    expect(resolvePredicateAccess(orphan, 'inverse', reg, noop)).toBeUndefined();
+    expect(resolvePredicateAccess(orphan, 'related', reg, noop)).toBeUndefined();
+    expect(resolvePredicateAccess(orphan, 'chain', reg, noop)).toBeUndefined();
+    await db.disconnect();
+  });
+
+  test('predicate write throws EDGE_COLLECTION_UNREACHABLE when _getDb lacks db.add', async () => {
+    const store = await createStore({
+      type: 'inhouse',
+      config: { dataDir: GAP + '-edge-db', maxMemoryMB: 32 }
+    });
+    const wrapper = createEngine(store);
+    const registry = createSchemaRegistry(store);
+    registry.declare('swPerson', {
+      name: { type: String, required: true }
+    });
+    registry.declare('swTriple', {
+      subject_id: { type: 'ref', to: 'swPerson', required: true },
+      predicate: { type: String, required: true },
+      object_id_or_literal: { type: 'ref', to: 'swPerson', required: true },
+      $edge: {
+        from: 'swPerson',
+        to: 'swPerson',
+        predicate: 'predicate',
+        predicates: ['knowsSw']
+      }
+    });
+    const alice = await wrapper.create('swPerson', { name: 'Alice' });
+    const bob = await wrapper.create('swPerson', { name: 'Bob' });
+    wrapper._registry = registry;
+    wrapper._getDb = () => null;
+    const acc = resolvePredicateAccess({ $ID: alice.$ID, name: 'Alice' }, 'knowsSw', registry, wrapper);
+    expect(typeof acc).toBe('function');
+    await expect(acc(bob)).rejects.toMatchObject({ code: 'EDGE_COLLECTION_UNREACHABLE' });
+    await store.disconnect();
+  });
+
+  test('walkChain stops when follower ref hydrate returns null mid-chain', async () => {
+    const chain = await walkChain({
+      target: { $ID: 'A_x', nxt: 'MISSING_dd' },
+      field: 'nxt',
+      wrapper: { get: async () => null },
+      maxDepth: 999
+    });
+    expect(chain).toHaveLength(1);
+  });
+
+  test('VectorIndex ctor throws BriSchemaError for invalid dims metric; add rejects bad length', async () => {
+    expect(() => new VectorIndex({ dims: 0 })).toThrow(BriSchemaError);
+    expect(() => new VectorIndex({ dims: 3, metric: 'l2' })).toThrow(BriSchemaError);
+    const idx = new VectorIndex({ dims: 3 });
+    expect(() => idx.add('a', new Float32Array([1]))).toThrow(BriValidationError);
+    expect(() => idx.add('a', new Float32Array([1, 2, 3]))).not.toThrow();
+  });
+
+  test('attachToString attaches array-element embedded refs carrying $ID', async () => {
+    const blob = {
+      nests: [{ $ID: 'EMB_dd', meta: true }]
+    };
+    attachToString(blob);
+    expect(String(blob.nests[0])).toBe('EMB_dd');
+  });
+
+  test('HotTierCache default coldLoader returns null clearing cold references', async () => {
+    const h = new HotTierCache({ maxMemoryMB: 8 });
+    h.documents.set('coldK', { cold: true, key: 'coldK' });
+    await expect(h.get('coldK')).resolves.toBeNull();
+    expect(h.has('coldK')).toBe(false);
+  });
+
+  test('HotTierCache custom coldLoader promotes cold-slot entries back to hot', async () => {
+    const loader = jest.fn(async () => '{"$ID":"LOD_x"}');
+    const h = new HotTierCache({ maxMemoryMB: 64, coldLoader: loader });
+    h.documents.set('coldK', { cold: true, key: 'coldK' });
+    const val = await h.get('coldK');
+    expect(loader).toHaveBeenCalledWith('coldK');
+    expect(JSON.parse(val).$ID).toBe('LOD_x');
+    expect(h.isCold && h.isCold('coldK')).toBe(false);
+  });
+
+  test('HotTierCache getAllDocumentsForSnapshot resolveRefs terminates on cyclic buddy pointers', async () => {
+    const hc = new HotTierCache({ maxMemoryMB: 32 });
+    await hc.clear();
+    await hc.loadDocuments({
+      LOOPA_x: '{"$ID":"LOOPA_x","buddy":"LOOPB_y"}',
+      LOOPB_y: '{"$ID":"LOOPB_y","buddy":"LOOPA_x"}'
+    });
+    const out = hc.getAllDocumentsForSnapshot(JSON.parse);
+    expect(out.LOOPA_x.buddy.$ID).toBe('LOOPB_y');
+    expect(out.LOOPB_y.buddy.$ID).toBe('LOOPA_x');
+    expect(out.LOOPA_x.buddy.buddy).toBe(out.LOOPA_x);
+  });
+
+  test('WALWriter.getSegments returns empty when WAL directory is unreadable', async () => {
+    const wdir = path.join(GAP + '-walro', 'wal');
+    await fs.mkdir(wdir, { recursive: true });
+    await fs.chmod(wdir, 0);
+    try {
+      const w = new WALWriter(wdir);
+      const seg = await w.getSegments();
+      expect(Array.isArray(seg)).toBe(true);
+      expect(seg.length).toBe(0);
+    } finally {
+      await fs.chmod(wdir, 0o755).catch(() => {});
+    }
+  });
+
+  test('singular object selector without $ID uses checkMatch predicate path', async () => {
+    const singDir = GAP + '-singf';
+    await fs.rm(singDir, { recursive: true, force: true }).catch(() => {});
+    const db = await createDB({ storeConfig: { dataDir: singDir, maxMemoryMB: 48 } });
+    db.schema('singF', {
+      tag: { type: String },
+      nest: { type: Object, required: false }
+    });
+    await db.add.singF({ tag: 'hit', nest: { k: 2 } });
+    await db.add.singF({ tag: 'miss', nest: { k: 9 } });
+    const rows = await db.get.singF({ tag: 'hit', nest: { k: 2 } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].tag).toBe('hit');
+    await db.disconnect();
+    await fs.rm(singDir, { recursive: true, force: true }).catch(() => {});
+  });
+
+  test('checkMatch recurses for nested object keys', () => {
+    expect(checkMatch({ a: { b: 1 } }, { a: { b: 1 } })).toBe(true);
+    expect(checkMatch({ a: { b: 2 } }, { a: { b: 1 } })).toBe(false);
   });
 });

@@ -4,7 +4,12 @@
 client/
 ├── index.js
 ├── proxy.js
+├── proxy-operations.js
 ├── query-builder.js
+├── query-builder-residual.js
+├── query-builder-vector-exec.js
+├── query-builder-where-exec.js
+├── query-builder-terminals.js
 ├── grouped-query-builder.js
 ├── match-engine.js
 └── txn-lifecycle.js
@@ -24,6 +29,41 @@ Database factory and singleton management.
 **Options:**
 - `storeType` - Storage backend ('inhouse')
 - `storeConfig` - Storage configuration object
+
+### `proxy-operations.js`
+
+Per-operation Proxy factory for `db.add`, `db.set`, `db.del` — constructs the middleware ctx, forwards opts, invokes the engine wrapper under `middleware.run`.
+
+**Exports:**
+- `createOperationProxy(operation, opName, middleware, getDb)` - Returns collection-name → callable proxies
+
+### `query-builder-residual.js`
+
+Layers planner residual filters with supersession/confidence/graph-touching gates; `decorateResults` for `$provenance` and `_field` hydrates; `touchingCandidateIds` for GraphIndex adjacency.
+
+**Exports:**
+- `composeResidualFilter`, `decorateResults`, `touchingCandidateIds`
+
+### `query-builder-vector-exec.js`
+
+`attachScore` and `executeVectorPlan` — the `.near` execution path (index-bounded, full-scan, txn merge, efSearch forward).
+
+**Exports:**
+- `attachScore`, `executeVectorPlan`
+
+### `query-builder-where-exec.js`
+
+`executeWherePlan` — `.where`-only scans (secondary-index candidate hydration or full collection + residual predicate).
+
+**Exports:**
+- `executeWherePlan`
+
+### `query-builder-terminals.js`
+
+Terminal helpers: `queryBuilderFirst`, `queryBuilderCount`, `queryBuilderDistinct` (`.near` composition guards for count/distinct).
+
+**Exports:**
+- `queryBuilderFirst`, `queryBuilderCount`, `queryBuilderDistinct`
 
 ### `proxy.js`
 

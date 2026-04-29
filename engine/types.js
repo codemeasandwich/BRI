@@ -1,8 +1,8 @@
 /**
- * Type utilities and change publishing
+ * @file Type utilities and change publishing
  */
 
-import { createPatch } from '../utils/diff';
+import { createPatch } from '../utils/diff/index.js';
 import JSS from '../utils/jss/index.js';
 
 /**

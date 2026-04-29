@@ -103,12 +103,15 @@ function rankCompare(a, b) {
  * JSON-serialization paths stay clean. Mirrors the convention used by the
  * vector path's attachScore helper in query-builder.js.
  *
- * @param {Object} entity
+ * Callers (executeMatch / executeCombined) only pass hydrated document
+ * references; there is no separate null-guard branch because the scoring
+ * pipeline never schedules attachMeta without a backing entity object.
+ *
+ * @param {Object} entity - Must be truthy — the doc row being decorated
  * @param {Object} meta - {score?, cosine?, matchHits?}
  * @returns {Object} the same entity reference
  */
 function attachMeta(entity, meta) {
-  if (!entity) return entity;
   if (typeof meta.score === 'number') {
     Object.defineProperty(entity, '$score', {
       value: meta.score, enumerable: false, configurable: true, writable: false
@@ -237,7 +240,6 @@ export async function executeCombined({ plan, match, near, weights, limit, colle
 
   const scored = [];
   for (const doc of candidates) {
-    if (!doc) continue;
     const matchHits = scoreMatch(doc, match.filter);
     const matchScore = matchHits ? 1 : 0;
     const cosine = cosineById.get(doc.$ID) || 0;
@@ -247,7 +249,8 @@ export async function executeCombined({ plan, match, near, weights, limit, colle
   }
   scored.sort(rankCompare);
   const cap = capFromOptions(near.k, limit);
-  const top = typeof cap === 'number' ? scored.slice(0, cap) : scored;
+  // Single slice handles both capped and uncapped caps: undefined end → full copy.
+  const top = scored.slice(0, cap);
   return top.map(s => attachMeta(s.doc, {
     score: s.score, cosine: s.cosine, matchHits: s.matchHits
   }));

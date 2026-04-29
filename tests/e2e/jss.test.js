@@ -362,4 +362,38 @@ describe('JSS Serialization', () => {
       expect(decoded).toEqual(['a', 'b', 'c']);
     });
   });
+
+  describe('decode() graph and Error ctor edges', () => {
+    test('decode ties duplicate object references to the same instance', () => {
+      const shared = { k: 1 };
+      const graph = { left: shared, nest: { right: shared } };
+      const out = JSS.decode(graph);
+      expect(out.left).toBe(out.nest.right);
+      expect(out.left.k).toBe(1);
+    });
+
+    test('undefined array elements roundtrip via U tag', () => {
+      const obj = { arr: [1, undefined, 3] };
+      const decoded = JSS.parse(JSS.stringify(obj));
+      expect(decoded.arr[0]).toBe(1);
+      expect(decoded.arr[1]).toBeUndefined();
+      expect(decoded.arr[2]).toBe(3);
+    });
+
+    test('Error decode falls back when global[name] is not an Error subclass', () => {
+      const err = new Error('ctor edge');
+      err.name = 'String';
+      const round = JSS.parse(JSS.stringify({ err }));
+      expect(round.err).toBeInstanceOf(Error);
+      expect(String(round.err.message)).toContain('ctor edge');
+    });
+
+    test('self-referential node with multi-segment stored path resolves pointers', () => {
+      const mid = {};
+      mid.self = mid;
+      const doc = { nest: { deep: mid }, other: {} };
+      const round = JSS.parse(JSS.stringify(doc));
+      expect(round.nest.deep.self).toBe(round.nest.deep);
+    });
+  });
 });

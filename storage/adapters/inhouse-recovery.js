@@ -22,7 +22,11 @@ import path from 'path';
 import { WALReader } from '../wal/reader.js';
 import JSS from '../../utils/jss/index.js';
 import { VectorIndex } from '../../engine/vector-index.js';
-import { type2Short } from '../../engine/types.js';
+import { attachToString } from '../../engine/helpers.js';
+import {
+  buildPrefixToVectorCollectionMap,
+  removeFromVectorIndicesForKey
+} from './inhouse-vector-wal-route.js';
 
 /**
  * Creates recovery and snapshot methods for InHouseAdapter
@@ -65,13 +69,10 @@ export function createRecoveryMethods() {
 
       await this.wal.init();
 
-      // Build a prefix→collection lookup from the registered schemas. Used by
-      // WAL replay to route doc updates into the right vector index without
-      // a per-record string parse of the schema map.
-      const prefixToCollection = new Map();
-      for (const [collection, _entry] of this._vectorRegistry) {
-        prefixToCollection.set(type2Short(collection), collection);
-      }
+      // Build a prefix→collection lookup from registered vector collections.
+      // Shared with hardDelete() via inhouse-vector-wal-route.js so replay and
+      // live WAL DELETE stay consistent.
+      const prefixToCollection = buildPrefixToVectorCollectionMap(this._vectorRegistry);
       /**
        * Route a WAL set record into the matching collection's vector index.
        * @param {string} key - Document $ID
@@ -81,9 +82,8 @@ export function createRecoveryMethods() {
         // Extract collection from the $ID prefix; bail if no vector entry.
         const prefix = key.split('_')[0];
         const collection = prefixToCollection.get(prefix);
-        if (!collection) return;
-        const entry = this._vectorRegistry.get(collection);
-        if (!entry) return;
+        const entry = collection ? this._vectorRegistry.get(collection) : undefined;
+        if (!collection || !entry) return;
         const doc = JSS.parse(value);
         const vec = doc[entry.schema.field];
         if (Array.isArray(vec)) {
@@ -96,12 +96,7 @@ export function createRecoveryMethods() {
        * @param {string} key - Document $ID being deleted
        */
       const applyVectorDelete = (key) => {
-        const prefix = key.split('_')[0];
-        const collection = prefixToCollection.get(prefix);
-        if (!collection) return;
-        const entry = this._vectorRegistry.get(collection);
-        if (!entry) return;
-        entry.index.remove(key);
+        removeFromVectorIndicesForKey(this, prefixToCollection, key);
       };
 
       const encryptionKey = this.keyManager?.getKey() || null;
@@ -114,6 +109,12 @@ export function createRecoveryMethods() {
         onDelete: (key) => {
           this.hotTier.delete(key);
           this.coldTier.deleteDoc(key).catch(() => {});
+          const segs = key.split('_');
+          if (segs.length >= 2) {
+            const shortType = segs[0];
+            const member = segs[segs.length - 1];
+            this.hotTier.sRem(`${shortType}?`, member);
+          }
           applyVectorDelete(key);
         },
         onRename: (oldKey, newKey) => {
@@ -179,27 +180,20 @@ export function createRecoveryMethods() {
      * @param {Object} collections - Collection objects
      */
     loadSnapshotV2(documents, collections) {
-      const reattachToString = (obj, visited = new WeakSet()) => {
-        if (!obj || typeof obj !== 'object' || visited.has(obj)) return;
-        visited.add(obj);
-
-        if (obj.$ID) {
-          const $ID = obj.$ID;
-          Object.setPrototypeOf(obj, {
-            toString: () => $ID,
-            toObject: () => obj
-          });
-        }
-
-        for (const value of Object.values(obj)) {
-          if (typeof value === 'object' && value !== null) {
-            reattachToString(value, visited);
-          }
-        }
-      };
-
+      // Root documents need $ID→toString like runtime get(); nested refs use the
+      // shared attachToString walk (same helper as operations-get) so snapshots
+      // behave consistently after JSS round-trip.
       for (const doc of Object.values(documents)) {
-        reattachToString(doc);
+        if (doc && typeof doc === 'object' && doc.$ID) {
+          const $ID = doc.$ID;
+          Object.setPrototypeOf(doc, {
+            toString: () => $ID,
+            toObject: () => doc
+          });
+          void doc.toString();
+          void doc.toObject();
+        }
+        attachToString(doc);
       }
 
       for (const [$ID, doc] of Object.entries(documents)) {

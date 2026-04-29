@@ -1,3 +1,7 @@
+/**
+ * @file Jest runner configuration for BRI — Node ESM, coverage collection globs,
+ *       and integration test discovery under tests/.
+ */
 export default {
   testEnvironment: 'node',
   transform: {},
@@ -12,7 +16,7 @@ export default {
     '!**/*.test.js'
   ],
   coverageDirectory: 'coverage',
-  coverageReporters: ['text', 'text-summary', 'html'],
+  coverageReporters: ['text', 'text-summary', 'html', 'lcov', 'json-summary', 'json'],
   verbose: true,
   testTimeout: 30000
 };

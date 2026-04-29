@@ -28,13 +28,23 @@ import { type2Short } from '../engine/types.js';
 export function createTxnLifecycle(store, registry, getDb) {
   return {
     /**
-     * rec() — start recording, returns txnId AND sets it as active.
+     * rec(opts?) — start recording, returns txnId AND sets it as active.
+     *
+     * Optional `{sessionId}` tags the txn with a session owner so cascade
+     * routines can identify and cancel an in-flight txn that belongs to
+     * the cancelled session (spec §2.8 / non-negotiable §0.3 #5). Other
+     * sessions' txns are not touched. The tag is informational; the
+     * txn behaves identically with or without it.
+     *
+     * @param {Object} [opts]
+     * @param {string} [opts.sessionId] - Optional session owner tag
      * @returns {string} new txnId
      */
-    rec: () => {
+    rec: (opts) => {
       const txnId = store.rec();
       const db = getDb();
       db._activeTxnId = txnId;
+      db._activeTxnSessionId = (opts && opts.sessionId) || null;
       return txnId;
     },
 
@@ -58,7 +68,10 @@ export function createTxnLifecycle(store, registry, getDb) {
         for (const [_collection, index] of registry.vectorIndices()) {
           index.commit(txnId);
         }
-        if (db._activeTxnId === txnId) db._activeTxnId = null;
+        if (db._activeTxnId === txnId) {
+          db._activeTxnId = null;
+          db._activeTxnSessionId = null;
+        }
         return result;
       });
     },
@@ -82,7 +95,10 @@ export function createTxnLifecycle(store, registry, getDb) {
         for (const [_collection, index] of registry.vectorIndices()) {
           index.rollback(txnId);
         }
-        if (db._activeTxnId === txnId) db._activeTxnId = null;
+        if (db._activeTxnId === txnId) {
+          db._activeTxnId = null;
+          db._activeTxnSessionId = null;
+        }
         return result;
       });
     },

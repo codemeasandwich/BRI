@@ -24,6 +24,8 @@
  * @implements UC-G4
  */
 
+import { BriProxyError, CHAIN_CROSSES_COLLECTION } from './errors.js';
+
 /**
  * Build the ChainProxy returned for `entity.chain`. Property accesses are
  * field names; each one returns a callable+thenable walker bound to the
@@ -49,18 +51,19 @@ export function makeChainProxy({ target, registry, wrapper, subjectCollection })
       const schema = registry.get(subjectCollection);
       const decl = schema && schema[field];
       if (!decl || decl.type !== 'ref') {
-        const error = new Error(
-          `entity.chain.${field}: '${field}' is not a 'ref' field on ` +
-          `'${subjectCollection}'. chain walks require self-ref fields.`
-        );
+        const error = new BriProxyError({
+          code: CHAIN_CROSSES_COLLECTION,
+          message: `entity.chain.${field}: '${field}' is not a 'ref' field on '${subjectCollection}'. Chain walks require self-ref fields.`,
+          details: { collection: subjectCollection, field }
+        });
         return rejectingThenable(error);
       }
       if (decl.to !== subjectCollection) {
-        const error = new Error(
-          `entity.chain.${field}: '${field}' refs '${decl.to}', not the ` +
-          `same collection '${subjectCollection}'. Chain walks cross collections — ` +
-          `use a single-hop .and.${field} instead.`
-        );
+        const error = new BriProxyError({
+          code: CHAIN_CROSSES_COLLECTION,
+          message: `entity.chain.${field}: '${field}' refs '${decl.to}', not the same collection '${subjectCollection}'. Chain walks cross collections — use a single-hop .and.${field} instead.`,
+          details: { collection: subjectCollection, field, refTo: decl.to }
+        });
         return rejectingThenable(error);
       }
       /**
