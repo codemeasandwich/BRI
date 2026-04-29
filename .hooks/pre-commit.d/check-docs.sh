@@ -60,20 +60,22 @@ check_file_documented() {
 
     # For directories, check if mentioned in Directory Structure
     if [ -d "$file" ]; then
-        if grep -qE "^\s*(├──|└──|│)?\s*${filename}/?(\s|$|\`)" "$files_md" 2>/dev/null; then
+        # Use fixed-string grep so dots in names (e.g. snapshot.jss) are not regex metachars
+        if grep -E '(├──|└──|│)' "$files_md" 2>/dev/null | grep -Fq "${filename}"; then
             in_dir_structure=true
         fi
         # Also check for ### `dirname/` pattern in Files section
-        if grep -qE "^###\s+\`?${filename}/?\`?" "$files_md" 2>/dev/null; then
+        if grep -E '^###' "$files_md" 2>/dev/null | grep -Fq "${filename}/"; then
             in_files_section=true
         fi
     else
-        # For files, check Directory Structure
-        if grep -qE "(├──|└──|│)?\s*${filename}(\s|$|\`)" "$files_md" 2>/dev/null; then
+        # For files, check Directory Structure — tree lines must contain the filename (fixed-string)
+        if grep -E '(├──|└──|│)' "$files_md" 2>/dev/null | grep -Fq "${filename}"; then
             in_dir_structure=true
         fi
-        # Check Files section for ### `filename` or ### filename
-        if grep -qE "^###\s+\`?${filename}\`?" "$files_md" 2>/dev/null; then
+        # Check Files section for ### `filename` or ### filename (fixed-string — dots are literal)
+        if grep -Fq "### \`${filename}\`" "$files_md" 2>/dev/null \
+            || grep -Fq "### ${filename}" "$files_md" 2>/dev/null; then
             in_files_section=true
         fi
     fi
