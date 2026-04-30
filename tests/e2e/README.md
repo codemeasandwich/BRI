@@ -18,6 +18,8 @@ These tests validate the complete BRI system including storage, engine, and clie
 - **reactive.test.js** - Proxy-based change tracking
 - **pubsub.test.js** - Subscription and notifications
 - **schema.test.js** - Schema validation
+- **bri-vector-worker-env.test.js** — `BRI_VECTOR_WORKER` parsing, warm diagnostic smoke
+- **bri-vector-worker-preload-failure.test.js** — `openLocalDatabase` survives failed dynamic import of Worker host (warn-only)
 
 ### Utilities
 - **jss.test.js** - JSON SuperSet serialization

@@ -13,7 +13,7 @@
  * @implements spec §2.2 (chain methods)
  */
 import { jest } from '@jest/globals';
-import { createDB } from '../../client/index.js';
+import { openLocalDatabase } from '../helpers/open-database.js';
 import { BriQueryError } from '../../engine/errors.js';
 import fs from 'fs/promises';
 
@@ -21,7 +21,7 @@ const DIR = './test-data-qb-chain';
 
 async function freshDB() {
   await fs.rm(DIR, { recursive: true, force: true }).catch(() => {});
-  return createDB({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
+  return openLocalDatabase({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
 }
 
 describe('QueryBuilder chain methods (spec §2.2 completion)', () => {

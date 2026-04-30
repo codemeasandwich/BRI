@@ -1,12 +1,11 @@
 /**
  * @file Exercise `storage/index.js` factory branches, `storage/interface.js`
  * validation (`validateConfig` from `./storage`), and `client/index.js`
- * env/options paths using real adapters and WAL layout on disk — no mocks.
+ * env/options paths using **`openLocalDatabase`**, **`bri.connect`**, and real
  *
  * Operators set `BRI_DATA_DIR` / `BRI_MAX_MEMORY_MB` or pass `storeConfig`;
  * tests observe the resulting tree (`wal`, `data`) and branch coverage paths
- * for defaults. Dynamic `import()` after `jest.resetModules()` resets the `getDB`
- * singleton between scenarios; `process.chdir` runs only inside try/finally.
+ * Dynamic `import()` after `jest.resetModules()` flushes module caches between
  * `_store.config` is asserted sparingly because the facade documents that hook
  * for advanced inspection of resolved adapter settings.
  */
@@ -17,7 +16,7 @@ import {
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
-
+import { openLocalDatabase } from '../helpers/open-database.js';
 const root = path.join(os.tmpdir(), `bri-pub-branch-${Math.random().toString(36).slice(2)}`);
 
 describe('storage/index.js createStore (./storage export)', () => {
@@ -126,7 +125,7 @@ describe('storage/interface.js via validateConfig (exported from ./storage)', ()
   });
 });
 
-describe('client/index.js branching (env + singleton)', () => {
+describe('Env + storeConfig resolution (openLocalDatabase)', () => {
   let snapshot;
   /** @type {import('../../client/index.js')|null} */
   let db;
@@ -156,9 +155,7 @@ describe('client/index.js branching (env + singleton)', () => {
     process.env.BRI_DATA_DIR = dir;
     process.env.BRI_MAX_MEMORY_MB = '96';
 
-    const { createDB } = await import('../../client/index.js');
-
-    db = await createDB({});
+    db = await openLocalDatabase({});
     db.schema('probeDoc', { token: { type: String, required: true } });
     await db.add.probeDoc({ token: 't' });
 
@@ -176,9 +173,7 @@ describe('client/index.js branching (env + singleton)', () => {
     delete process.env.BRI_DATA_DIR;
     process.env.BRI_DATA_DIR = decoyDir;
 
-    const { createDB } = await import('../../client/index.js');
-
-    db = await createDB({
+    db = await openLocalDatabase({
       storeConfig: {
         dataDir: dir,
         maxMemoryMB: 32
@@ -201,9 +196,7 @@ describe('client/index.js branching (env + singleton)', () => {
     delete process.env.BRI_DATA_DIR;
     delete process.env.BRI_MAX_MEMORY_MB;
 
-    const { createDB } = await import('../../client/index.js');
-
-    db = await createDB({
+    db = await openLocalDatabase({
       storeType: 'inhouse',
       storeConfig: {
         dataDir: dir,
@@ -219,23 +212,6 @@ describe('client/index.js branching (env + singleton)', () => {
     db = null;
   });
 
-  test('getDB caches the singleton for repeated calls under fresh module scope', async () => {
-    const dir = path.join(root, 'getdb-singleton');
-    await fs.mkdir(dir, { recursive: true });
-
-    const { getDB } = await import('../../client/index.js');
-    db = await getDB({
-      storeConfig: { dataDir: dir, maxMemoryMB: 48 }
-    });
-    const again = await getDB({
-      storeConfig: { dataDir: path.join(root, 'never-used'), maxMemoryMB: 99 }
-    });
-    expect(again).toBe(db);
-    await db.disconnect();
-    db = null;
-    jest.resetModules();
-  });
-
   test('create(undefined) behaves like implicit defaults bundle', async () => {
     const dir = path.join(root, 'undefined-options');
     await fs.mkdir(dir, { recursive: true });
@@ -244,9 +220,7 @@ describe('client/index.js branching (env + singleton)', () => {
     process.env.BRI_DATA_DIR = dir;
     delete process.env.BRI_MAX_MEMORY_MB;
 
-    const { createDB } = await import('../../client/index.js');
-
-    db = await createDB(undefined);
+    db = await openLocalDatabase(undefined);
     db.schema('probeUndefined', { token: { type: String, required: true } });
     await db.add.probeUndefined({ token: 'ok' });
 
@@ -263,9 +237,7 @@ describe('client/index.js branching (env + singleton)', () => {
     process.env.BRI_DATA_DIR = dir;
     process.env.BRI_MAX_MEMORY_MB = 'not-parseable';
 
-    const { createDB } = await import('../../client/index.js');
-
-    db = await createDB({});
+    db = await openLocalDatabase({});
     expect(db._store.config.maxMemoryMB).toBe(256);
 
     db.schema('probeBadMem', { token: { type: String, required: true } });
@@ -287,9 +259,7 @@ describe('client/index.js branching (env + singleton)', () => {
     process.chdir(isolate);
     jest.resetModules();
     try {
-      const { createDB } = await import('../../client/index.js');
-
-      db = await createDB({});
+      db = await openLocalDatabase({});
       db.schema('probeRelative', { token: { type: String, required: true } });
       await db.add.probeRelative({ token: 'r' });
 

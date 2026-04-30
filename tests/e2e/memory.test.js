@@ -3,7 +3,7 @@
  * Tests: Hot/Cold tiers, eviction, cold storage
  */
 
-import { createDB } from '../../client/index.js';
+import { openLocalDatabase } from '../helpers/open-database.js';
 import { ColdTierFiles } from '../../storage/cold-tier/files.js';
 import { HotTierCache } from '../../storage/hot-tier/cache.js';
 import fs from 'fs/promises';
@@ -22,7 +22,7 @@ describe('Memory Management', () => {
 
   describe('Hot Tier', () => {
     test('data starts in hot tier', async () => {
-      const db = await createDB({
+      const db = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -39,7 +39,7 @@ describe('Memory Management', () => {
     });
 
     test('accessing data updates access count', async () => {
-      const db = await createDB({
+      const db = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -61,7 +61,7 @@ describe('Memory Management', () => {
 
   describe('Cold Tier', () => {
     test('cold tier directory structure', async () => {
-      const db = await createDB({
+      const db = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 1, // Very small to force eviction
@@ -85,7 +85,7 @@ describe('Memory Management', () => {
     });
 
     test('cold storage file format', async () => {
-      const db = await createDB({
+      const db = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -103,7 +103,7 @@ describe('Memory Management', () => {
 
   describe('Eviction', () => {
     test('LRU eviction when memory exceeded', async () => {
-      const db = await createDB({
+      const db = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 1,
@@ -127,7 +127,7 @@ describe('Memory Management', () => {
     });
 
     test('dirty items not evicted', async () => {
-      const db = await createDB({
+      const db = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -146,7 +146,7 @@ describe('Memory Management', () => {
   describe('Cold Load', () => {
     test('loads from cold storage on access', async () => {
       // This test needs a scenario where data is in cold storage
-      const db = await createDB({
+      const db = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -168,7 +168,7 @@ describe('Memory Management', () => {
 
   describe('Set Operations', () => {
     test('set members stored correctly', async () => {
-      const db = await createDB({
+      const db = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -186,7 +186,7 @@ describe('Memory Management', () => {
     });
 
     test('set members persist', async () => {
-      const db1 = await createDB({
+      const db1 = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -200,7 +200,7 @@ describe('Memory Management', () => {
       await db1._store.createSnapshot();
       await db1.disconnect();
 
-      const db2 = await createDB({
+      const db2 = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -216,7 +216,7 @@ describe('Memory Management', () => {
 
   describe('Memory Statistics', () => {
     test('hot tier stats accurate', async () => {
-      const db = await createDB({
+      const db = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -238,7 +238,7 @@ describe('Memory Management', () => {
     });
 
     test('size estimation', async () => {
-      const db = await createDB({
+      const db = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -260,7 +260,7 @@ describe('Memory Management', () => {
 
   describe('Rename Operations', () => {
     test('rename updates hot tier', async () => {
-      const db = await createDB({
+      const db = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64

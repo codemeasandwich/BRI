@@ -3,7 +3,7 @@
  * Tests: sAdd, sMembers, sRem at storage level
  */
 
-import { createDB } from '../../client/index.js';
+import { openLocalDatabase } from '../helpers/open-database.js';
 import fs from 'fs/promises';
 
 const TEST_DATA_DIR = './test-data-sets';
@@ -13,7 +13,7 @@ describe('Set Operations', () => {
 
   beforeAll(async () => {
     await fs.rm(TEST_DATA_DIR, { recursive: true, force: true }).catch(() => {});
-    db = await createDB({
+    db = await openLocalDatabase({
       storeConfig: {
         dataDir: TEST_DATA_DIR,
         maxMemoryMB: 64
@@ -99,7 +99,7 @@ describe('Set Operations', () => {
     test('collection set persists', async () => {
       await fs.rm(TEST_DATA_DIR, { recursive: true, force: true }).catch(() => {});
 
-      const db1 = await createDB({
+      const db1 = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -112,7 +112,7 @@ describe('Set Operations', () => {
       await db1._store.createSnapshot();
       await db1.disconnect();
 
-      const db2 = await createDB({
+      const db2 = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64

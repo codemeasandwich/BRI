@@ -16,7 +16,7 @@
  * @implements UC-V4
  */
 import { jest } from '@jest/globals';
-import { createDB } from '../../client/index.js';
+import { openLocalDatabase } from '../helpers/open-database.js';
 import fs from 'fs/promises';
 
 const DIR = './test-data-vector-tx';
@@ -39,7 +39,7 @@ function makeVec(seed) {
 
 async function freshDB() {
   await fs.rm(DIR, { recursive: true, force: true }).catch(() => {});
-  const db = await createDB({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
+  const db = await openLocalDatabase({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
   db.schema('memoryArtifact', {
     type: { type: String, required: true },
     embedding: { type: 'vector', dims: DIMS, required: false },
@@ -180,7 +180,7 @@ describe('UC-V4: Vector transaction isolation', () => {
     await db.disconnect();
 
     // Reboot.
-    db = await createDB({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
+    db = await openLocalDatabase({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
     db.schema('memoryArtifact', {
       type: { type: String, required: true },
       embedding: { type: 'vector', dims: DIMS, required: false },

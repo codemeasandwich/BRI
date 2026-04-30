@@ -27,7 +27,7 @@
  * @implements spec §8 #8
  */
 import { jest } from '@jest/globals';
-import { createDB } from '../../client/index.js';
+import { openLocalDatabase } from '../helpers/open-database.js';
 import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs/promises';
@@ -84,7 +84,7 @@ describe('Recovery (spec §8 #8)', () => {
 
     // Re-open the same data dir. Recovery should replay committed state
     // only; staged docs from the killed txn are dropped on the floor.
-    const db2 = await createDB({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
+    const db2 = await openLocalDatabase({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
     db2.schema('memArt', {
       type:      { type: String, required: true },
       content:   { type: String, required: false },

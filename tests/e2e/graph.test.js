@@ -16,7 +16,7 @@
  * @implements UC-G1
  */
 import { jest } from '@jest/globals';
-import { createDB } from '../../client/index.js';
+import { openLocalDatabase } from '../helpers/open-database.js';
 import { GraphIndex } from '../../engine/index.js';
 import { EDGE_ENDPOINT_INVALID } from '../../engine/errors.js';
 import JSS from '../../utils/jss/index.js';
@@ -26,7 +26,7 @@ const DIR = './test-data-graph';
 
 async function freshDB() {
   await fs.rm(DIR, { recursive: true, force: true }).catch(() => {});
-  return createDB({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
+  return openLocalDatabase({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
 }
 
 /**
@@ -1490,7 +1490,7 @@ describe('GraphIndex persistence contract (serialize/load + edgeSpec paths)', ()
   test('full graph rebuild: delete lone edge clears adjacency entries', async () => {
     const dir = `./test-data-graph-del-${Math.random().toString(36).slice(2)}`;
     await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
-    const db = await createDB({
+    const db = await openLocalDatabase({
       storeConfig: { dataDir: dir, maxMemoryMB: 64 }
     });
     declareSocialSchema(db);

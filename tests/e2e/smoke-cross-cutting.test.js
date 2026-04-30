@@ -9,14 +9,14 @@
  * catches it.
  */
 import { jest } from '@jest/globals';
-import { createDB } from '../../client/index.js';
+import { openLocalDatabase } from '../helpers/open-database.js';
 import fs from 'fs/promises';
 
 const DIR = './test-data-cross-cutting';
 
 async function freshDB() {
   await fs.rm(DIR, { recursive: true, force: true }).catch(() => {});
-  return createDB({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
+  return openLocalDatabase({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
 }
 
 describe('Cross-cutting (Risks 1+2+3)', () => {
@@ -41,7 +41,7 @@ describe('Cross-cutting (Risks 1+2+3)', () => {
     await db._store.createSnapshot();
     await db.disconnect();
 
-    db = await createDB({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
+    db = await openLocalDatabase({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
     db.schema('memoryArtifact', {
       type: { type: String, required: true },
       embedding: { type: 'vector', dims: 4, required: false },

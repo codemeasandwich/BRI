@@ -19,7 +19,7 @@
  * @implements spec §F
  */
 import { jest } from '@jest/globals';
-import { createDB } from '../../client/index.js';
+import { openLocalDatabase } from '../helpers/open-database.js';
 import { applyFixtureSchemas } from '../fixtures/schemas.js';
 import { makeEmbedding, nearVectorOf } from '../fixtures/embeddings.js';
 import { loadKGFixture } from '../fixtures/triples.js';
@@ -28,7 +28,7 @@ import fs from 'fs/promises';
 const DIR = './test-data-scenarios';
 async function freshDB() {
   await fs.rm(DIR, { recursive: true, force: true }).catch(() => {});
-  return createDB({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
+  return openLocalDatabase({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
 }
 
 describe('Scenario 1: memory artifact round-trip lifecycle (spec §F Test 1)', () => {

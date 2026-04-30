@@ -4,7 +4,7 @@
  * route doc SETs through applyVectorWrite and WAL DELETE lines through
  * applyVectorDelete (hardDelete emits DELETE; soft db.del uses rename only).
  */
-import { createDB } from '../../client/index.js';
+import { openLocalDatabase } from '../../client/ready-connection.js';
 
 const dataDir = process.argv[2];
 if (!dataDir) {
@@ -12,7 +12,7 @@ if (!dataDir) {
   process.exit(2);
 }
 
-const db = await createDB({
+const db = await openLocalDatabase({
   storeConfig: {
     dataDir,
     maxMemoryMB: 64,

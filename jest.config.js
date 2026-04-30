@@ -13,10 +13,21 @@ export default {
     'storage/**/*.js',
     'utils/**/*.js',
     '!**/test.js',
-    '!**/*.test.js'
+    '!**/*.test.js',
+    // Pure barrel (import/export only) — instrumentation produces 0 executable spans; callers cover `bri.js` / `defer-database.js` directly from the package root.
+    '!**/client/index.js'
   ],
+  coverageThreshold: {
+    global: {
+      branches: 100,
+      functions: 100,
+      lines: 100,
+      statements: 100
+    }
+  },
   coverageDirectory: 'coverage',
   coverageReporters: ['text', 'text-summary', 'html', 'lcov', 'json-summary', 'json'],
   verbose: true,
-  testTimeout: 30000
+  testTimeout: 30000,
+  globalTeardown: './tests/jest/global-teardown.js'
 };

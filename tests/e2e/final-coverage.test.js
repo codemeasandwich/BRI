@@ -4,7 +4,7 @@
  * Philosophy: Test functionality through user actions, not functions
  */
 
-import { createDB } from '../../client/index.js';
+import { openLocalDatabase } from '../helpers/open-database.js';
 import {
   createEngine,
   createIdGenerator,
@@ -241,7 +241,7 @@ describe('Final Coverage - Symbol Property Access', () => {
 
   beforeAll(async () => {
     await fs.rm(TEST_DATA_DIR, { recursive: true, force: true }).catch(() => {});
-    db = await createDB({
+    db = await openLocalDatabase({
       storeConfig: {
         dataDir: TEST_DATA_DIR,
         maxMemoryMB: 64
@@ -280,7 +280,7 @@ describe('Final Coverage - Pin/Cache Not Implemented', () => {
 
   beforeAll(async () => {
     await fs.rm(TEST_DATA_DIR + '-pin', { recursive: true, force: true }).catch(() => {});
-    db = await createDB({
+    db = await openLocalDatabase({
       storeConfig: {
         dataDir: TEST_DATA_DIR + '-pin',
         maxMemoryMB: 64
@@ -316,7 +316,7 @@ describe('Final Coverage - Where as Options Object', () => {
     });
     wrapper = createEngine(store);
 
-    db = await createDB({
+    db = await openLocalDatabase({
       storeConfig: {
         dataDir: TEST_DATA_DIR + '-where-db',
         maxMemoryMB: 64
@@ -481,7 +481,7 @@ describe('Final Coverage - Reactive Proxy Edge Cases', () => {
 
   beforeAll(async () => {
     await fs.rm(TEST_DATA_DIR + '-reactive', { recursive: true, force: true }).catch(() => {});
-    db = await createDB({
+    db = await openLocalDatabase({
       storeConfig: {
         dataDir: TEST_DATA_DIR + '-reactive',
         maxMemoryMB: 64
@@ -616,7 +616,7 @@ describe('Final Coverage - Helpers attachToString', () => {
 
   beforeAll(async () => {
     await fs.rm(TEST_DATA_DIR + '-helpers', { recursive: true, force: true }).catch(() => {});
-    db = await createDB({
+    db = await openLocalDatabase({
       storeConfig: {
         dataDir: TEST_DATA_DIR + '-helpers',
         maxMemoryMB: 64
@@ -657,7 +657,7 @@ describe('Final Coverage - Collection Name Validation via Proxy', () => {
 
   beforeAll(async () => {
     await fs.rm(TEST_DATA_DIR + '-proxy', { recursive: true, force: true }).catch(() => {});
-    db = await createDB({
+    db = await openLocalDatabase({
       storeConfig: {
         dataDir: TEST_DATA_DIR + '-proxy',
         maxMemoryMB: 64
@@ -686,7 +686,7 @@ describe('Final Coverage - Delete operation triggers rename path', () => {
 
   beforeAll(async () => {
     await fs.rm(TEST_DATA_DIR + '-rename', { recursive: true, force: true }).catch(() => {});
-    db = await createDB({
+    db = await openLocalDatabase({
       storeConfig: {
         dataDir: TEST_DATA_DIR + '-rename',
         maxMemoryMB: 64
@@ -730,7 +730,7 @@ describe('Final Coverage - WAL Replay Delete and Rename', () => {
 
   test('WAL replay processes delete entries (line 122-125)', async () => {
     // Create, delete, then recover
-    let db = await createDB({
+    let db = await openLocalDatabase({
       storeConfig: { dataDir: WAL_DIR, maxMemoryMB: 64 }
     });
 
@@ -744,7 +744,7 @@ describe('Final Coverage - WAL Replay Delete and Rename', () => {
     await db.disconnect();
 
     // Reconnect and verify WAL replay handled the delete
-    db = await createDB({
+    db = await openLocalDatabase({
       storeConfig: { dataDir: WAL_DIR, maxMemoryMB: 64 }
     });
 
@@ -764,7 +764,7 @@ describe('Final Coverage - V2 Snapshot with Nested $ID Objects', () => {
 
   test('v2 snapshot with nested $ID objects gets toString reattached (lines 154-159)', async () => {
     // Create DB with nested references
-    let db = await createDB({
+    let db = await openLocalDatabase({
       storeConfig: { dataDir: V2_DIR, maxMemoryMB: 64 }
     });
 
@@ -779,7 +779,7 @@ describe('Final Coverage - V2 Snapshot with Nested $ID Objects', () => {
     await db.disconnect();
 
     // Reconnect - this triggers v2 snapshot loading
-    db = await createDB({
+    db = await openLocalDatabase({
       storeConfig: { dataDir: V2_DIR, maxMemoryMB: 64 }
     });
 
@@ -842,7 +842,7 @@ describe('Final Coverage - Reactive.js Line 94 Path', () => {
 
   beforeAll(async () => {
     await fs.rm(TEST_DATA_DIR + '-reactive2', { recursive: true, force: true }).catch(() => {});
-    db = await createDB({
+    db = await openLocalDatabase({
       storeConfig: {
         dataDir: TEST_DATA_DIR + '-reactive2',
         maxMemoryMB: 64
@@ -1513,7 +1513,7 @@ describe('Final Coverage - Operations.js Remaining Lines', () => {
     });
     wrapper = createEngine(store);
 
-    db = await createDB({
+    db = await openLocalDatabase({
       storeConfig: {
         dataDir: OPS_DIR + '-db',
         maxMemoryMB: 64
@@ -2356,7 +2356,7 @@ describe('Final Coverage — engine/client drain (sync + fault injection)', () =
   });
 
   test('vectorIndexMiddleware: failed pre-fetch uses insert path on set when secondary exists', async () => {
-    const db = await createDB({ storeConfig: { dataDir: DRAIN, maxMemoryMB: 48 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: DRAIN, maxMemoryMB: 48 } });
     db.schema('idxRow', {
       tag: { type: String, required: true },
       $indexes: [['tag']]
@@ -2449,7 +2449,7 @@ describe('Final Coverage — engine/client drain (sync + fault injection)', () =
   });
 
   test('cascade.byField atomic: delete failure triggers nop in catch path', async () => {
-    const db = await createDB({ storeConfig: { dataDir: DRAIN, maxMemoryMB: 48 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: DRAIN, maxMemoryMB: 48 } });
     db.schema('killRow', { v: { type: String, required: true } });
     await db.add.killRow({ v: 'one' });
     let armed = false;
@@ -2578,7 +2578,7 @@ describe('Final Coverage — statement gap sweep', () => {
   });
 
   test('singular get rejects when object filter mismatches hydrated doc', async () => {
-    const db = await createDB({ storeConfig: { dataDir: GAP, maxMemoryMB: 48 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: GAP, maxMemoryMB: 48 } });
     db.schema('gapThing', { name: { type: String } });
     const t = await db.add.gapThing({ name: 'ok' });
     await expect(db.get.gapThing({ $ID: t.$ID, name: 'nope' })).resolves.toBeNull();
@@ -2589,7 +2589,7 @@ describe('Final Coverage — statement gap sweep', () => {
   });
 
   test('db.cascade get trap returns undefined for Symbol property keys', async () => {
-    const db = await createDB({ storeConfig: { dataDir: GAP + '-cascade', maxMemoryMB: 32 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: GAP + '-cascade', maxMemoryMB: 32 } });
     expect(typeof db.cascade.byField).toBe('function');
     expect(db.cascade[Symbol('noop')]).toBeUndefined();
     await db.disconnect();
@@ -2608,7 +2608,7 @@ describe('Final Coverage — statement gap sweep', () => {
   });
 
   test('resolvePredicateAccess orphan prefix: inverse related chain are undefined', async () => {
-    const db = await createDB({ storeConfig: { dataDir: GAP + '-orph', maxMemoryMB: 32 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: GAP + '-orph', maxMemoryMB: 32 } });
     db.schema('solo', { v: String });
     const reg = db._registry;
     const noop = {};
@@ -2724,7 +2724,7 @@ describe('Final Coverage — statement gap sweep', () => {
   test('singular object selector without $ID uses checkMatch predicate path', async () => {
     const singDir = GAP + '-singf';
     await fs.rm(singDir, { recursive: true, force: true }).catch(() => {});
-    const db = await createDB({ storeConfig: { dataDir: singDir, maxMemoryMB: 48 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: singDir, maxMemoryMB: 48 } });
     db.schema('singF', {
       tag: { type: String },
       nest: { type: Object, required: false }

@@ -17,7 +17,7 @@
  * @implements spec §0.4, §2.1.4, §3.5
  */
 import { jest } from '@jest/globals';
-import { createDB } from '../../client/index.js';
+import { openLocalDatabase } from '../helpers/open-database.js';
 import {
   BriSchemaError, BriProxyError,
   RESERVED_NAME_COLLISION, PREDICATE_NOT_REGISTERED
@@ -27,7 +27,7 @@ import fs from 'fs/promises';
 const DIR = './test-data-proxy-res';
 async function freshDB() {
   await fs.rm(DIR, { recursive: true, force: true }).catch(() => {});
-  return createDB({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
+  return openLocalDatabase({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
 }
 
 describe('Proxy resolution (spec §0.4, §3.5)', () => {

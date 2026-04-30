@@ -1,6 +1,6 @@
 /**
  * @file Scenarios that flip specific statements not hit by feature-oriented
- * suites alone. Every test drives the public createDB / createStore / utils
+ * suites alone. Every test drives the public `openLocalDatabase` / `createStore` / utils
  * façade; assertions are behavioral (throws, counts, iterator shape).
  *
  * Domain + technical: these paths are valid operator inputs (bad names,
@@ -11,7 +11,7 @@
 import {
   describe, test, expect
 } from '@jest/globals';
-import { createDB } from '../../client/index.js';
+import { openLocalDatabase } from '../helpers/open-database.js';
 import { createStore } from '../../storage/index.js';
 import { isPartialMatch } from '../../utils/diff/index.js';
 import JSS from '../../utils/jss/index.js';
@@ -59,7 +59,7 @@ describe('coverage line sweep — client + storage', () => {
   test('db.get rejects invalid collection token (proxy name pattern)', async () => {
     const dir = path.join(root, 'bad-col');
     await fs.mkdir(dir, { recursive: true });
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 40 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 40 } });
     expect(() => {
       void db.get['no-hyphens-allowed'];
     }).toThrow(/not a good collection name/i);
@@ -69,7 +69,7 @@ describe('coverage line sweep — client + storage', () => {
   test('.near throws when collection has no vector field (vector exec guard)', async () => {
     const dir = path.join(root, 'no-vec-near');
     await fs.mkdir(dir, { recursive: true });
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 40 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 40 } });
     db.schema('flatDoc', { text: { type: String, required: true } });
     await db.add.flatDoc({ text: 'hello' });
     await expect(
@@ -81,7 +81,7 @@ describe('coverage line sweep — client + storage', () => {
   test('schema declare throws when two vector fields are declared', async () => {
     const dir = path.join(root, 'two-vec');
     await fs.mkdir(dir, { recursive: true });
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 40 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 40 } });
     expect(() =>
       db.schema('badTwoVec', {
         a: { type: 'vector', dims: 3 },
@@ -94,7 +94,7 @@ describe('coverage line sweep — client + storage', () => {
   test('substring match on numeric field uses non-string fieldContains path', async () => {
     const dir = path.join(root, 'match-num-field');
     await fs.mkdir(dir, { recursive: true });
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 40 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 40 } });
     db.schema('numRow', { code: { type: Number, required: true } });
     await db.add.numRow({ code: 4242 });
     const none = await db.get.numRowS.match({ code: '24' });
@@ -105,7 +105,7 @@ describe('coverage line sweep — client + storage', () => {
   test('.match k and .limit both numbers use smaller cap', async () => {
     const dir = path.join(root, 'match-limit-min');
     await fs.mkdir(dir, { recursive: true });
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 48 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 48 } });
     db.schema('noteRow', { text: { type: String, required: true } });
     for (let i = 0; i < 8; i++) {
       await db.add.noteRow({ text: `shared token ${i}` });
@@ -121,7 +121,7 @@ describe('coverage line sweep — client + storage', () => {
   test('QueryBuilder rejects invalid vector + k for .near / .match / .combine / combine order', async () => {
     const dir = path.join(root, 'qb-throws');
     await fs.mkdir(dir, { recursive: true });
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 48 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 48 } });
     db.schema('vecRow', {
       alias: { type: String, required: true },
       embedding: { type: 'vector', dims: 4, required: false }
@@ -161,7 +161,7 @@ describe('coverage line sweep — client + storage', () => {
   test('cascade.byField throws on invalid arguments', async () => {
     const dir = path.join(root, 'cascade-bad-args');
     await fs.mkdir(dir, { recursive: true });
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 40 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 40 } });
     db.schema('rowX', { t: { type: String, required: true } });
     await expect(db.cascade.byField({ collections: [], filter: null })).rejects.toThrow();
     await db.disconnect();
@@ -170,7 +170,7 @@ describe('coverage line sweep — client + storage', () => {
   test('cascade.byField honors opts.atomic transactional wrapper', async () => {
     const dir = path.join(root, 'cascade-atomic');
     await fs.mkdir(dir, { recursive: true });
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 56 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 56 } });
     db.schema('rowY', {
       mark: { type: String, required: false }
     });
@@ -192,7 +192,7 @@ describe('coverage line sweep — client + storage', () => {
   test('expand throws when via is not a registered edge collection', async () => {
     const dir = path.join(root, 'expand-bad-via');
     await fs.mkdir(dir, { recursive: true });
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 44 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 44 } });
     db.schema('sEnt', { name: { type: String, required: true } });
     db.schema('sEdge', {
       from_id: { type: 'ref', to: 'sEnt', required: true },
@@ -215,7 +215,7 @@ describe('coverage line sweep — client + storage', () => {
   test('expand direction both walks pickNextNode bilateral path', async () => {
     const dir = path.join(root, 'expand-both');
     await fs.mkdir(dir, { recursive: true });
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 48 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 48 } });
     db.schema('eN', { name: { type: String, required: true } });
     db.schema('eEdge', {
       a: { type: 'ref', to: 'eN', required: true },
@@ -244,7 +244,7 @@ describe('coverage line sweep — client + storage', () => {
   test('expand budget.ms triggers time incompleteReason', async () => {
     const dir = path.join(root, 'expand-ms');
     await fs.mkdir(dir, { recursive: true });
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 56 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 56 } });
     db.schema('bEnt', { name: { type: String, required: true } });
     db.schema('bEdge', {
       u: { type: 'ref', to: 'bEnt', required: true },
@@ -275,7 +275,7 @@ describe('coverage line sweep — client + storage', () => {
   test('match with bounded index plus extra where field feeds match hydrate (index candidate path)', async () => {
     const dir = path.join(root, 'match-index-residual');
     await fs.mkdir(dir, { recursive: true });
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 56 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 56 } });
     db.schema('ixDoc', {
       kind: { type: String, required: true },
       body: { type: String, required: true },

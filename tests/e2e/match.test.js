@@ -20,7 +20,7 @@
  * @implements UC-X4, UC-V3
  */
 import { jest } from '@jest/globals';
-import { createDB } from '../../client/index.js';
+import { openLocalDatabase } from '../helpers/open-database.js';
 import fs from 'fs/promises';
 
 const DIR = './test-data-match';
@@ -48,7 +48,7 @@ function makeVec(seed) {
 
 async function freshDB() {
   await fs.rm(DIR, { recursive: true, force: true }).catch(() => {});
-  return createDB({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
+  return openLocalDatabase({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
 }
 
 describe('UC-X4: .match substring FTS', () => {

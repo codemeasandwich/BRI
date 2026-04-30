@@ -3,7 +3,7 @@
  * Tests: rec, fin, nop, pop, txnStatus, isolation
  */
 
-import { createDB } from '../../client/index.js';
+import { openLocalDatabase } from '../helpers/open-database.js';
 import { TransactionManager } from '../../storage/transaction/manager.js';
 import fs from 'fs/promises';
 import path from 'path';
@@ -15,7 +15,7 @@ describe('Transaction Operations', () => {
 
   beforeAll(async () => {
     await fs.rm(TEST_DATA_DIR, { recursive: true, force: true }).catch(() => {});
-    db = await createDB({
+    db = await openLocalDatabase({
       storeConfig: {
         dataDir: TEST_DATA_DIR,
         maxMemoryMB: 64

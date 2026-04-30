@@ -6,7 +6,7 @@
  * the data dir as ARGV[2] so each test run uses an isolated directory.
  */
 
-import { createDB } from '../../client/index.js';
+import { openLocalDatabase } from '../../client/ready-connection.js';
 
 const dataDir = process.argv[2];
 if (!dataDir) {
@@ -14,7 +14,7 @@ if (!dataDir) {
   process.exit(2);
 }
 
-const db = await createDB({ storeConfig: { dataDir, maxMemoryMB: 64 } });
+const db = await openLocalDatabase({ storeConfig: { dataDir, maxMemoryMB: 64 } });
 db.schema('memArt', {
   type:      { type: String, required: true },
   content:   { type: String, required: false },

@@ -3,7 +3,8 @@
  * Tests: ID generation, singleton pattern, environment variables, etc.
  */
 
-import { createDB, getDB } from '../../client/index.js';
+import bri from '../../index.js';
+import { openLocalDatabase } from '../helpers/open-database.js';
 import { type2Short } from '../../engine/types.js';
 import {
   stripDown$ID,
@@ -316,7 +317,7 @@ describe('Edge Cases', () => {
 
   describe('ID Generation', () => {
     test('generates unique IDs', async () => {
-      const db = await createDB({
+      const db = await openLocalDatabase({
         storeConfig: { dataDir: TEST_DATA_DIR, maxMemoryMB: 64 }
       });
 
@@ -331,7 +332,7 @@ describe('Edge Cases', () => {
     });
 
     test('IDs match type prefix (type2Short)', async () => {
-      const db = await createDB({
+      const db = await openLocalDatabase({
         storeConfig: { dataDir: TEST_DATA_DIR, maxMemoryMB: 64 }
       });
 
@@ -347,31 +348,21 @@ describe('Edge Cases', () => {
     });
   });
 
-  describe('Singleton Pattern (getDB)', () => {
-    test('getDB returns same instance on multiple calls', async () => {
-      // Note: getDB uses a module-level singleton, which persists across tests
-      // This test just verifies the function exists and returns a db
-      const db1 = await getDB({
-        storeConfig: { dataDir: TEST_DATA_DIR + '-singleton', maxMemoryMB: 64 }
+  describe('Distinct bri.connect handles', () => {
+    test('every connect(opts) allocates an independent façade', () => {
+      const d1 = bri.connect({
+        storeConfig: { dataDir: TEST_DATA_DIR + '-a', maxMemoryMB: 32 }
       });
-
-      const db2 = await getDB(); // No options - uses existing
-
-      // Both should be the same instance
-      expect(db1).toBe(db2);
-
-      // Create an item to verify it works
-      const item = await db1.add.singleton({ name: 'Test' });
-      expect(item.$ID).toBeDefined();
-
-      // Note: We intentionally don't disconnect here because getDB creates
-      // a module-level singleton that other code may depend on
+      const d2 = bri.connect({
+        storeConfig: { dataDir: TEST_DATA_DIR + '-b', maxMemoryMB: 32 }
+      });
+      expect(d1).not.toBe(d2);
     });
   });
 
   describe('saveBy Parameter', () => {
     test('saveBy=true uses own $ID', async () => {
-      const db = await createDB({
+      const db = await openLocalDatabase({
         storeConfig: { dataDir: TEST_DATA_DIR, maxMemoryMB: 64 }
       });
 
@@ -382,7 +373,7 @@ describe('Edge Cases', () => {
     });
 
     test('saveBy with object uses object.$ID', async () => {
-      const db = await createDB({
+      const db = await openLocalDatabase({
         storeConfig: { dataDir: TEST_DATA_DIR, maxMemoryMB: 64 }
       });
 
@@ -394,7 +385,7 @@ describe('Edge Cases', () => {
     });
 
     test('saveBy with string uses string directly', async () => {
-      const db = await createDB({
+      const db = await openLocalDatabase({
         storeConfig: { dataDir: TEST_DATA_DIR, maxMemoryMB: 64 }
       });
 
@@ -407,7 +398,7 @@ describe('Edge Cases', () => {
 
   describe('Empty Options Handling', () => {
     test('empty options object handled correctly', async () => {
-      const db = await createDB({
+      const db = await openLocalDatabase({
         storeConfig: { dataDir: TEST_DATA_DIR, maxMemoryMB: 64 }
       });
 
@@ -419,7 +410,7 @@ describe('Edge Cases', () => {
     });
 
     test('undefined options handled correctly', async () => {
-      const db = await createDB({
+      const db = await openLocalDatabase({
         storeConfig: { dataDir: TEST_DATA_DIR, maxMemoryMB: 64 }
       });
 
@@ -432,7 +423,7 @@ describe('Edge Cases', () => {
 
   describe('Query Object Detection', () => {
     test('object with txnId but no $ID treated as options', async () => {
-      const db = await createDB({
+      const db = await openLocalDatabase({
         storeConfig: { dataDir: TEST_DATA_DIR, maxMemoryMB: 64 }
       });
 
@@ -446,7 +437,7 @@ describe('Edge Cases', () => {
     });
 
     test('object with $ID treated as query', async () => {
-      const db = await createDB({
+      const db = await openLocalDatabase({
         storeConfig: { dataDir: TEST_DATA_DIR, maxMemoryMB: 64 }
       });
 
@@ -461,7 +452,7 @@ describe('Edge Cases', () => {
 
   describe('Get with null type', () => {
     test('get with null type uses $ID prefix', async () => {
-      const db = await createDB({
+      const db = await openLocalDatabase({
         storeConfig: { dataDir: TEST_DATA_DIR, maxMemoryMB: 64 }
       });
 
@@ -477,7 +468,7 @@ describe('Edge Cases', () => {
 
   describe('Group Operations', () => {
     test('get all with no filter', async () => {
-      const db = await createDB({
+      const db = await openLocalDatabase({
         storeConfig: { dataDir: TEST_DATA_DIR, maxMemoryMB: 64 }
       });
 
@@ -492,7 +483,7 @@ describe('Edge Cases', () => {
     });
 
     test('get with array of IDs (manual workaround)', async () => {
-      const db = await createDB({
+      const db = await openLocalDatabase({
         storeConfig: { dataDir: TEST_DATA_DIR, maxMemoryMB: 64 }
       });
 
@@ -509,7 +500,7 @@ describe('Edge Cases', () => {
     });
 
     test('get with filter function', async () => {
-      const db = await createDB({
+      const db = await openLocalDatabase({
         storeConfig: { dataDir: TEST_DATA_DIR, maxMemoryMB: 64 }
       });
 
@@ -524,7 +515,7 @@ describe('Edge Cases', () => {
     });
 
     test('get with query object (isMatch)', async () => {
-      const db = await createDB({
+      const db = await openLocalDatabase({
         storeConfig: { dataDir: TEST_DATA_DIR, maxMemoryMB: 64 }
       });
 

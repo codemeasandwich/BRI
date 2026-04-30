@@ -3,7 +3,7 @@
  * Tests: AES-256-GCM encryption, key management, encrypted persistence
  */
 
-import { createDB } from '../../client/index.js';
+import { openLocalDatabase } from '../helpers/open-database.js';
 import { encrypt, decrypt, KEY_SIZE, IV_SIZE, TAG_SIZE } from '../../crypto/aes-gcm.js';
 import { KeyManager } from '../../crypto/key-manager.js';
 import { EnvKeyProvider } from '../../crypto/providers/env.js';
@@ -553,7 +553,7 @@ describe('End-to-End Encrypted Persistence', () => {
 
   test('data persists encrypted and recovers', async () => {
     // Create DB with encryption
-    const db1 = await createDB({
+    const db1 = await openLocalDatabase({
       storeConfig: {
         dataDir: TEST_DATA_DIR,
         maxMemoryMB: 64,
@@ -581,7 +581,7 @@ describe('End-to-End Encrypted Persistence', () => {
     expect(snapshotContent).not.toContain('classified');
 
     // Reconnect and verify data recovers
-    const db2 = await createDB({
+    const db2 = await openLocalDatabase({
       storeConfig: {
         dataDir: TEST_DATA_DIR,
         maxMemoryMB: 64,
@@ -601,7 +601,7 @@ describe('End-to-End Encrypted Persistence', () => {
   });
 
   test('WAL replay works with encryption after snapshot', async () => {
-    const db1 = await createDB({
+    const db1 = await openLocalDatabase({
       storeConfig: {
         dataDir: TEST_DATA_DIR,
         maxMemoryMB: 64,
@@ -619,7 +619,7 @@ describe('End-to-End Encrypted Persistence', () => {
     // No snapshot after - will need WAL replay
     await db1.disconnect();
 
-    const db2 = await createDB({
+    const db2 = await openLocalDatabase({
       storeConfig: {
         dataDir: TEST_DATA_DIR,
         maxMemoryMB: 64,
@@ -638,7 +638,7 @@ describe('End-to-End Encrypted Persistence', () => {
 
   test('fails to start without encryption key', async () => {
     // First create encrypted data
-    const db1 = await createDB({
+    const db1 = await openLocalDatabase({
       storeConfig: {
         dataDir: TEST_DATA_DIR,
         maxMemoryMB: 64,
@@ -655,7 +655,7 @@ describe('End-to-End Encrypted Persistence', () => {
     delete process.env.BRI_ENCRYPTION_KEY;
 
     // Should fail to start
-    await expect(createDB({
+    await expect(openLocalDatabase({
       storeConfig: {
         dataDir: TEST_DATA_DIR,
         maxMemoryMB: 64,
@@ -668,7 +668,7 @@ describe('End-to-End Encrypted Persistence', () => {
   });
 
   test('updates persist with encryption', async () => {
-    const db1 = await createDB({
+    const db1 = await openLocalDatabase({
       storeConfig: {
         dataDir: TEST_DATA_DIR,
         maxMemoryMB: 64,
@@ -686,7 +686,7 @@ describe('End-to-End Encrypted Persistence', () => {
     await db1._store.createSnapshot();
     await db1.disconnect();
 
-    const db2 = await createDB({
+    const db2 = await openLocalDatabase({
       storeConfig: {
         dataDir: TEST_DATA_DIR,
         maxMemoryMB: 64,

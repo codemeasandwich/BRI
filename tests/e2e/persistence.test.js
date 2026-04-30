@@ -3,7 +3,7 @@
  * Tests: WAL, snapshots, recovery
  */
 
-import { createDB } from '../../client/index.js';
+import { openLocalDatabase } from '../helpers/open-database.js';
 import { SnapshotManager } from '../../storage/snapshot/manager.js';
 import { WALReader } from '../../storage/wal/reader.js';
 import { WALWriter } from '../../storage/wal/writer.js';
@@ -25,7 +25,7 @@ describe('Persistence', () => {
   describe('Data Recovery', () => {
     test('data persists after disconnect/reconnect', async () => {
       // Create and save data
-      const db1 = await createDB({
+      const db1 = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -39,7 +39,7 @@ describe('Persistence', () => {
       await db1.disconnect();
 
       // Reconnect
-      const db2 = await createDB({
+      const db2 = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -54,7 +54,7 @@ describe('Persistence', () => {
     });
 
     test('multiple items persist', async () => {
-      const db1 = await createDB({
+      const db1 = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -68,7 +68,7 @@ describe('Persistence', () => {
       await db1._store.createSnapshot();
       await db1.disconnect();
 
-      const db2 = await createDB({
+      const db2 = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -82,7 +82,7 @@ describe('Persistence', () => {
     });
 
     test('updates persist', async () => {
-      const db1 = await createDB({
+      const db1 = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -96,7 +96,7 @@ describe('Persistence', () => {
       await db1._store.createSnapshot();
       await db1.disconnect();
 
-      const db2 = await createDB({
+      const db2 = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -110,7 +110,7 @@ describe('Persistence', () => {
     });
 
     test('deletes persist', async () => {
-      const db1 = await createDB({
+      const db1 = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -124,7 +124,7 @@ describe('Persistence', () => {
       await db1._store.createSnapshot();
       await db1.disconnect();
 
-      const db2 = await createDB({
+      const db2 = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -140,7 +140,7 @@ describe('Persistence', () => {
 
   describe('WAL Recovery', () => {
     test('recovers from WAL without snapshot', async () => {
-      const db1 = await createDB({
+      const db1 = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -151,7 +151,7 @@ describe('Persistence', () => {
       // No snapshot - disconnect immediately
       await db1.disconnect();
 
-      const db2 = await createDB({
+      const db2 = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -165,7 +165,7 @@ describe('Persistence', () => {
     });
 
     test('recovers WAL after snapshot point', async () => {
-      const db1 = await createDB({
+      const db1 = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -179,7 +179,7 @@ describe('Persistence', () => {
       // No snapshot after second add
       await db1.disconnect();
 
-      const db2 = await createDB({
+      const db2 = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -195,7 +195,7 @@ describe('Persistence', () => {
 
   describe('Snapshot', () => {
     test('manual snapshot creation', async () => {
-      const db = await createDB({
+      const db = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -214,7 +214,7 @@ describe('Persistence', () => {
     });
 
     test('snapshot contains all data', async () => {
-      const db = await createDB({
+      const db = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -242,7 +242,7 @@ describe('Persistence', () => {
 
   describe('Statistics', () => {
     test('getStats returns storage info', async () => {
-      const db = await createDB({
+      const db = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -261,7 +261,7 @@ describe('Persistence', () => {
 
   describe('Transaction Recovery', () => {
     test('pending transactions recovered after restart', async () => {
-      const db1 = await createDB({
+      const db1 = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -276,7 +276,7 @@ describe('Persistence', () => {
       await db1.disconnect();
 
       // On restart, pending transactions should be recovered
-      const db2 = await createDB({
+      const db2 = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -293,7 +293,7 @@ describe('Persistence', () => {
 
   describe('Nested Object Persistence', () => {
     test('nested data persists through snapshot', async () => {
-      const db1 = await createDB({
+      const db1 = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -308,7 +308,7 @@ describe('Persistence', () => {
       await db1._store.createSnapshot();
       await db1.disconnect();
 
-      const db2 = await createDB({
+      const db2 = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -322,7 +322,7 @@ describe('Persistence', () => {
     });
 
     test('string references persist as strings', async () => {
-      const db1 = await createDB({
+      const db1 = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64
@@ -338,7 +338,7 @@ describe('Persistence', () => {
       await db1._store.createSnapshot();
       await db1.disconnect();
 
-      const db2 = await createDB({
+      const db2 = await openLocalDatabase({
         storeConfig: {
           dataDir: TEST_DATA_DIR,
           maxMemoryMB: 64

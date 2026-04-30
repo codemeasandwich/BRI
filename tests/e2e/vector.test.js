@@ -23,7 +23,7 @@
  * @implements UC-V1
  */
 import { jest } from '@jest/globals';
-import { createDB } from '../../client/index.js';
+import { openLocalDatabase } from '../helpers/open-database.js';
 import { spawn } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -72,7 +72,7 @@ describe('Vector Search (UC-V1)', () => {
 
   beforeAll(async () => {
     await fs.rm(TEST_DATA_DIR, { recursive: true, force: true }).catch(() => {});
-    db = await createDB({
+    db = await openLocalDatabase({
       storeConfig: { dataDir: TEST_DATA_DIR, maxMemoryMB: 64 }
     });
 
@@ -384,7 +384,7 @@ describe('efSearch override end-to-end via .near', () => {
 
   beforeAll(async () => {
     await fs.rm(E_DIR, { recursive: true, force: true }).catch(() => {});
-    db = await createDB({ storeConfig: { dataDir: E_DIR, maxMemoryMB: 64 } });
+    db = await openLocalDatabase({ storeConfig: { dataDir: E_DIR, maxMemoryMB: 64 } });
     db.schema('memoryArtifact', {
       type:      { type: String, required: true },
       embedding: { type: 'vector', dims: E_DIMS, required: false }
@@ -423,7 +423,7 @@ describe('efSearch override end-to-end via .near', () => {
 describe('Vector Persistence (Risk 1)', () => {
   /**
    * Each test in this describe owns its own data dir so we can reboot the
-   * process (simulated by createDB twice against the same directory) without
+   * process (simulated by openLocalDatabase twice against the same directory) without
    * cross-contamination from neighbours.
    */
   const PERSIST_DIMS = 8;
@@ -433,7 +433,7 @@ describe('Vector Persistence (Risk 1)', () => {
    * Used to model "first boot" / "second boot" patterns in tests.
    */
   async function withDB(dir, fn) {
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
     try {
       return await fn(db);
     } finally {

@@ -22,7 +22,7 @@
 import { jest } from '@jest/globals';
 import fs from 'fs/promises';
 import path from 'path';
-import { createDB } from '../../client/index.js';
+import { openLocalDatabase } from '../helpers/open-database.js';
 import { VectorIndex } from '../../engine/vector-index.js';
 import {
   cosine, packIndex, unpackIndex,
@@ -256,7 +256,7 @@ describe('VectorIndex codec — full DB lifecycle v1 → v2 upgrade', () => {
   /**
    * End-to-end variant of the codec compatibility tests above. Writes a
    * real snapshot.jss file to disk with a v1-format vector buffer
-   * embedded inside, boots createDB against that data dir, and asserts
+   * embedded inside, boots openLocalDatabase against that data dir, and asserts
    * the search path returns the persisted vectors. This exercises:
    *   - SnapshotManager.loadLatest reading the file
    *   - inhouse-recovery.loadVectorState base64-decoding + dispatching
@@ -341,7 +341,7 @@ describe('VectorIndex codec — full DB lifecycle v1 → v2 upgrade', () => {
 
     // Boot the DB; the recovery path will read the v1 buffer, log the
     // rebuild, and reconstruct the HNSW topology before db.schema runs.
-    const db = await createDB({ storeConfig: { dataDir: E2E_DIR, maxMemoryMB: 64 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: E2E_DIR, maxMemoryMB: 64 } });
     db.schema('memoryArtifact', {
       type:      { type: String, required: true },
       embedding: { type: 'vector', dims: E2E_DIMS, required: false }

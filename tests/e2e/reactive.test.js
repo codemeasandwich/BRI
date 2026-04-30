@@ -3,7 +3,7 @@
  * Tests: change tracking, nested objects, arrays, type changes
  */
 
-import { createDB } from '../../client/index.js';
+import { openLocalDatabase } from '../helpers/open-database.js';
 import { MAKE_COPY } from '../../engine/constants.js';
 import fs from 'fs/promises';
 
@@ -14,7 +14,7 @@ describe('Reactive Proxy', () => {
 
   beforeAll(async () => {
     await fs.rm(TEST_DATA_DIR, { recursive: true, force: true }).catch(() => {});
-    db = await createDB({
+    db = await openLocalDatabase({
       storeConfig: {
         dataDir: TEST_DATA_DIR,
         maxMemoryMB: 64

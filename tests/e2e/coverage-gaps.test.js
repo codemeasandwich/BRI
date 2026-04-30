@@ -4,7 +4,7 @@
  * Philosophy: Test functionality through user actions, not functions
  */
 
-import { createDB } from '../../client/index.js';
+import { openLocalDatabase } from '../helpers/open-database.js';
 import { createEngine } from '../../engine/index.js';
 import { createStore } from '../../storage/index.js';
 import { InHouseAdapter } from '../../storage/adapters/inhouse.js';
@@ -32,7 +32,7 @@ describe('Coverage Gaps - Operations', () => {
     wrapper = createEngine(store);
 
     // Also create db for convenience
-    db = await createDB({
+    db = await openLocalDatabase({
       storeConfig: {
         dataDir: TEST_DATA_DIR + '-db',
         maxMemoryMB: 64
@@ -279,7 +279,7 @@ describe('Coverage Gaps - Storage Adapter', () => {
   });
 
   test('connect when already connected returns early', async () => {
-    db = await createDB({
+    db = await openLocalDatabase({
       storeConfig: {
         dataDir: STORAGE_TEST_DIR,
         maxMemoryMB: 64
@@ -318,7 +318,7 @@ describe('Coverage Gaps - WAL Recovery', () => {
   });
 
   test('WAL replay with rename entries (delete operation)', async () => {
-    db = await createDB({
+    db = await openLocalDatabase({
       storeConfig: {
         dataDir: WAL_TEST_DIR,
         maxMemoryMB: 64
@@ -332,7 +332,7 @@ describe('Coverage Gaps - WAL Recovery', () => {
 
     // Disconnect and reconnect to trigger WAL replay
     await db.disconnect();
-    db = await createDB({
+    db = await openLocalDatabase({
       storeConfig: {
         dataDir: WAL_TEST_DIR,
         maxMemoryMB: 64
@@ -345,7 +345,7 @@ describe('Coverage Gaps - WAL Recovery', () => {
   });
 
   test('WAL replay with sRem entries', async () => {
-    db = await createDB({
+    db = await openLocalDatabase({
       storeConfig: {
         dataDir: WAL_TEST_DIR,
         maxMemoryMB: 64
@@ -360,7 +360,7 @@ describe('Coverage Gaps - WAL Recovery', () => {
     await db.del.walsrem($ID, 'SYST_cleanup');
 
     await db.disconnect();
-    db = await createDB({
+    db = await openLocalDatabase({
       storeConfig: {
         dataDir: WAL_TEST_DIR,
         maxMemoryMB: 64
@@ -379,7 +379,7 @@ describe('Coverage Gaps - Helpers', () => {
 
   beforeAll(async () => {
     await fs.rm(HELPER_TEST_DIR, { recursive: true, force: true }).catch(() => {});
-    db = await createDB({
+    db = await openLocalDatabase({
       storeConfig: {
         dataDir: HELPER_TEST_DIR,
         maxMemoryMB: 64
@@ -522,7 +522,7 @@ describe('Coverage Gaps - Transaction Rename', () => {
 
   beforeAll(async () => {
     await fs.rm(TXN_TEST_DIR, { recursive: true, force: true }).catch(() => {});
-    db = await createDB({
+    db = await openLocalDatabase({
       storeConfig: {
         dataDir: TXN_TEST_DIR,
         maxMemoryMB: 64
@@ -586,7 +586,7 @@ describe('Coverage Gaps - Snapshot v1 Format', () => {
     );
 
     // Connect and load
-    const db = await createDB({
+    const db = await openLocalDatabase({
       storeConfig: {
         dataDir: V1_TEST_DIR,
         maxMemoryMB: 64
@@ -611,7 +611,7 @@ describe('Coverage Gaps - Cold Tier', () => {
 
   test('cold tier document not found returns null', async () => {
     // Start fresh DB
-    const db = await createDB({
+    const db = await openLocalDatabase({
       storeConfig: {
         dataDir: COLD_TEST_DIR,
         maxMemoryMB: 1 // Very low memory to potentially trigger cold tier

@@ -18,7 +18,7 @@
  * @implements engine portion of UC-X1 (.where + .near in a single round-trip)
  */
 import { jest } from '@jest/globals';
-import { createDB } from '../../client/index.js';
+import { openLocalDatabase } from '../helpers/open-database.js';
 import { SecondaryIndexManager, SortedIndex, compoundKey } from '../../engine/secondary-index.js';
 import { QueryPlanner } from '../../engine/query-planner.js';
 import { compileFilter } from '../../engine/filter-compiler.js';
@@ -28,7 +28,7 @@ const DIR = './test-data-secondary';
 
 async function freshDB() {
   await fs.rm(DIR, { recursive: true, force: true }).catch(() => {});
-  return createDB({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
+  return openLocalDatabase({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
 }
 
 describe('SortedIndex (unit-shaped, but driven via the manager)', () => {
@@ -426,7 +426,7 @@ describe('Secondary index persistence', () => {
     await db._store.createSnapshot();
     await db.disconnect();
 
-    db = await createDB({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
+    db = await openLocalDatabase({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
     db.schema('memoryArtifact', {
       type: { type: String, required: true },
       $indexes: [['type']]

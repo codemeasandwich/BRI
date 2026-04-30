@@ -1,7 +1,7 @@
 /**
  * @file Exercises remaining Istanbul branch arms that statements/lines alone
  * left at 0 hits: optional-else paths, ternary second arms, short-circuit edges.
- * All cases go through real exports (createDB, JSS, helpers, schema registry).
+ * All cases go through real exports (openLocalDatabase, JSS, helpers, schema registry).
  * Includes hand-written snapshot/WAL directories for inhouse-recovery fallback
  * paths (v1/v2/v3 `|| {}`, cold/hot overlap, replay SET with non-array vector).
  */
@@ -10,7 +10,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { createDeleteEntry, createSetEntry } from '../../storage/wal/entry.js';
 import { WALWriter } from '../../storage/wal/writer.js';
-import { createDB } from '../../client/index.js';
+import { openLocalDatabase } from '../helpers/open-database.js';
 import { createSchemaRegistry } from '../../engine/schema-registry.js';
 import {
   buildOverlayObject,
@@ -31,7 +31,7 @@ describe('Branch coverage completions', () => {
 
   test('vector middleware skips body validation when add has undefined payload', async () => {
     const dir = `${BASE}-add-u`;
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 48 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 48 } });
     db.schema('brAddU', { n: { type: Number } });
     await expect(Promise.resolve().then(() => db.add.brAddU())).rejects.toThrow();
     await db.disconnect();
@@ -39,7 +39,7 @@ describe('Branch coverage completions', () => {
 
   test('vector del uses object selector so middleware parses id via $ID arm', async () => {
     const dir = `${BASE}-vecdel`;
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 48 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 48 } });
     db.schema('brVecDel', {
       t: { type: String },
       emb: { type: 'vector', dims: 3 }
@@ -53,7 +53,7 @@ describe('Branch coverage completions', () => {
 
   test('touching() maps mixed string and entity seeds for edge collections', async () => {
     const dir = `${BASE}-touch`;
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
     db.schema('brNode', { name: { type: String } });
     db.schema('brEdge', {
       from_id: { type: 'ref', to: 'brNode', required: true },
@@ -71,7 +71,7 @@ describe('Branch coverage completions', () => {
 
   test('hydrate rejects non-array fields by clearing hydrate list', async () => {
     const dir = `${BASE}-hydr`;
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 48 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 48 } });
     db.schema('brH', { x: { type: String } });
     await db.add.brH({ x: '1' });
     const rows = await db.get.brHS.hydrate('not-array').limit(10).toArray();
@@ -130,7 +130,7 @@ describe('Branch coverage completions', () => {
   test('schema FIELD_TYPE_MISMATCH cites Vector label for vector declarations', async () => {
     const dir = `${BASE}-vec-label`;
     await rmDir(dir);
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 48 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 48 } });
     db.schema('brVecLbl', {
       emb: { type: 'vector', dims: 2 }
     });
@@ -140,7 +140,7 @@ describe('Branch coverage completions', () => {
 
   test('match execute path without numerical cap leaves slice unrestricted', async () => {
     const dir = `${BASE}-matchcap`;
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
     db.schema('brMatch', {
       title: { type: String },
       updatedAt: { type: Date, required: false }
@@ -156,7 +156,7 @@ describe('Branch coverage completions', () => {
 
   test('combined match+near assigns score metadata when blending', async () => {
     const dir = `${BASE}-comb`;
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
     db.schema('brComb', {
       t: { type: String },
       e: { type: 'vector', dims: 2 }
@@ -232,7 +232,7 @@ describe('Branch coverage completions', () => {
       collections: { 'BRIE?': ['a', 'b'] }
     };
     await fs.writeFile(path.join(dir, 'snapshot.jss'), JSON.stringify(snap));
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
     db.schema('brie', { title: { type: String }, updatedAt: { type: Date, required: false } });
     const rows = await db.get.brieS
       .where({})
@@ -244,7 +244,7 @@ describe('Branch coverage completions', () => {
 
   test('combined query with empty filtered universe skips vector candidate prefetch branch', async () => {
     const dir = `${BASE}-comb-empty`;
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
     db.schema('brEmpC', {
       t: { type: String },
       e: { type: 'vector', dims: 2 }
@@ -262,7 +262,7 @@ describe('Branch coverage completions', () => {
 
   test('vector near with outer limit slices index plan without residual predicate', async () => {
     const dir = `${BASE}-vec-limslice`;
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
     db.schema('indexedRow', {
       session: { type: String },
       rowType: { type: String },
@@ -283,7 +283,7 @@ describe('Branch coverage completions', () => {
 
   test('near query vector dim mismatch throws at execute (schema dims vs query length)', async () => {
     const dir = `${BASE}-near-badq`;
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 48 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 48 } });
     db.schema('brBadQ', {
       t: { type: String },
       e: { type: 'vector', dims: 2 }
@@ -295,7 +295,7 @@ describe('Branch coverage completions', () => {
 
   test('match on compound-index where plan uses hydrate filter branch', async () => {
     const dir = `${BASE}-match-idx-plan`;
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
     db.schema('indexedRow', {
       session: { type: String },
       rowType: { type: String },
@@ -315,7 +315,7 @@ describe('Branch coverage completions', () => {
   test('groupBy with having only uses default count aggregation', async () => {
     const dir = `${BASE}-gb-having`;
     await rmDir(dir);
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
     db.schema('brGb', { g: { type: String }, n: { type: Number } });
     await db.add.brGb({ g: 'a', n: 1 });
     await db.add.brGb({ g: 'a', n: 2 });
@@ -332,7 +332,7 @@ describe('Branch coverage completions', () => {
 
   test('indexed where with limit slices after index hydrate (useIndex + numeric limit)', async () => {
     const dir = `${BASE}-qbw-lim`;
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
     db.schema('brIdxLim', {
       session: { type: String },
       rowType: { type: String },
@@ -348,7 +348,7 @@ describe('Branch coverage completions', () => {
 
   test('touching seeds may include opaque objects without $ID (filtered from id set)', async () => {
     const dir = `${BASE}-touch-obj`;
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
     db.schema('brNodeTO', { name: { type: String } });
     db.schema('brEdgeTO', {
       from_id: { type: 'ref', to: 'brNodeTO', required: true },
@@ -368,7 +368,7 @@ describe('Branch coverage completions', () => {
 
   test('near with index-backed where and residual filter hydrates candidates for vector predicate', async () => {
     const dir = `${BASE}-near-idx-res`;
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 80 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 80 } });
     db.schema('brNearIdx', {
       session: { type: String },
       rowType: { type: String },
@@ -387,7 +387,7 @@ describe('Branch coverage completions', () => {
 
   test('near with full-scan where residual (no declared secondary index)', async () => {
     const dir = `${BASE}-near-scan`;
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 80 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 80 } });
     db.schema('brNearScan', {
       tag: { type: String },
       e: { type: 'vector', dims: 2 }
@@ -435,7 +435,7 @@ describe('Branch coverage completions', () => {
     );
     await w.close();
 
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
     db.schema('vcBare', { emb: { type: 'vector', dims: 2 } });
     // Replay feeds hotTier.set only (no WAL SADD for catalog); verify by primary key fetch.
     const row = await db.get.vcBare('VCRE_emb');
@@ -455,7 +455,7 @@ describe('Branch coverage completions', () => {
       timestamp: new Date()
     };
     await fs.writeFile(path.join(dir, 'snapshot.jss'), JSON.stringify(snap));
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
     expect(db).toBeDefined();
     await db.disconnect();
   });
@@ -473,7 +473,7 @@ describe('Branch coverage completions', () => {
       collections: null
     };
     await fs.writeFile(path.join(dir, 'snapshot.jss'), JSON.stringify(snap));
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
     expect(db).toBeDefined();
     await db.disconnect();
   });
@@ -481,7 +481,7 @@ describe('Branch coverage completions', () => {
   test('recovery skips cold marker when snapshot already loaded the doc into hot tier', async () => {
     const dir = `${BASE}-rec-coldoverlap`;
     await rmDir(dir);
-    const db1 = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
+    const db1 = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
     const u = await db1.add.user({ name: 'overlap-cold-hot' });
     await db1._store.createSnapshot();
     await db1.disconnect();
@@ -494,7 +494,7 @@ describe('Branch coverage completions', () => {
       '{"$ID":"' + u.$ID + '","name":"overlap-cold-hot","coldShadow":true}',
       'utf8'
     );
-    const db2 = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
+    const db2 = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
     const again = await db2.get.user(u.$ID);
     expect(again).not.toBeNull();
     expect(again.name).toBe('overlap-cold-hot');

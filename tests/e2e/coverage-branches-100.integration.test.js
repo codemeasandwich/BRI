@@ -1,11 +1,11 @@
 /**
  * @file Remaining Istanbul branch arms that require explicit user-level flows.
- * Exercises createDB, createStore (inhouse), WAL, helpers, and txn manager.
+ * Exercises openLocalDatabase, createStore (inhouse), WAL, helpers, and txn manager.
  */
 
 import fs from 'fs/promises';
 import path from 'path';
-import { createDB } from '../../client/index.js';
+import { openLocalDatabase } from '../helpers/open-database.js';
 import { createStore } from '../../storage/index.js';
 import { createSetEntry, serializeEntryEncrypted } from '../../storage/wal/entry.js';
 import { WALReader } from '../../storage/wal/reader.js';
@@ -24,7 +24,7 @@ describe('Branch coverage 100% — integration', () => {
 
   test('fin commits a non-active txn without clearing the current active txn', async () => {
     const dir = `${BASE}-fin-na`;
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 48 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 48 } });
     db.schema('x', { n: { type: Number } });
     const txnA = db.rec();
     await db.add.x({ n: 1 });
@@ -38,7 +38,7 @@ describe('Branch coverage 100% — integration', () => {
 
   test('pop SET skips non-matching vector collections then matches prefix', async () => {
     const dir = `${BASE}-pop-vec2`;
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
     db.schema('vecOne', { emb: { type: 'vector', dims: 2 } });
     db.schema('vecTwo', { emb: { type: 'vector', dims: 2 } });
     db.rec();
@@ -54,7 +54,7 @@ describe('Branch coverage 100% — integration', () => {
 
   test('cascade.byField without atomic does not nop when del throws', async () => {
     const dir = `${BASE}-cascade-catch`;
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 48 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 48 } });
     db.schema('cRow', { k: { type: String } });
     await db.add.cRow({ k: 'hit' });
     const fault = async (ctx, next) => {
@@ -73,7 +73,7 @@ describe('Branch coverage 100% — integration', () => {
 
   test('reactive save uses numeric saveByOrOpts without string branch', async () => {
     const dir = `${BASE}-rx-num`;
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 48 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 48 } });
     db.schema('rxN', { v: { type: String } });
     const d = await db.add.rxN({ v: 'a' });
     d.v = 'b';
@@ -96,10 +96,10 @@ describe('Branch coverage 100% — integration', () => {
 
   test('vector index drift uses (ps.metric||cosine) when persisted metric omitted', async () => {
     const dir = `${BASE}-vdrift`;
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 48 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 48 } });
     db.schema('vdr', { e: { type: 'vector', dims: 2 } });
     await db.disconnect();
-    const db2 = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 48 } });
+    const db2 = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 48 } });
     db2.schema('vdr', { e: { type: 'vector', dims: 2 } });
     const ent = db2._store.getVectorEntry('vdr');
     expect(ent).toBeDefined();
@@ -178,7 +178,7 @@ describe('Branch coverage 100% — integration', () => {
    */
   test('vectorIndexMiddleware entity / prefetch / secondary / graph conditional arms', async () => {
     const dir = `${BASE}-vmx`;
-    const db = await createDB({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
+    const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
     db.schema('midNode', { name: { type: String } });
     db.schema('midEdge', {
       from_id: { type: 'ref', to: 'midNode', required: true },
