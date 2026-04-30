@@ -3,6 +3,9 @@ node_modules
 /example/data
 coverage/
 /data/
-/test-data-edge-singleton/
+# Ephemeral repo-root dirs created by Jest E2E (wiped after each full run via globalTeardown).
+/test-data-*/
+/td-smoke-test/
+/test-tmp-bc/
 /nonexistent-cold-dir/
 .DS_Store

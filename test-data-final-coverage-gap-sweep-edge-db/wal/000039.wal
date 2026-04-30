@@ -1,4 +1,0 @@
-1777487458937|f6b2f392|{"action":"SET","target":"SWON_9zjhwye","value":"{\"name\":\"Alice\",\"$ID\":\"SWON_9zjhwye\",\"createdAt<!D>\":1777487458937,\"updatedAt<!D>\":1777487458937}"}
-1777487458940|4209f296|{"action":"SADD","target":"SWON?","member":"9zjhwye"}
-1777487458940|fa44e053|{"action":"SET","target":"SWON_mjc9bch","value":"{\"name\":\"Bob\",\"$ID\":\"SWON_mjc9bch\",\"createdAt<!D>\":1777487458940,\"updatedAt<!D>\":1777487458940}"}
-1777487458940|c3d493fd|{"action":"SADD","target":"SWON?","member":"mjc9bch"}

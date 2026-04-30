@@ -1,4 +1,0 @@
-1777477057768|25d77459|{"action":"SET","target":"SWON_7gfaab9","value":"{\"name\":\"Alice\",\"$ID\":\"SWON_7gfaab9\",\"createdAt<!D>\":1777477057767,\"updatedAt<!D>\":1777477057767}"}
-1777477057768|c222819b|{"action":"SADD","target":"SWON?","member":"7gfaab9"}
-1777477057768|78912825|{"action":"SET","target":"SWON_kp6b42r","value":"{\"name\":\"Bob\",\"$ID\":\"SWON_kp6b42r\",\"createdAt<!D>\":1777477057768,\"updatedAt<!D>\":1777477057768}"}
-1777477057768|1671497d|{"action":"SADD","target":"SWON?","member":"kp6b42r"}
