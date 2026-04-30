@@ -18,11 +18,11 @@ BRI: Connected to storage
 ```
 
 Nothing is logged per-write or per-search by default. To inspect query
-behaviour, register the built-in `loggingMiddleware` from
-`engine/middleware.js`:
+behaviour, register the built-in `loggingMiddleware` exported from **`bri-db/engine`**
+(subpath [`bri-db/engine/middleware.js`](../engine/middleware.js) also resolves via `package.json` exports):
 
 ```js
-import { loggingMiddleware } from 'bri-db/engine/middleware.js';
+import { loggingMiddleware } from 'bri-db/engine';
 db.use(loggingMiddleware({ prefix: '[bri]', logResults: false }));
 ```
 
@@ -44,25 +44,26 @@ external APM.
 
 ## WAL inspection
 
-The WAL is human-readable when encryption is off:
+Physical line shape (see [`serializeEntry()`](../storage/wal/entry.js)):
 
 ```
-{timestamp}|{pointer}|{action}|{key}|{value}
+{timestamp}|{pointer}|{entryJSON}
 ```
 
-Filter by `action` (see `storage/wal/record-types.js`) to inspect a
-specific record kind — e.g. `grep VECTOR_ADD wal/000001.wal` lists
-every vector insert in segment 1.
+Use [`storage/wal/record-types.js`](storage/wal/record-types.js) for vocabulary. With encryption off, **`grep VECTOR_ADD data/wal/000001.wal`** still matches the literal token inside the JSON payload.
 
-When `BRI_ENCRYPTION_KEY` is set, entries are encrypted; use the WAL
-reader (`storage/wal/reader.js`) which decrypts in-place.
+```bash
+grep VECTOR_ADD data/wal/000001.wal
+```
+
+When `BRI_ENCRYPTION_KEY` is set, entries are encrypted — use the WAL reader (`storage/wal/reader.js`) which decrypts in-place.
 
 ## Worker diagnostics (spec §3.2)
 
 The shared index-worker exposes an op counter:
 
 ```js
-import { workerDiagnostics } from 'bri-db/workers/index-worker-host.js';
+import { workerDiagnostics } from 'bri-db/workers';
 const { opCount } = await workerDiagnostics();
 ```
 

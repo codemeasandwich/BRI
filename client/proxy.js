@@ -33,8 +33,8 @@
  *                                    vector-index commit/rollback hooks)
  *
  * Consumers (what relies on this):
- *   - client/index.js              → createDB calls createDBInterface to build
- *                                    the user-facing db object
+ *   - client/create-local-db.js     → `createDBInterface` builds the
+ *                                    user-facing db object for `bri.connect`
  *
  * Hybrid get-proxy mechanics:
  *   - `db.get.user('USER_x')`        → legacy single-fetch (function call)
@@ -270,7 +270,7 @@ function createGetProxy(wrapper, registry, middleware, getDb) {
  * @param {Object} store - Storage adapter (currently the InHouseAdapter);
  *   used by the registry for persistence-aware declares and by the
  *   txn lifecycle bindings for rec / fin / nop / pop / txnStatus
- * @returns {Object} The public db interface — passed to createDB callers
+ * @returns {Object} The public db interface — wired by `createLocalDatabasePromise` / `bri.connect`
  */
 export function createDBInterface(wrapper, store) {
   // Create middleware system

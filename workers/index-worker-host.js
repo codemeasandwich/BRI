@@ -8,8 +8,8 @@
  * the worker boundary as a request/response pair correlated by an
  * incrementing id.
  *
- * The shim is opt-in for v1 — `BRI_VECTOR_WORKER` env var or direct use of
- * `createWorkerVectorIndex(opts)` are the only entry points. The default
+ * The shim is opt-in for v1 — `BRI_VECTOR_WORKER` (token rules in `vector-worker-env.js`)
+ * or direct use of `createWorkerVectorIndex(opts)` are the host entry points. The default
  * registry continues to use the in-process VectorIndex; that's how the
  * 800+ existing tests stay on the main thread.
  *
@@ -29,6 +29,7 @@
 import { Worker } from 'worker_threads';
 import { fileURLToPath } from 'url';
 import path from 'path';
+import { isVectorWorkerWarmRequestedFromEnv } from './vector-worker-env.js';
 
 let _sharedWorker = null;
 let _nextRequestId = 1;
@@ -83,6 +84,30 @@ function getWorker() {
   return _sharedWorker;
 }
 
+/**
+ * When {@link isVectorWorkerWarmRequestedFromEnv} is true, spawn the shared worker eagerly so the first
+ * `createWorkerVectorIndex()` / scale test does not pay cold-start cost.
+ * Normal app vector search (`db.get.*S.where.near`) still uses in-process `VectorIndex` because
+ * `.where` / `.near` passes JavaScript predicates that cannot cross Worker
+ * boundaries; use `createWorkerVectorIndex()` directly for worker-backed tests.
+ *
+ * Errors (missing `worker_threads` in sandbox, permission denied creating Worker):
+ * swallowed with a stderr warning — local Bri bootstrap must remain usable without offload.
+ *
+ * @returns {void}
+ */
+export function warmVectorWorkerFromEnv() {
+  if (!isVectorWorkerWarmRequestedFromEnv()) return;
+  try {
+    getWorker();
+  } catch (err) {
+    const msg =
+      err && typeof err === 'object' && 'message' in err
+        ? /** @type {Error} */ (err).message
+        : String(err);
+    console.warn(`bri-db: vector worker warm-up skipped (${msg})`);
+  }
+}
 /**
  * Send a request to the worker and resolve with its response value.
  *

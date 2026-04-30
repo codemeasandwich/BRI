@@ -17,7 +17,7 @@
  * behind. Output is plain text suitable for piping into a doc renderer.
  */
 
-import { createDB } from '../client/index.js';
+import { openLocalDatabase } from '../client/ready-connection.js';
 import { applyFixtureSchemas } from '../tests/fixtures/schemas.js';
 import { makeEmbedding, nearVectorOf } from '../tests/fixtures/embeddings.js';
 import fs from 'fs/promises';
@@ -27,7 +27,7 @@ import os from 'os';
 const DIMS = 8;
 const tmpDir = path.join(os.tmpdir(), 'bri-example-memartifact-' + Date.now());
 
-const db = await createDB({ storeConfig: { dataDir: tmpDir, maxMemoryMB: 64 } });
+const db = await openLocalDatabase({ storeConfig: { dataDir: tmpDir, maxMemoryMB: 64 } });
 applyFixtureSchemas(db, { dims: DIMS });
 
 console.log('--- Step 1: insert two facts in session S1 ---');

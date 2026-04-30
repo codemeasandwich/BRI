@@ -5,7 +5,7 @@
  * Clients can use the identical BRI API through the remote wrapper.
  */
 
-import { createDB } from '../../index.js';
+import { openLocalDatabase } from '../../client/ready-connection.js';
 import { getState, deleteState } from './utils.js';
 import { handleRPC } from './handlers.js';
 
@@ -27,7 +27,7 @@ async function initDatabase() {
   console.log(`[BRI] Max memory: ${MAX_MEMORY_MB}MB`);
   console.log(`[BRI] Encryption: ${ENCRYPTION_KEY ? 'enabled' : 'disabled'}`);
 
-  db = await createDB({
+  db = await openLocalDatabase({
     storeConfig: {
       dataDir: DATA_DIR,
       maxMemoryMB: MAX_MEMORY_MB,

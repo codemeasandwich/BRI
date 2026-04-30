@@ -9,47 +9,20 @@ The client provides the user-facing API for BRI, enabling intuitive collection a
 ## Usage
 
 ```javascript
-import { createDB, getDB } from 'bri';
+import bri from 'bri-db';
 
-// Create new instance
-const db = await createDB({
+const db = bri.connect({
   storeConfig: { dataDir: './data', maxMemoryMB: 256 }
 });
 
-// Or use singleton
-const db = await getDB();
-
-// CRUD operations
-const user = await db.add.user({ name: 'Alice', role: 'admin' });
-const users = await db.get.userS({ role: 'admin' });
-const found = await db.get.user('USER_abc1234');
-
-// Update via proxy
-found.name = 'Bob';
-await found.save();
-
-// Delete
-await db.del.user(user.$ID);
-
-// Transactions
-const txnId = db.rec();
-await db.add.user({ name: 'Charlie' });
-await db.add.post({ title: 'Hello' });
-await db.fin(); // commit
-// or db.nop(); // rollback
-
-// Middleware
-db.use(async (ctx, next) => {
-  console.log('Before:', ctx.operation, ctx.type);
-  await next();
-  console.log('After:', ctx.result);
-});
+// READY before sync throws/tests: await openLocalDatabase({ storeConfig: { … } })
+// Examples: await db.add.user(...), db.rec()/db.fin(), db.use(...)
 ```
 
 ## Configuration
 
 ```javascript
-const db = await createDB({
+const db = bri.connect({
   storeType: 'inhouse',
   storeConfig: {
     dataDir: './data',
@@ -60,5 +33,7 @@ const db = await createDB({
 ```
 
 Environment variables:
-- `BRI_DATA_DIR` - Data directory (default: ./data)
-- `BRI_MAX_MEMORY_MB` - Memory limit (default: 256)
+- `BRI_DATA_DIR` — Data directory (default: ./data)
+- `BRI_MAX_MEMORY_MB` — Memory limit (default: 256)
+- `BRI_VECTOR_RNG_SEED` — Deterministic vector index RNG for tests (optional)
+- `BRI_VECTOR_WORKER` — Enable with **`true`/`1`/`yes`/`on`** (trimmed); **`0`/`false`/`no`/`off`** forces off. Warms the Worker thread for `createWorkerVectorIndex`; vector queries from **`bri.connect`** / **`openLocalDatabase`** (e.g. `.where.near`) stay in-process (see migration docs)

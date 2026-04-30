@@ -9,9 +9,9 @@ Bri supports embedding-based similarity search as a first-class read primitive. 
 ## Quick start
 
 ```js
-import { createDB } from 'bri-db';
+import bri from 'bri-db';
 
-const db = await createDB({ storeConfig: { dataDir: './data' } });
+const db = bri.connect({ storeConfig: { dataDir: './data' } });
 
 // Declare a schema with a vector field. The 'vector' type takes a `dims` value
 // that every embedding written to this collection must match.
@@ -51,7 +51,7 @@ A `'vector'` field requires `dims`. The `metric` defaults to `'cosine'` (the onl
 embedding: { type: 'vector', dims: 1536, metric: 'cosine' }
 ```
 
-**Validation rules** (returned as descriptive error strings from `validate()`):
+**Validation rules** (`schema-registry` calls `validate()` which **throws `BriValidationError`** — `code` enumerates mismatch kinds):
 
 - The value must be an array.
 - The array length must equal `dims`.
@@ -211,7 +211,7 @@ BRI_VECTOR_RNG_SEED=42 npm test
 
 - One vector field per collection.
 - Lazy deletion: removing a vector tombstones the slot (O(1)) but leaves dangling neighbour links in the graph. Long-running, deletion-heavy workloads accumulate "ghost" references over time. A future compaction trigger (when tombstone density crosses a threshold) is out of scope for v2.
-- No worker-thread offload — search runs on the main thread. The worker-offload slice (separate ticket) moves the index behind a Worker for non-blocking bulk insert.
+- **`BRI_VECTOR_WORKER` eager warm-up** (token whitelist in `workers/vector-worker-env.js` — **`true`/`1`/`yes`/`on`**, **`0`/`false`/`no`/`off` disables**): local **`bri-db` bootstrap** (`bri.connect` / `openLocalDatabase`) dynamic-imports `workers/index-worker-host.js` and invokes `warmVectorWorkerFromEnv()`, which spawns the shared `worker_threads` host before the first programmatic `createWorkerVectorIndex(...)`. Import/load failures log a warning and **never** block database construction. Queries issued via `db.get.{collection}S.where.near(...)` use the **in-process** `VectorIndex` because `.where`/`.near` predicates are arbitrary JavaScript functions that cannot traverse the Worker IPC barrier. Prefer `createWorkerVectorIndex` explicitly for benchmarking or parity tests (`tests/e2e/worker.test.js`).
 
 ---
 

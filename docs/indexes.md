@@ -2,7 +2,7 @@
 
 Bri supports schema-declared compound indexes that bound `.where` lookups before they hit document bodies. When a query's filter matches a declared index (or any prefix of one), the engine narrows the candidate set via the index and hydrates only the candidates — not the whole collection.
 
-> **Status:** v1 — equality-only filters, single-best-fit prefix matching, persisted as part of the snapshot. Range operators (`$gte`, `$lt`), `$or`, `$in`, and multi-index intersection are deferred to later slices.
+> **Status:** v1 — planner optimizes equality-shaped filters into secondary indexes persisted on snapshot. Operators such as **`$gte` / `$lte` / `$in` / `$exists`** execute through the [`filter-compiler`](../engine/filter-compiler.js) as residual predicates whenever the secondary index stops matching (operator clauses intentionally skip compound-index acceleration today). Deferred work: richer index intersection + operator-aware index merges.
 
 ---
 

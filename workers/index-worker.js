@@ -3,8 +3,9 @@
  *
  * Per spec §3.2: index operations may be offloaded to a Worker Thread so
  * bulk inserts (UC-V5) and CPU-bound searches do not block the request
- * path. v1 ships this worker as opt-in (`BRI_VECTOR_WORKER=true` or by
- * directly using `workers/index-worker-host.js` → createWorkerVectorIndex);
+ * path. v1 ships this worker as opt-in: enable **`BRI_VECTOR_WORKER`** per
+ * `workers/vector-worker-env.js`, or invoke `workers/index-worker-host.js`
+ * → `createWorkerVectorIndex` directly;
  * the default main-thread path is unchanged. v2 may make the worker the
  * default once the latency gates of §6.2 require it.
  *

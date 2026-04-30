@@ -4,7 +4,7 @@
  * Run with: bun run start
  */
 
-import { createDB } from 'bri';
+import bri from 'bri';
 
 async function main() {
   console.log('=== BRI Example ===\n');
@@ -13,7 +13,7 @@ async function main() {
   // 1. Initialize Database
   // ============================================
   console.log('1. Initializing database...');
-  const db = await createDB({
+  const db = bri.connect({
     storeConfig: {
       dataDir: './data',
       maxMemoryMB: 64

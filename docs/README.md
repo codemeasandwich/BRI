@@ -2,6 +2,8 @@
 
 Capability-area documentation for Bri features. Implementation reference lives next to the code in each module's `README.md` and `FILES.md`; the docs in this folder cover end-user surfaces and walkthroughs.
 
+**Integration-test artifacts:** at the repository root, directories whose names begin with `test-data-` hold disposable WAL/snapshot output from Jest E2E. They are ignored by Git and deleted automatically after each full test run (`globalTeardown` in `jest.config.js`). Long-lived seeded files belong under `tests/fixtures/`, not under `test-data-*`.
+
 ## Index
 
 | Document | Covers |

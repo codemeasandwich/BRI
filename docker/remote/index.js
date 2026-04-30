@@ -2,13 +2,13 @@
  * @file BRI Remote Client - Complete API Examples via WebSocket
  *
  * This file demonstrates EVERY possible way clients can interface with BRI
- * through a remote WebSocket connection using apiDB().
+ * through a remote WebSocket connection using `openRemoteDatabase()` (or `bri.connect({ url })`).
  *
  * Run with: bun docker/remote/index.js
  * (Requires server running: bun docker/server/index.js)
  */
 
-import { apiDB } from '../../index.js';
+import { openRemoteDatabase } from '../../client/ready-connection.js';
 import { printBanner, printComplete, printCleanup } from './helpers.js';
 import { runCrudExamples } from './01-crud.js';
 import { runArrayUpdateExamples } from './02-arrays-update.js';
@@ -24,7 +24,7 @@ import { runAdvancedExamples } from './06-advanced.js';
 async function main() {
   printBanner();
 
-  const db = await apiDB();
+  const db = await openRemoteDatabase('ws://localhost:3000');
 
   // Run all example modules
   const entities = await runCrudExamples(db);

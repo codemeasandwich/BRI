@@ -16,9 +16,7 @@ remote/
 Remote database client entry point. Provides BRI API over WebSocket via api-ape.
 
 **Exports:**
-- `createRemoteDB(url, options)` - Create remote database connection
-- `apiDB(url?)` - Alias with default URL (ws://localhost:3000)
-- `default` - Alias for createRemoteDB
+- `createRemoteDatabasePromise(wsUrl, options?)` - WebSocket RPC façade after OPEN (used by `bri.connect({ url })` internally; also importable as `import { createRemoteDatabasePromise } from 'bri-db/remote'`)
 
 **Options:**
 - `timeout` - RPC timeout in milliseconds (default: 30000)

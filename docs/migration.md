@@ -1,5 +1,7 @@
 # Migration — adopting vector + graph in an existing Bri project
 
+See also **`bri.connect`** in [Connect API — `bri` (v2 breaking)](#connect-api--bri-v2-breaking) if you upgrade to `bri-db` 2.x.
+
 This page is the migration path for projects already using Bri without
 schema declarations. Existing collections continue to work unchanged
 with the existing API. Vector + graph features simply require schema.
@@ -17,6 +19,27 @@ with the existing API. Vector + graph features simply require schema.
   not replace `.and`.
 - `db.rec()` / `db.fin()` / `db.nop()` / `db.pop()` — transactions
   unchanged; tags via `{sessionId}` are optional.
+
+## Connect API — `bri` (v2 breaking)
+
+Product entry **`import bri from 'bri-db'`** and **`const db = bri.connect(opts)`** — **`connect`** returns immediately; callers do not `await` wire-up.
+
+- Omit **`url`** / **`wsUrl`** for local storage (same **`storeConfig`** / env defaults as before).
+- **`{ url }`** or **`{ wsUrl }`** selects the remote WebSocket path (**`/api/ape`** normalization matches **`bri.connect`** / **`createRemoteDatabasePromise`**).
+
+**Buffered window:** only **pre-READY** — while local backing has not attached or remote transport has not reached first-hop **`OPEN`**, Bri queues outbound work **FIFO**, then drains. After **`READY`**, flaky networks/backoff/reconnect stay outside Bri’s versioning surface.
+
+Await **full READY** before synchronous throws / tests:
+
+```js
+import { openLocalDatabase, openRemoteDatabase } from 'bri-db';
+
+const dbLocal = await openLocalDatabase({ storeConfig: { … } });
+const dbRemote = await openRemoteDatabase('ws://localhost:3000');
+```
+
+Those helpers use the same implementations as **`bri.connect`**: **`openLocalDatabase`** returns the resolved local `Database`; **`openRemoteDatabase`** / **`createRemoteDatabasePromise`** wait for WebSocket OPEN.
+
 - Snapshots + WAL replay — old format snapshots load and rebuild
   vector + secondary indexes from documents on first boot. New
   snapshots are v3 format with embedded index buffers.
@@ -126,18 +149,30 @@ catch (e) { /* e instanceof BriValidationError; e.code carries the codename */ }
 Most call sites are inside Bri middleware and have already been updated
 in v1. External call sites (custom validators) need the catch.
 
-## Worker thread is opt-in
+## Worker thread (`BRI_VECTOR_WORKER`)
 
-Spec §3.2 introduces a Worker Thread for vector ops; v1 keeps the
-default in-process for compatibility. Opt in via:
+Spec §3.2 introduces an optional Worker Thread for CPU-heavy vector benchmarking. **Local vector queries (`bri.connect` / `openLocalDatabase`) always stay on the main-thread [`VectorIndex`](../engine/vector-index.js)** because `.where` / `.near` plumbing passes arbitrary JavaScript predicates (`filter-compiler`) that cannot be serialized across `worker_threads` IPC — automatic substitution with [`WorkerVectorIndex`](../workers/index-worker-host.js) would diverge behaviour.
+
+Runtime contract (see [`workers/vector-worker-env.js`](../workers/vector-worker-env.js) for authoritative token list):
+
+| Decision | Meaning |
+|---|---|
+| **`BRI_VECTOR_WORKER` enable tokens** | `true` / `1` / `yes` / `on` (trimmed, case-insensitive) — [`warmVectorWorkerFromEnv()`](../workers/index-worker-host.js) runs after **`bri-db` boots local storage** (dynamic import guarded so missing worker files never abort DB bootstrap). |
+| **Disable tokens** | `0` / `false` / `no` / `off` — rejects warm even if a parent shell left a truthy-looking value. |
+| **unset** | Worker boots lazily on first `createWorkerVectorIndex` / diagnostics call. |
+| **Automatic main-thread vectors** | Stay on the main-thread [`VectorIndex`](../engine/vector-index.js) because query predicates are arbitrary JS functions. |
+
+Manual opt-in (same module the tests use):
 
 ```js
-import { createWorkerVectorIndex } from 'bri-db/workers/index-worker-host.js';
-const idx = await createWorkerVectorIndex({ collection: 'foo', dims: 1536 });
-```
+import {
+  createWorkerVectorIndex,
+  workerDiagnostics
+} from 'bri-db/workers'; // or bri-db/workers/index-worker-host.js
 
-Or set `BRI_VECTOR_WORKER=true` in test runs that need the offload
-(scale tests, bulk-insert non-blocking acceptance).
+const idx = await createWorkerVectorIndex({ collection: 'bench', dims: 1536 });
+const { opCount } = await workerDiagnostics();
+```
 
 ## Reserved names — schema review
 

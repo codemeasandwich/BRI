@@ -1,5 +1,12 @@
 /**
  * BRI Database TypeScript Definitions
+ *
+ * Consume this package as **`bri-db`** from npm. Subpaths exposed via
+ * `package.json` `exports` include **`bri-db/client`**, **`bri-db/engine`**,
+ * **`bri-db/storage`**, **`bri-db/utils/jss`**, **`bri-db/utils/diff`**,
+ * **`bri-db/utils/schema`**, **`bri-db/remote`**, and **`bri-db/workers`** —
+ * use those specifiers for deep imports; runtime types for modules without
+ * ambient declarations follow their JSDoc.
  */
 
 // ==================== Configuration ====================
@@ -25,12 +32,51 @@ export interface StoreConfig {
   keepSnapshots?: number;
 }
 
-export interface CreateDBOptions {
+/** Local-store branch passed to {@link bri.connect} (omit remote `url` / `wsUrl`). */
+export interface LocalConnectOptions {
   /** Storage backend type (default: 'inhouse') */
   storeType?: 'inhouse';
   /** Storage configuration */
   storeConfig?: StoreConfig;
 }
+
+/**
+ * Remote connection branch for {@link bri.connect}. Do not combine with local
+ * `storeConfig` / `storeType` — that combination throws at runtime.
+ */
+export interface RemoteConnectOptions {
+  /** WebSocket URL; `/api/ape` is appended when absent. */
+  url?: string;
+  /** Synonym for `url` (normalized the same way). */
+  wsUrl?: string;
+  /** RPC timeout milliseconds (default 30000). */
+  timeout?: number;
+}
+
+/**
+ * Combined connect options (`bri.connect`): local backing vs remote (`url`|`wsUrl`).
+ * Runtime rejects mixing remote URLs with local `storeConfig` / `storeType`.
+ */
+export type ConnectOptions = LocalConnectOptions | RemoteConnectOptions;
+
+/**
+ * Canonical SDK singleton — **default export** from the repo root entry (`bri-db`).
+ */
+export interface Bri {
+  /** Published package version (from manifest at build/publish time). */
+  readonly version: string;
+  /**
+   * Synchronous database handle — never `await` connection wire-up.
+   * Pre-READY calls buffer until backing storage connects or remote WebSocket OPEN.
+   */
+  connect(options?: ConnectOptions): Database;
+}
+
+/** @public default entry — `import bri from 'bri-db'`. */
+export declare const bri: Bri;
+
+/** Wrap `Promise&lt;Database&gt;` in the same façade `bri.connect` uses for pre-READY deferral (advanced/testing). */
+export function deferDatabase(waitPromise: Promise<Database>): Database;
 
 // ==================== Entity Types ====================
 
@@ -320,21 +366,32 @@ export interface Database {
   disconnect(): Promise<void>;
 }
 
-// ==================== Main Functions ====================
+/**
+ * Normalize a WS base URL to include `/api/ape` — same rule as remote handshake helpers.
+ */
+export function normalizedWsUrl(url: string): string;
 
 /**
- * Create a new BRI database instance
- * @param options - Database options
+ * Resolve the remote façade after `/api/ape` WebSocket OPEN — used internally by {@link bri.connect}
+ * and by tests/helpers that need OPEN before synchronous access.
  */
-export function createDB(options?: CreateDBOptions): Promise<Database>;
+export function createRemoteDatabasePromise(wsUrl: string, options?: { timeout?: number }): Promise<Database>;
 
 /**
- * Get or create default database instance (singleton)
- * @param options - Options used if creating new instance
+ * Builds READY local backing (also used by `bri.connect`); returns the real Database, not a `deferDatabase` façade.
  */
-export function getDB(options?: CreateDBOptions): Promise<Database>;
+export function createLocalDatabasePromise(options?: LocalConnectOptions): Promise<Database>;
 
-// =====================================================================
+/** Fully READY local `Database` — direct result of {@link createLocalDatabasePromise}; not the pre-READY {@link deferDatabase} façade. */
+export function openLocalDatabase(options?: LocalConnectOptions): Promise<Database>;
+
+/**
+ * READY remote façade after WebSocket normalization — callers that cannot use the synchronous {@link bri.connect} buffer.
+ */
+export function openRemoteDatabase(
+  url: string,
+  options?: { timeout?: number }
+): Promise<Database>;
 // Vector + Graph v1 surface (spec §2)
 // =====================================================================
 
@@ -613,4 +670,12 @@ export interface Database {
   readonly cascade: CascadeNamespace;
 }
 
-export default createDB;
+export default bri;
+
+declare module 'bri-db/workers/vector-worker-env.js' {
+  /**
+   * Returns whether `process.env.BRI_VECTOR_WORKER` requests eager worker warm-up for
+   * `warmVectorWorkerFromEnv` — see parsing rules in runtime JSDoc.
+   */
+  export function isVectorWorkerWarmRequestedFromEnv(): boolean;
+}

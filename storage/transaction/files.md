@@ -3,12 +3,19 @@
 ```
 transaction/
 ├── manager.js
+├── test.js
 ├── txn-operations.js
 ├── txn-undo.js
 └── txn-recovery.js
 ```
 
 ## Files
+
+### `test.js`
+
+Manual integration runner (`node storage/transaction/test.js`) driving **`openLocalDatabase`**
+through **`client/ready-connection.js`** to exercise **`rec`** / **`fin`** / **`nop`** / **`pop`**,
+middleware interception, and visibility rules without Jest.
 
 ### `manager.js`
 

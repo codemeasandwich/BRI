@@ -16,7 +16,7 @@
  * Runs against a temporary data dir; cleans up on exit.
  */
 
-import { createDB } from '../client/index.js';
+import { openLocalDatabase } from '../client/ready-connection.js';
 import { applyFixtureSchemas } from '../tests/fixtures/schemas.js';
 import { loadKGFixture } from '../tests/fixtures/triples.js';
 import fs from 'fs/promises';
@@ -24,7 +24,7 @@ import path from 'path';
 import os from 'os';
 
 const tmpDir = path.join(os.tmpdir(), 'bri-example-kg-' + Date.now());
-const db = await createDB({ storeConfig: { dataDir: tmpDir, maxMemoryMB: 64 } });
+const db = await openLocalDatabase({ storeConfig: { dataDir: tmpDir, maxMemoryMB: 64 } });
 applyFixtureSchemas(db, { dims: 8 });
 
 console.log('--- Step 1: load fixture (8 entities, 12 triples) ---');

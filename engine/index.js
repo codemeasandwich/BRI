@@ -41,3 +41,7 @@ export { GraphIndex } from './graph-index.js';
 // Typed-error surface (`utils/schema`, middleware, predicates) resolves through
 // the same `./engine` specifier as `createEngine`; re-export alongside.
 export * from './errors.js';
+
+// Middleware plugs — use `import { loggingMiddleware } from 'bri-db/engine'` (also
+// `bri-db/engine/middleware.js` for deep imports).
+export * from './middleware.js';

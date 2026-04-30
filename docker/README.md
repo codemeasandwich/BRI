@@ -17,10 +17,16 @@ docker-compose up -d
 ## Client Usage
 
 ```javascript
-import { createRemoteDB } from 'bri/remote';
+import bri from 'bri-db';
 
-// Connect to the server
-const db = await createRemoteDB('ws://localhost:3000');
+// `db` is returned synchronously; WebSocket readiness is asynchronous (pre-READY queue inside Bri).
+const db = bri.connect({
+  url: 'ws://localhost:3000'
+});
+
+// Await OPEN first (same db shape after connect):
+// import { createRemoteDatabasePromise } from 'bri-db/remote';
+// const db = await createRemoteDatabasePromise('ws://localhost:3000/api/ape');
 
 // Now use the SAME API as local BRI!
 
@@ -133,7 +139,7 @@ openssl rand -hex 32
          ↕ WebSocket (ws://host:3000/api/ape)
 ┌─────────────────────────────────────────────────────────┐
 │              Your Application                            │
-│   import { createRemoteDB } from 'bri/remote'           │
+│   import bri from 'bri-db'; bri.connect({ url: 'ws://...' })  │
 └─────────────────────────────────────────────────────────┘
 ```
 

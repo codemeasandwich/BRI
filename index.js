@@ -1,8 +1,14 @@
 /**
- * @file BRI - Bigdata Repository of Intelligence
+ * @file BRI — Bigdata Repository of Intelligence
  *
- * Main entry point - re-exports from client and remote modules.
+ * Default export `bri` is the sole supported entry (`bri.connect`). No legacy wrappers.
  */
 
-export { createDB, getDB, default } from './client/index.js';
-export { apiDB, createRemoteDB } from './remote/index.js';
+export { default, bri, deferDatabase } from './client/index.js';
+export {
+  normalizedWsUrl,
+  openLocalDatabase,
+  openRemoteDatabase
+} from './client/ready-connection.js';
+export { createRemoteDatabasePromise } from './remote/index.js';
+export { createLocalDatabasePromise } from './client/create-local-db.js';

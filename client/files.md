@@ -2,7 +2,11 @@
 
 ```
 client/
+├── bri.js
+├── create-local-db.js
+├── defer-database.js
 ├── index.js
+├── ready-connection.js
 ├── proxy.js
 ├── proxy-operations.js
 ├── query-builder.js
@@ -17,14 +21,37 @@ client/
 
 ## Files
 
+### `bri.js`
+
+Exports **`export const bri`** / default: **`version`**, **`connect(opts)`**.
+Local vs remote branching; rejects mixed local+remote opts; **`/api/ape`** normalization
+matches {@link normalizedWsUrl} and remote handshake used by **`bri-db/remote`**.
+
+### `create-local-db.js`
+
+**Exports:** **`createLocalDatabasePromise(options)`** — awaits **`createStore`**, optional
+vector-worker warm-from-env, **`createEngine`**, returns **`createDBInterface`**. Sole
+async path that constructs the resolved in-process **`Database`** for local backing.
+
+### `defer-database.js`
+
+**Exports:** **`deferDatabase(waitPromise)`** — pre-READY proxy façade over a backing
+promise (FIFO queue on **`Reflect`-based traversal**; post-READY root delegates via
+ **`Reflect.get(resolved, prop)`** so QueryBuilders are not assimilated via Promise).
+
+### `ready-connection.js`
+
+**Exports:** **`normalizedWsUrl`**, **`openLocalDatabase`**, **`openRemoteDatabase`**.
+Await-able READY surfaces for servers, manual scripts, and E2E; **`openLocalDatabase`**
+returns the resolved concrete **`Database`** (not the **`deferDatabase`** wrapper).
+
 ### `index.js`
 
-Database factory and singleton management.
+Database factory and synchronous SDK entry (`bri`) plus `deferDatabase`.
 
 **Exports:**
-- `createDB(options)` - Create new database instance
-- `getDB(options)` - Get or create singleton instance
-- `default` - Alias for createDB
+- `bri` — default and named; **`bri.connect(opts)`** returns the public `db` façade (local or remote)
+- `deferDatabase(backingPromise)` — advanced composition; same pre-READY buffering as `bri.connect`
 
 **Options:**
 - `storeType` - Storage backend ('inhouse')

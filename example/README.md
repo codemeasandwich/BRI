@@ -2,6 +2,8 @@
 
 A fully working example demonstrating the BRI database framework with Bun.
 
+This directory uses a **local package alias** `"bri": "file:.."` in [`package.json`](package.json) so `import … from 'bri'` resolves to the repository root. Consumption from npm should use the published name **`bri-db`** or `npm link bri-db` inside a separate project.
+
 ## Prerequisites
 
 - [Bun](https://bun.sh/) installed on your system
@@ -31,10 +33,9 @@ bun run start
 ## API Quick Reference
 
 ```javascript
-import { createDB } from 'bri';
+import bri from 'bri';
 
-// Initialize
-const db = await createDB({
+const db = bri.connect({
   storeConfig: { dataDir: './data', maxMemoryMB: 64 }
 });
 
@@ -75,11 +76,7 @@ await db.disconnect();
 
 ## Data Storage
 
-Documents are stored in the `./data` directory:
-- `data/docs/` - Individual document JSON files
-- `data/sets/` - Collection indexes
-- `data/wal/` - Write-ahead log for durability
-- `data/snapshots/` - Periodic state snapshots
+Documents are held in the hot tier; evicted documents are written under `./data/cold/{TYPE}/{id}.jss`. The write-ahead log (`./data/wal/`), transaction staging (`./data/txn/`), and periodic snapshots (`./data/snapshots/`) complete the durability story.
 
 ## Cleanup
 

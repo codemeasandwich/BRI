@@ -1,26 +1,37 @@
 /**
- * Transaction Manager Tests
+ * @file Runnable manual integration checks for the in-house transaction manager.
  *
- * Run with: node storage/transaction/test.js
+ * Run with: **`node storage/transaction/test.js`** (no Jest).
+ * Uses **`openLocalDatabase`** so the façade is fully READY before assertions.
  */
 
-import { createDB } from '../../client/index.js';
+import { openLocalDatabase } from '../../client/ready-connection.js';
 import fs from 'fs/promises';
 
 const TEST_DATA_DIR = './data-txn-test';
 
+/**
+ * Best-effort purge of the ephemeral data directory used by this script.
+ *
+ * @returns {Promise<void>}
+ */
 async function cleanup() {
   try {
     await fs.rm(TEST_DATA_DIR, { recursive: true, force: true });
   } catch (e) {}
 }
 
+/**
+ * Opens a local database, runs labelled scenarios, prints pass/fail totals, disconnects.
+ *
+ * @returns {Promise<void>}
+ */
 async function runTests() {
   console.log('=== Transaction Manager Tests ===\n');
 
   await cleanup();
 
-  const db = await createDB({
+  const db = await openLocalDatabase({
     storeConfig: {
       dataDir: TEST_DATA_DIR,
       maxMemoryMB: 64
@@ -30,6 +41,13 @@ async function runTests() {
   let passed = 0;
   let failed = 0;
 
+  /**
+   * Run one labelled scenario; increment pass/fail counters and log the outcome.
+   *
+   * @param {string} name
+   * @param {() => Promise<void>} fn
+   * @returns {Promise<void>}
+   */
   async function test(name, fn) {
     try {
       await fn();
@@ -220,7 +238,13 @@ async function runTests() {
   await test('Custom middleware can intercept operations', async () => {
     let intercepted = [];
 
-    // Add custom middleware
+    /**
+     * Example custom middleware instance — records **`ctx.operation`** for assertions.
+     *
+     * @param {Object} ctx - Middleware context from `engine/middleware.js`
+     * @param {() => Promise<void>} next
+     * @returns {Promise<void>}
+     */
     const customMiddleware = async (ctx, next) => {
       intercepted.push({ op: ctx.operation, type: ctx.type });
       await next();

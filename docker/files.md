@@ -56,11 +56,11 @@ Docker Compose service configuration for BRI server.
 
 ### `examples/`
 
-Local BRI usage examples using `createDB` directly. Demonstrates all BRI API features.
+Local BRI usage examples using `openLocalDatabase` from `client/ready-connection.js` (or **`bri.connect`**). Demonstrates all BRI API features.
 
 ### `remote/`
 
-Remote client examples using WebSocket `apiDB`. Same examples as `examples/` but over network.
+Remote client examples using WebSocket (`bri.connect({ url })` or `openRemoteDatabase`). Same examples as `examples/` but over network.
 
 ### `server/`
 

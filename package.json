@@ -1,6 +1,6 @@
 {
   "name": "bri-db",
-  "version": "1.2.0",
+  "version": "2.0.0",
   "description": "BRI - Bigdata Repository of Intelligence - A simple, intuitive database framework",
   "type": "module",
   "main": "index.js",
@@ -12,9 +12,15 @@
     ".": "./index.js",
     "./client": "./client/index.js",
     "./engine": "./engine/index.js",
+    "./engine/middleware.js": "./engine/middleware.js",
+    "./remote": "./remote/index.js",
     "./storage": "./storage/index.js",
     "./utils/jss": "./utils/jss/index.js",
-    "./utils/diff": "./utils/diff/index.js"
+    "./utils/diff": "./utils/diff/index.js",
+    "./utils/schema": "./utils/schema/index.js",
+    "./workers": "./workers/index-worker-host.js",
+    "./workers/index-worker-host.js": "./workers/index-worker-host.js",
+    "./workers/vector-worker-env.js": "./workers/vector-worker-env.js"
   },
   "scripts": {
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --testPathIgnorePatterns='/scale\\.test\\.js$'",
@@ -25,6 +31,7 @@
     "prepare": "git config core.hooksPath .hooks"
   },
   "devDependencies": {
-    "jest": "^29.7.0"
+    "jest": "^29.7.0",
+    "ws": "^8.20.0"
   }
 }

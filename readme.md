@@ -37,7 +37,7 @@ This Bri database provides an easy-to-use interface for performing CRUD (Create,
 ## Installation
 
 ```bash
-npm install bri
+npm install bri-db
 ```
 
 ## Storage Backends
@@ -55,18 +55,18 @@ A self-contained persistent store with no external dependencies. Features:
 #### Configuration
 
 ```javascript
-const { createStore } = require('./store');
+import { createStore } from 'bri-db/storage';
 
 const store = await createStore({
   type: 'inhouse',
   config: {
-    dataDir: './data',           // Where to store data files
+    dataDir: './data',           // Base directory for WAL, snapshots, txn, cold tier, etc.
     maxMemoryMB: 256,            // Required: memory limit for hot tier
     evictionThreshold: 0.9,      // Trigger eviction at 90% memory usage
     snapshotIntervalMs: 1800000, // Snapshot every 30 minutes
     keepSnapshots: 3,            // Keep last 3 snapshots
-    fsyncMode: 'batched',        // WAL sync mode: 'always', 'batched', 'os'
-    fsyncIntervalMs: 100,        // Batch sync interval
+    fsyncMode: 'batched',        // WAL sync mode: 'always' | 'batched'
+    fsyncIntervalMs: 100,        // Batch sync interval when fsyncMode is 'batched'
     encryption: {                // Optional encryption at rest
       enabled: true,
       keyProvider: 'env',        // 'env', 'file', or 'remote'
@@ -80,18 +80,18 @@ const store = await createStore({
 
 #### Data Directory Structure
 
+Under the hood, hot-tier keys live in memory; documents evicted under memory pressure land in the cold tier (`cold/{TYPE_PREFIX}/{id}.jss`). There is **no** per-document `./docs/` tree on disk for the stock in-house backend.
+
 ```
 data/
-├── docs/           # Document JSON files
-│   └── US_abc1234.json
-├── sets/           # Collection index files
-│   └── US.json
-├── wal/            # Write-ahead log segments
+├── cold/
+│   └── POST/              # Example: evicted POST_* keys as .jss files
+├── wal/
 │   └── 000001.wal
-├── txn/            # Transaction WAL files (one per active transaction)
+├── txn/
 │   └── txn_abc1234.wal
-└── snapshots/      # Periodic state snapshots
-    └── snap_1704067200.json
+└── snapshots/
+    └── ...
 ```
 
 #### Store API
@@ -129,19 +129,23 @@ const status = store.txnStatus(txnId); // Get transaction status
 
 ## Usage
 
-First, you need to import the library in your JavaScript or TypeScript project:
+Published package **`bri-db`** exposes default export **`bri`** (ESM). Prefer:
 
 ```javascript
-const db = require('bri');
+import bri from 'bri-db';
+
+const db = bri.connect({
+  storeConfig: { dataDir: './data', maxMemoryMB: 256 }
+});
 ```
 
-For TypeScript or ECMAScript modules, use:
+Await **backing READY** **before** synchronous contract tests or scripts that rely on READY:
 
 ```javascript
-import * as db from 'bri';
-```
+import { openLocalDatabase, openRemoteDatabase } from 'bri-db';
 
-After importing the library, you can use the provided action functions to interact with the database.
+const dbLocal = await openLocalDatabase({ storeConfig: { dataDir: './data', maxMemoryMB: 256 } });
+```
 
 ### Action Functions
 
@@ -381,7 +385,7 @@ console.log(db.middleware.count);
 
 #### Built-in Middleware Plugins
 
-Available in `engine/middleware.js`:
+Available from **`bri-db/engine`**:
 
 ```javascript
 import {
@@ -389,19 +393,17 @@ import {
   loggingMiddleware,
   validationMiddleware,
   hooksMiddleware
-} from 'bri/engine';
+} from 'bri-db/engine';
 
 // Transaction middleware (enabled by default)
 // Auto-injects txnId from db._activeTxnId
 
 // Logging middleware
-db.use(loggingMiddleware({ verbose: true }));
+db.use(loggingMiddleware({ logResults: false }));
 
-// Validation middleware
+// Validation middleware — validators return arrays of errors (possibly async)
 db.use(validationMiddleware({
-  user: (data) => {
-    if (!data.email) throw new Error('Email required');
-  }
+  user: async (data) => (!data.email ? ['Email required'] : [])
 }));
 
 // Hooks middleware
@@ -417,10 +419,10 @@ db.use(hooks.middleware);
 
 ### Schema Validation
 
-BRI includes a schema validation utility for validating document structure:
+BRI validates schema-backed writes through **`bri-db/utils/schema`**. **`validate(schema, payload)` throws `BriValidationError`** on failure (`e.code` carries stable codenames):
 
 ```javascript
-import validate from 'bri/utils/schema';
+import validate from 'bri-db/utils/schema';
 
 const userSchema = {
   name: { type: String, required: true },
@@ -437,13 +439,12 @@ const userSchema = {
   tags: { type: Array, items: String }
 };
 
-const userData = { name: 'Alice', email: 'alice@example.com' };
-const error = validate(userSchema, userData);
-
-if (error) {
-  console.error('Validation failed:', error);
-} else {
+try {
+  const userData = { name: 'Alice', email: 'alice@example.com' };
+  validate(userSchema, userData);
   await db.add.user(userData);
+} catch (e) {
+  console.error(e.name, e.code ?? e.message);
 }
 ```
 
@@ -501,7 +502,7 @@ Spec compliance is tracked in [todo/Vector.md](todo/Vector.md).
 BRI uses JSS for extended JSON serialization that preserves JavaScript types not supported by standard JSON:
 
 ```javascript
-import jss from 'bri/utils/jss';
+import jss from 'bri-db/utils/jss';
 
 const data = {
   date: new Date(),
@@ -550,17 +551,15 @@ const jssData = user.toJSS();
 BRI includes complete TypeScript definitions in `index.d.ts`:
 
 ```typescript
-import { createDB, Database, ReactiveEntity, StoreConfig } from 'bri';
+import bri, { Database, ReactiveEntity, StoreConfig } from 'bri-db';
 
-// Full type safety for database operations
-const db: Database = await createDB({
+const db: Database = bri.connect({
   storeConfig: {
     dataDir: './data',
     maxMemoryMB: 256
   }
 });
 
-// Typed entity access
 const user: ReactiveEntity = await db.add.user({ name: 'Alice' });
 ```
 
@@ -580,6 +579,8 @@ BRI respects the following environment variables:
 | `BRI_DATA_DIR` | Data directory path | `./data` |
 | `BRI_MAX_MEMORY_MB` | Maximum memory for hot tier cache | `256` |
 | `BRI_ENCRYPTION_KEY` | Encryption key (64 hex chars = 32 bytes) | *none* |
+| `BRI_VECTOR_RNG_SEED` | Seed for HNSW level-pick RNG (deterministic snapshots/tests); omit in production for non-deterministic `Math.random` | *unset* |
+| `BRI_VECTOR_WORKER` | Set to **`true`**, **`1`**, **`yes`**, or **`on`** (trimmed, case-insensitive); set to **`0`**, **`false`**, **`no`**, or **`off`** to force-disable inherited junk. When enabled, eagerly spawns the shared worker (`warmVectorWorkerFromEnv`) so `createWorkerVectorIndex()` skips cold-start. **`bri.connect`** / **`openLocalDatabase`** vector queries stay in-process — see [`workers/vector-worker-env.js`](workers/vector-worker-env.js) and [`docs/migration.md`](docs/migration.md). | unset (off) |
 
 ```bash
 # Example usage
@@ -597,7 +598,7 @@ BRI is organized into four main modules:
 ┌─────────────────────────────────────────────────────────────────┐
 │                         /client                                  │
 │         Public interface: .get.userS, user.and.friends          │
-│              Query syntax, proxy handlers, createDB              │
+│              Query syntax, proxy handlers, bri.connect               │
 └───────────────────────────┬─────────────────────────────────────┘
                             │
                             ▼
@@ -629,7 +630,7 @@ BRI is organized into four main modules:
 
 ### Module Descriptions
 
-- **client/** - Public interface including the `.get.userS`, `user.and.friends` query syntax, proxy handlers for collection access, and the `createDB` factory function.
+- **client/** - Public surface: `.get.userS`, `user.and.friends` query wiring, proxies for collection access, and **`import bri from 'bri-db'; bri.connect(...)`** (plus READY helpers **`openLocalDatabase`** / **`openRemoteDatabase`** on the package root export).
 
 - **engine/** - Core database engine handling in-memory data operations, query fulfillment, ID generation, CRUD operations, and reactive change tracking via proxies.
 
@@ -639,42 +640,31 @@ BRI is organized into four main modules:
 
 ## Running Tests
 
-BRI uses Jest for testing with 15 comprehensive e2e test suites:
+This repository uses Jest for end-to-end suites under [`tests/e2e/`](tests/e2e/). The default `npm test` command ignores `scale.test.js` (use `npm run test:scale` for that file).
 
 ```bash
-# Run all tests
+# Run all non-scale e2e suites
 npm test
 
-# Run tests with coverage report
+# Istanbul coverage (statements/branches/lines/functions)
 npm run test:coverage
 
-# Run specific test file
+# Single suite
 npm test -- tests/e2e/crud.test.js
+
+# Scale-only suite
+npm run test:scale
 ```
 
-### Test Suites
-
-| Suite | Description |
-|-------|-------------|
-| `crud.test.js` | Create, read, update, delete operations |
-| `transactions.test.js` | Transaction API (rec, fin, nop, pop) |
-| `middleware.test.js` | Middleware system and plugins |
-| `reactive.test.js` | Reactive proxy and change tracking |
-| `pubsub.test.js` | Publish/subscribe functionality |
-| `schema.test.js` | Schema validation |
-| `jss.test.js` | JSS serialization |
-| `sets.test.js` | Set operations (sAdd, sRem, sMembers) |
-| `memory.test.js` | Memory management and eviction |
-| `persistence.test.js` | WAL, snapshots, recovery |
-| `encryption.test.js` | Encryption at rest, key providers |
+See [`tests/e2e/README.md`](tests/e2e/README.md) and [`tests/e2e/files.md`](tests/e2e/files.md) for the full manifest.
 
 ### Legacy Test Scripts
 
 ```bash
-# Test the storage layer directly
+# Exercise the storage layer directly
 node storage/test.js
 
-# Test transactions directly
+# Exercise transaction helpers directly
 node storage/transaction/test.js
 ```
 
@@ -688,4 +678,4 @@ bun install
 bun run start
 ```
 
-The example demonstrates all major BRI features including database initialization, CRUD operations, relationships, subscriptions, and graceful shutdown. See `example/README.md` for details.
+The example demonstrates all major BRI features including database initialization, CRUD operations, relationships, subscriptions, and graceful shutdown. It depends on the local alias `"bri": "file:.."`. Published consumers should depend on **`bri-db`**. See [`example/README.md`](example/README.md) for details.

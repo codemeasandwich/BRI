@@ -16,9 +16,9 @@ const employers = await alice.works_at;            // read targets
 ## Quick start
 
 ```js
-import { createDB } from 'bri-db';
+import bri from 'bri-db';
 
-const db = await createDB({ storeConfig: { dataDir: './data' } });
+const db = bri.connect({ storeConfig: { dataDir: './data' } });
 
 // 1. Declare the node collection.
 db.schema('kgEntity', {
@@ -32,7 +32,11 @@ db.schema('kgEntity', {
 db.schema('kgTriple', {
   subject_id:           { type: 'ref', to: 'kgEntity', required: true },
   predicate:            { type: String, required: true },
-  object_id_or_literal: { type: 'ref', to: 'kgEntity', required: true },
+  object_id_or_literal: {
+    type: 'ref|string',
+    to: 'kgEntity',
+    required: true
+  },
   confidence:           { type: Number, required: false },
   $edge: {
     from:       'kgEntity',
@@ -54,7 +58,7 @@ const employers = await alice.works_at;
 console.log(employers.map(e => e.name));   // ['Acme']
 ```
 
----
+> **Literals:** use `'ref|string'` on `object_id_or_literal` whenever an edge endpoint may store a literal string instead of another entity `$ID`; otherwise pure `'ref'` is fine.
 
 ## The `$edge` schema block
 

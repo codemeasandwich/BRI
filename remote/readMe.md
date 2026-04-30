@@ -5,9 +5,9 @@ Exposes BRI's database operations via api-ape's WebSocket transport. Provides th
 ## Usage
 
 ```javascript
-import { apiDB } from 'bri/remote';
+import bri from 'bri-db';
 
-const db = await apiDB('ws://localhost:3000');
+const db = bri.connect({ url: 'ws://localhost:3000' });
 
 // Same API as local BRI!
 const user = await db.add.user({ name: 'Alice', age: 28 });
@@ -15,6 +15,8 @@ const post = await db.get.post(postId).and.author;
 user.name = 'Bob';
 await user.save();
 ```
+
+Equivalent `db` façade as local BRI; WebSocket CONNECT is asynchronous — **`bri.connect`** queues pre-READY work. For READY-before-use (tests, sync throws), **`await createRemoteDatabasePromise`** from **`bri-db/remote`** matches the same backend.
 
 ## API Reference
 
@@ -111,7 +113,7 @@ user.$ID          // Entity identifier
 +---------------------------------------------+
 |           Client (Browser/Node)              |
 |  +---------------------------------------+  |
-|  | apiDB(url) -> db                       |  |
+|  | bri.connect({ url }) -> db                    |  |
 |  |   db.add.user(data) -> RPC             |  |
 |  |   db.get.user(id)   -> RPC             |  |
 |  |   entity.save()     -> RPC             |  |
@@ -129,7 +131,7 @@ user.$ID          // Entity identifier
 
 ## Files
 
-- `index.js` - Entry point, exports `apiDB` and `createRemoteDB`
+- `index.js` - Entry point, exports `createRemoteDatabasePromise` (applications use `import bri from 'bri-db'` and `bri.connect({ url })` for the façade)
 - `connection.js` - WebSocket wrapper with promise-based RPC
 - `proxy.js` - CRUD operation proxy factory
 - `entity.js` - Entity wrapper with change tracking
