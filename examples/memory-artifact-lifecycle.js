@@ -17,7 +17,7 @@
  * behind. Output is plain text suitable for piping into a doc renderer.
  */
 
-import { openLocalDatabase } from '../client/ready-connection.js';
+import { openLocalDatabase } from '../src/client/ready-connection.js';
 import { applyFixtureSchemas } from '../tests/fixtures/schemas.js';
 import { makeEmbedding, nearVectorOf } from '../tests/fixtures/embeddings.js';
 import fs from 'fs/promises';

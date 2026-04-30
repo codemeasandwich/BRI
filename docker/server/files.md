@@ -2,6 +2,7 @@
 
 ```
 server/
+├── README.md
 ├── crud.js
 ├── handlers.js
 ├── utils.js
@@ -10,6 +11,10 @@ server/
 ```
 
 ## Files
+
+### `README.md`
+
+Operational guide: **Bun** entry command (`bun docker/server/index.js`), environment variables (**`PORT`**, **`DATA_DIR`**, **`MAX_MEMORY_MB`**, **`ENCRYPTION_KEY`**, **`AUTH_REQUIRED`**), high-level RPC architecture, and pointers to **[`docker/README.md`](../README.md)** for Compose and client usage.
 
 ### `crud.js`
 
@@ -62,6 +67,8 @@ Main server entry point with WebSocket setup.
 - `MAX_MEMORY_MB` - Memory limit (default: 256)
 - `ENCRYPTION_KEY` - Optional encryption key
 - `AUTH_REQUIRED` - Enable authentication (default: false)
+
+See **`README.md`** for fuller operating notes.
 
 ### `package.json`
 

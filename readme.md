@@ -592,25 +592,25 @@ BRI_ENCRYPTION_KEY=$(openssl rand -hex 32) node app.js
 
 ## Architecture
 
-BRI is organized into four main modules:
+BRI is organized into four main modules under **`src/`**:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         /client                                  │
+│                        /src/client                               │
 │         Public interface: .get.userS, user.and.friends          │
 │              Query syntax, proxy handlers, bri.connect               │
 └───────────────────────────┬─────────────────────────────────────┘
                             │
                             ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                         /engine                                  │
+│                        /src/engine                               │
 │            In-memory data handling & query fulfillment           │
 │     ID generation, CRUD operations, reactive change tracking     │
 └───────────────────────────┬─────────────────────────────────────┘
                             │
                             ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                        /storage                                  │
+│                       /src/storage                               │
 │              File persistence & storage adapters                 │
 │                                                                  │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐  │
@@ -623,7 +623,7 @@ BRI is organized into four main modules:
 └─────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────┐
-│                         /utils                                   │
+│                         /src/utils                               │
 │              diff (change tracking) & jss (serialization)        │
 └─────────────────────────────────────────────────────────────────┘
 ```

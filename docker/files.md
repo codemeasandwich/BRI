@@ -8,6 +8,7 @@ docker/
 ├── TODO.md
 ├── docker-compose.yml
 ├── examples/
+│   ├── README.md
 │   ├── helpers.js
 │   ├── 01-crud.js
 │   ├── 02-arrays-update.js
@@ -17,6 +18,7 @@ docker/
 │   ├── 06-advanced.js
 │   └── index.js
 ├── remote/
+│   ├── README.md
 │   ├── helpers.js
 │   ├── 01-crud.js
 │   ├── 02-arrays-update.js
@@ -26,6 +28,8 @@ docker/
 │   ├── 06-advanced.js
 │   └── index.js
 └── server/
+    ├── README.md
+    ├── crud.js
     ├── handlers.js
     ├── utils.js
     ├── index.js
@@ -56,12 +60,12 @@ Docker Compose service configuration for BRI server.
 
 ### `examples/`
 
-Local BRI usage examples using `openLocalDatabase` from `client/ready-connection.js` (or **`bri.connect`**). Demonstrates all BRI API features.
+Local BRI kitchen-sink examples using **`openLocalDatabase`** (**[`src/client/ready-connection.js`](../src/client/ready-connection.js)**). Detailed orientation: **`examples/README.md`**. Companion index: **`examples/files.md`**.
 
 ### `remote/`
 
-Remote client examples using WebSocket (`bri.connect({ url })` or `openRemoteDatabase`). Functionally parallels `docker/examples/` (same numbered modules over the network).
+Remote client examples via WebSocket (**`openRemoteDatabase`**). Mirrors **`examples/`** over the wire; see **`remote/README.md`**. Companion index: **`remote/files.md`**.
 
 ### `server/`
 
-WebSocket RPC server for remote BRI access.
+WebSocket RPC server for remote Bri access. Operational guide **`server/README.md`**; companion index **`server/files.md`**.

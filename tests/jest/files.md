@@ -2,11 +2,16 @@
 
 ```
 tests/jest/
+├── README.md
 ├── files.md
 └── global-teardown.js
 ```
 
 ## Files
+
+### `README.md`
+
+Why **`global-teardown.js`** exists and how it ties to **`jest.config.js`**.
 
 ### `global-teardown.js`
 

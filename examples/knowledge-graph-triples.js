@@ -16,7 +16,7 @@
  * Runs against a temporary data dir; cleans up on exit.
  */
 
-import { openLocalDatabase } from '../client/ready-connection.js';
+import { openLocalDatabase } from '../src/client/ready-connection.js';
 import { applyFixtureSchemas } from '../tests/fixtures/schemas.js';
 import { loadKGFixture } from '../tests/fixtures/triples.js';
 import fs from 'fs/promises';

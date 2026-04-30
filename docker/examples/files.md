@@ -2,6 +2,7 @@
 
 ```
 examples/
+├── README.md
 ├── helpers.js
 ├── 01-crud.js
 ├── 02-arrays-update.js
@@ -13,6 +14,10 @@ examples/
 ```
 
 ## Files
+
+### `README.md`
+
+Orientation for running the **local** kitchen-sink demos: prerequisites (**Bun**), command line from repo root (`bun docker/examples/index.js`), data directory layout (`./data/kitchen-sink`), mapping of numbered modules, and troubleshooting (paths, READY, writable `dataDir`).
 
 ### `helpers.js`
 
@@ -75,3 +80,5 @@ Main entry point that runs all examples in sequence.
 ```bash
 bun docker/examples/index.js
 ```
+
+See **`README.md`** for prerequisites, data directory notes, and troubleshooting.

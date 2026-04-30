@@ -2,6 +2,7 @@
 
 ```
 remote/
+├── README.md
 ├── helpers.js
 ├── 01-crud.js
 ├── 02-arrays-update.js
@@ -13,6 +14,10 @@ remote/
 ```
 
 ## Files
+
+### `README.md`
+
+How **remote kitchen-sink** examples relate to [`docker/examples/`](../examples/) (parallel modules), prerequisites (**Bun**, server running on **`ws://localhost:3000`**), debugging (`ECONNREFUSED`, READY), and pointers to **`docker/server/`**.
 
 ### `helpers.js`
 
@@ -79,3 +84,5 @@ bun docker/server/index.js
 # Then run the remote client
 bun docker/remote/index.js
 ```
+
+See **`README.md`** for server startup order and troubleshooting.

@@ -2,6 +2,7 @@
 
 ```
 tests/helpers/
+├── README.md
 ├── files.md
 ├── mock-bri-ws-rpc-server.js
 └── open-database.js
@@ -9,10 +10,14 @@ tests/helpers/
 
 ## Files
 
+### `README.md`
+
+High-level map of READY re-exports and the mock Bri WebSocket harness; pointers to **`files.md`**.
+
 ### `open-database.js`
 
 Re-exports **`normalizedWsUrl`**, **`openLocalDatabase`**, and **`openRemoteDatabase`** from
-`client/ready-connection.js` so every E2E suite shares the same READY-first entry that Docker
+**`../../src/client/ready-connection.js`** so every E2E suite shares the same READY-first entry that Docker
 servers use.
 
 ### `mock-bri-ws-rpc-server.js`
