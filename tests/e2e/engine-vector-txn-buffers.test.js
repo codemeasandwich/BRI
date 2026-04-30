@@ -16,7 +16,7 @@ import {
   VectorIndex,
   VECTOR_QUERY_DIMS_MISMATCH,
   BriQueryError
-} from '../../engine/index.js';
+} from '../../src/engine/index.js';
 
 const DIM = 8;
 

@@ -4,10 +4,10 @@
  */
 
 import { openLocalDatabase } from '../helpers/open-database.js';
-import { SnapshotManager } from '../../storage/snapshot/manager.js';
-import { WALReader } from '../../storage/wal/reader.js';
-import { WALWriter } from '../../storage/wal/writer.js';
-import { createSetEntry, createRenameEntry, createSAddEntry, createSRemEntry, serializeEntry, deserializeEntry, hashPointer, WALOp } from '../../storage/wal/entry.js';
+import { SnapshotManager } from '../../src/storage/snapshot/manager.js';
+import { WALReader } from '../../src/storage/wal/reader.js';
+import { WALWriter } from '../../src/storage/wal/writer.js';
+import { createSetEntry, createRenameEntry, createSAddEntry, createSRemEntry, serializeEntry, deserializeEntry, hashPointer, WALOp } from '../../src/storage/wal/entry.js';
 import fs from 'fs/promises';
 import path from 'path';
 
@@ -995,7 +995,7 @@ describe('WAL Entry Functions', () => {
 
   describe('createDeleteEntry()', () => {
     test('creates DELETE entry', async () => {
-      const { createDeleteEntry } = await import('../../storage/wal/entry.js');
+      const { createDeleteEntry } = await import('../../src/storage/wal/entry.js');
       const entry = createDeleteEntry('TEST_key');
       expect(entry.action).toBe('DELETE');
       expect(entry.target).toBe('TEST_key');

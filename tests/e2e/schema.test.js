@@ -13,8 +13,8 @@
  * success, presence of a typed throw is failure.
  */
 
-import validate, { checkType } from '../../utils/schema/index.js';
-import { BriValidationError } from '../../engine/errors.js';
+import validate, { checkType } from '../../src/utils/schema/index.js';
+import { BriValidationError } from '../../src/engine/errors.js';
 
 function expectValid(schema, obj) {
   expect(() => validate(schema, obj)).not.toThrow();

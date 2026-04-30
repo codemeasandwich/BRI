@@ -116,6 +116,6 @@ Operator-clause fields (`{$gte: 5}`) currently fall back to the residual-filter 
 
 ## See also
 
-- [`engine/filter-compiler.js`](../engine/filter-compiler.js) — shared `compileFilter` with operator support
-- [`client/query-builder.js`](../client/query-builder.js) — `QueryBuilder.count/distinct/groupBy` and `GroupedQueryBuilder`
+- [`engine/filter-compiler.js`](../src/engine/filter-compiler.js) — shared `compileFilter` with operator support
+- [`client/query-builder.js`](../src/client/query-builder.js) — `QueryBuilder.count/distinct/groupBy` and `GroupedQueryBuilder`
 - [`tests/e2e/aggregation.test.js`](../tests/e2e/aggregation.test.js) — UC-X3 acceptance suite

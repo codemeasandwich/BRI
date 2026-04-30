@@ -12,9 +12,9 @@ import {
   describe, test, expect
 } from '@jest/globals';
 import { openLocalDatabase } from '../helpers/open-database.js';
-import { createStore } from '../../storage/index.js';
-import { isPartialMatch } from '../../utils/diff/index.js';
-import JSS from '../../utils/jss/index.js';
+import { createStore } from '../../src/storage/index.js';
+import { isPartialMatch } from '../../src/utils/diff/index.js';
+import JSS from '../../src/utils/jss/index.js';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';

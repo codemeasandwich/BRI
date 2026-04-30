@@ -19,7 +19,7 @@ BRI: Connected to storage
 
 Nothing is logged per-write or per-search by default. To inspect query
 behaviour, register the built-in `loggingMiddleware` exported from **`bri-db/engine`**
-(subpath [`bri-db/engine/middleware.js`](../engine/middleware.js) also resolves via `package.json` exports):
+(subpath [`bri-db/engine/middleware.js`](../src/engine/middleware.js) also resolves via `package.json` exports):
 
 ```js
 import { loggingMiddleware } from 'bri-db/engine';
@@ -44,7 +44,7 @@ external APM.
 
 ## WAL inspection
 
-Physical line shape (see [`serializeEntry()`](../storage/wal/entry.js)):
+Physical line shape (see [`serializeEntry()`](../src/storage/wal/entry.js)):
 
 ```
 {timestamp}|{pointer}|{entryJSON}

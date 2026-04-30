@@ -23,12 +23,12 @@ import { jest } from '@jest/globals';
 import fs from 'fs/promises';
 import path from 'path';
 import { openLocalDatabase } from '../helpers/open-database.js';
-import { VectorIndex } from '../../engine/vector-index.js';
+import { VectorIndex } from '../../src/engine/vector-index.js';
 import {
   cosine, packIndex, unpackIndex,
   SERIALIZATION_FORMAT_VERSION, SERIALIZATION_FORMAT_VERSION_V1
-} from '../../engine/vector-index-codec.js';
-import JSS from '../../utils/jss/index.js';
+} from '../../src/engine/vector-index-codec.js';
+import JSS from '../../src/utils/jss/index.js';
 
 const DIMS = 8;
 

@@ -18,12 +18,12 @@
  * @implements spec §3.2 (Worker Thread offload)
  */
 import { jest } from '@jest/globals';
-import { VectorIndex } from '../../engine/vector-index.js';
+import { VectorIndex } from '../../src/engine/vector-index.js';
 import {
   createWorkerVectorIndex,
   workerDiagnostics,
   disposeWorker
-} from '../../workers/index-worker-host.js';
+} from '../../src/workers/index-worker-host.js';
 
 const DIMS = 8;
 

@@ -10,8 +10,8 @@
 import { jest } from '@jest/globals';
 import fs from 'fs/promises';
 import path from 'path';
-import { serializeEntry } from '../../storage/wal/entry.js';
-import { WALReader } from '../../storage/wal/reader.js';
+import { serializeEntry } from '../../src/storage/wal/entry.js';
+import { WALReader } from '../../src/storage/wal/reader.js';
 import {
   isDocumentRecord,
   isVectorRecord,
@@ -21,7 +21,7 @@ import {
   INDEX_UPDATE,
   VECTOR_ADD,
   VECTOR_COMMIT_TXN
-} from '../../storage/wal/record-types.js';
+} from '../../src/storage/wal/record-types.js';
 
 const baseDir = './test-data-wal-record-types';
 

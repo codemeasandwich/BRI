@@ -14,7 +14,7 @@ import {
   isPlainObject,
   isPartialMatch,
   isDeepEqual
-} from '../../utils/diff/index.js';
+} from '../../src/utils/diff/index.js';
 
 describe('Diff Utilities', () => {
   describe('UNDECLARED symbol', () => {

@@ -6,6 +6,8 @@ This page is the migration path for projects already using Bri without
 schema declarations. Existing collections continue to work unchanged
 with the existing API. Vector + graph features simply require schema.
 
+Narrative **illustration only** for two §F-style flows lives in **`[illustrative-scenarios.md](illustrative-scenarios.md)`** — not executable; **`tests/e2e/`** remain the behavioural source of truth.
+
 ## What still works exactly as before
 
 - `db.add.foo(...)` / `db.get.foo(...)` / `db.set.foo(...)` /
@@ -151,16 +153,16 @@ in v1. External call sites (custom validators) need the catch.
 
 ## Worker thread (`BRI_VECTOR_WORKER`)
 
-Spec §3.2 introduces an optional Worker Thread for CPU-heavy vector benchmarking. **Local vector queries (`bri.connect` / `openLocalDatabase`) always stay on the main-thread [`VectorIndex`](../engine/vector-index.js)** because `.where` / `.near` plumbing passes arbitrary JavaScript predicates (`filter-compiler`) that cannot be serialized across `worker_threads` IPC — automatic substitution with [`WorkerVectorIndex`](../workers/index-worker-host.js) would diverge behaviour.
+Spec §3.2 introduces an optional Worker Thread for CPU-heavy vector benchmarking. **Local vector queries (`bri.connect` / `openLocalDatabase`) always stay on the main-thread [`VectorIndex`](../src/engine/vector-index.js)** because `.where` / `.near` plumbing passes arbitrary JavaScript predicates (`filter-compiler`) that cannot be serialized across `worker_threads` IPC — automatic substitution with [`WorkerVectorIndex`](../src/workers/index-worker-host.js) would diverge behaviour.
 
-Runtime contract (see [`workers/vector-worker-env.js`](../workers/vector-worker-env.js) for authoritative token list):
+Runtime contract (see [`workers/vector-worker-env.js`](../src/workers/vector-worker-env.js) for authoritative token list):
 
 | Decision | Meaning |
 |---|---|
-| **`BRI_VECTOR_WORKER` enable tokens** | `true` / `1` / `yes` / `on` (trimmed, case-insensitive) — [`warmVectorWorkerFromEnv()`](../workers/index-worker-host.js) runs after **`bri-db` boots local storage** (dynamic import guarded so missing worker files never abort DB bootstrap). |
+| **`BRI_VECTOR_WORKER` enable tokens** | `true` / `1` / `yes` / `on` (trimmed, case-insensitive) — [`warmVectorWorkerFromEnv()`](../src/workers/index-worker-host.js) runs after **`bri-db` boots local storage** (dynamic import guarded so missing worker files never abort DB bootstrap). |
 | **Disable tokens** | `0` / `false` / `no` / `off` — rejects warm even if a parent shell left a truthy-looking value. |
 | **unset** | Worker boots lazily on first `createWorkerVectorIndex` / diagnostics call. |
-| **Automatic main-thread vectors** | Stay on the main-thread [`VectorIndex`](../engine/vector-index.js) because query predicates are arbitrary JS functions. |
+| **Automatic main-thread vectors** | Stay on the main-thread [`VectorIndex`](../src/engine/vector-index.js) because query predicates are arbitrary JS functions. |
 
 Manual opt-in (same module the tests use):
 

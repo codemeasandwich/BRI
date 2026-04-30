@@ -4,8 +4,8 @@
  */
 
 import { openLocalDatabase } from '../helpers/open-database.js';
-import { ColdTierFiles } from '../../storage/cold-tier/files.js';
-import { HotTierCache } from '../../storage/hot-tier/cache.js';
+import { ColdTierFiles } from '../../src/storage/cold-tier/files.js';
+import { HotTierCache } from '../../src/storage/hot-tier/cache.js';
 import fs from 'fs/promises';
 import path from 'path';
 

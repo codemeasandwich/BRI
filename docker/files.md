@@ -60,7 +60,7 @@ Local BRI usage examples using `openLocalDatabase` from `client/ready-connection
 
 ### `remote/`
 
-Remote client examples using WebSocket (`bri.connect({ url })` or `openRemoteDatabase`). Same examples as `examples/` but over network.
+Remote client examples using WebSocket (`bri.connect({ url })` or `openRemoteDatabase`). Functionally parallels `docker/examples/` (same numbered modules over the network).
 
 ### `server/`
 

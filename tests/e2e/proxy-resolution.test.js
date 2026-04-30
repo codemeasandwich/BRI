@@ -21,7 +21,7 @@ import { openLocalDatabase } from '../helpers/open-database.js';
 import {
   BriSchemaError, BriProxyError,
   RESERVED_NAME_COLLISION, PREDICATE_NOT_REGISTERED
-} from '../../engine/errors.js';
+} from '../../src/engine/errors.js';
 import fs from 'fs/promises';
 
 const DIR = './test-data-proxy-res';

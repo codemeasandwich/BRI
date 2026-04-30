@@ -8,18 +8,18 @@
 
 import fs from 'fs/promises';
 import path from 'path';
-import { createDeleteEntry, createSetEntry } from '../../storage/wal/entry.js';
-import { WALWriter } from '../../storage/wal/writer.js';
+import { createDeleteEntry, createSetEntry } from '../../src/storage/wal/entry.js';
+import { WALWriter } from '../../src/storage/wal/writer.js';
 import { openLocalDatabase } from '../helpers/open-database.js';
-import { createSchemaRegistry } from '../../engine/schema-registry.js';
+import { createSchemaRegistry } from '../../src/engine/schema-registry.js';
 import {
   buildOverlayObject,
   findMatchingItem,
   mapObjectOrArray
-} from '../../engine/helpers.js';
-import { undeclared } from '../../engine/constants.js';
-import JSS from '../../utils/jss/index.js';
-import { VectorIndex } from '../../engine/index.js';
+} from '../../src/engine/helpers.js';
+import { undeclared } from '../../src/engine/constants.js';
+import JSS from '../../src/utils/jss/index.js';
+import { VectorIndex } from '../../src/engine/index.js';
 const BASE = './test-data-branch-cover';
 
 async function rmDir(d) {

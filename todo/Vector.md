@@ -930,7 +930,7 @@ The implementation is complete when ALL of the following hold:
 4. `scripts/jsdoc-check.js` reports zero undocumented public exports.
 5. All markdown files in §3.4 exist, are reviewed for accuracy, and have working examples (each example block is exercised by a test).
 6. `index.d.ts` covers the entire public surface of §2; `tsc --noEmit` against the type definitions and the test suite passes.
-7. The two end-to-end scenarios from requirements §F are demonstrated end-to-end (test + a runnable example under `examples/`).
+7. The two end-to-end scenarios from requirements §F are demonstrated end-to-end (E2E + illustrative snippets in `docs/illustrative-scenarios.md`; not a runnable `examples/` harness).
 8. The recovery test (`recovery.test.js`) passes a `kill -9` mid-transaction simulated crash and restart, verifying index state is pre-transaction-clean.
 9. `BRI_ENCRYPTION_KEY=... npm test` passes — encryption parity verified.
 10. Cancellation invariant verified: `cascade.session(X)` followed by a full collection scan produces zero documents with `source_session_id === X` across all cascade-eligible collections.

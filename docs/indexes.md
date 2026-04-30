@@ -2,7 +2,7 @@
 
 Bri supports schema-declared compound indexes that bound `.where` lookups before they hit document bodies. When a query's filter matches a declared index (or any prefix of one), the engine narrows the candidate set via the index and hydrates only the candidates — not the whole collection.
 
-> **Status:** v1 — planner optimizes equality-shaped filters into secondary indexes persisted on snapshot. Operators such as **`$gte` / `$lte` / `$in` / `$exists`** execute through the [`filter-compiler`](../engine/filter-compiler.js) as residual predicates whenever the secondary index stops matching (operator clauses intentionally skip compound-index acceleration today). Deferred work: richer index intersection + operator-aware index merges.
+> **Status:** v1 — planner optimizes equality-shaped filters into secondary indexes persisted on snapshot. Operators such as **`$gte` / `$lte` / `$in` / `$exists`** execute through the [`filter-compiler`](../src/engine/filter-compiler.js) as residual predicates whenever the secondary index stops matching (operator clauses intentionally skip compound-index acceleration today). Deferred work: richer index intersection + operator-aware index merges.
 
 ---
 
@@ -111,8 +111,8 @@ There is no drift detection on `$indexes` today: re-declaring with a different s
 
 ## See also
 
-- [`engine/secondary-index.js`](../engine/secondary-index.js) — `SortedIndex` and `SecondaryIndexManager`
-- [`engine/query-planner.js`](../engine/query-planner.js) — `QueryPlanner.planWhere`
-- [`engine/vector-middleware.js`](../engine/vector-middleware.js) — write-time index sync
+- [`engine/secondary-index.js`](../src/engine/secondary-index.js) — `SortedIndex` and `SecondaryIndexManager`
+- [`engine/query-planner.js`](../src/engine/query-planner.js) — `QueryPlanner.planWhere`
+- [`engine/vector-middleware.js`](../src/engine/vector-middleware.js) — write-time index sync
 - [`tests/e2e/secondary-index.test.js`](../tests/e2e/secondary-index.test.js) — declaration, persistence, bounded hydration
 - [`docs/vector.md`](vector.md) — vector capability that benefits from `$indexes`

@@ -25,7 +25,7 @@
 import { jest } from '@jest/globals';
 import {
   createWorkerVectorIndex, disposeWorker
-} from '../../workers/index-worker-host.js';
+} from '../../src/workers/index-worker-host.js';
 import { makeEmbedding } from '../fixtures/embeddings.js';
 
 const DIMS = 8;

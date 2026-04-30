@@ -20,8 +20,8 @@
  * @implements UC-V1 §D, UC-V2 §D, UC-V3 §D, UC-V5 §D
  */
 import { jest } from '@jest/globals';
-import { VectorIndex } from '../../engine/vector-index.js';
-import { cosine } from '../../engine/vector-index-codec.js';
+import { VectorIndex } from '../../src/engine/vector-index.js';
+import { cosine } from '../../src/engine/vector-index-codec.js';
 
 // Determinism: pin the level RNG so a single CI run can be diagnosed
 // off a fixed topology. Production callers don't pass a seed.

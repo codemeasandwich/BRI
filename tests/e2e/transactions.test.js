@@ -4,7 +4,7 @@
  */
 
 import { openLocalDatabase } from '../helpers/open-database.js';
-import { TransactionManager } from '../../storage/transaction/manager.js';
+import { TransactionManager } from '../../src/storage/transaction/manager.js';
 import fs from 'fs/promises';
 import path from 'path';
 

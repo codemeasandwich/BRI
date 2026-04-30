@@ -4,22 +4,22 @@
  */
 
 import { openLocalDatabase } from '../helpers/open-database.js';
-import { encrypt, decrypt, KEY_SIZE, IV_SIZE, TAG_SIZE } from '../../crypto/aes-gcm.js';
-import { KeyManager } from '../../crypto/key-manager.js';
-import { EnvKeyProvider } from '../../crypto/providers/env.js';
-import { FileKeyProvider } from '../../crypto/providers/file.js';
-import { RemoteKeyProvider } from '../../crypto/providers/remote.js';
+import { encrypt, decrypt, KEY_SIZE, IV_SIZE, TAG_SIZE } from '../../src/crypto/aes-gcm.js';
+import { KeyManager } from '../../src/crypto/key-manager.js';
+import { EnvKeyProvider } from '../../src/crypto/providers/env.js';
+import { FileKeyProvider } from '../../src/crypto/providers/file.js';
+import { RemoteKeyProvider } from '../../src/crypto/providers/remote.js';
 import {
   EncryptionError,
   KeyUnavailableError,
   InvalidKeyError,
   AuthenticationError,
   InsecureKeyFileError
-} from '../../crypto/errors.js';
-import { WALWriter } from '../../storage/wal/writer.js';
-import { WALReader } from '../../storage/wal/reader.js';
-import { createSetEntry, deserializeEntry, serializeEntryEncrypted } from '../../storage/wal/entry.js';
-import { SnapshotManager } from '../../storage/snapshot/manager.js';
+} from '../../src/crypto/errors.js';
+import { WALWriter } from '../../src/storage/wal/writer.js';
+import { WALReader } from '../../src/storage/wal/reader.js';
+import { createSetEntry, deserializeEntry, serializeEntryEncrypted } from '../../src/storage/wal/entry.js';
+import { SnapshotManager } from '../../src/storage/snapshot/manager.js';
 import crypto from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';

@@ -6,12 +6,12 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { openLocalDatabase } from '../helpers/open-database.js';
-import { createStore } from '../../storage/index.js';
-import { createSetEntry, serializeEntryEncrypted } from '../../storage/wal/entry.js';
-import { WALReader } from '../../storage/wal/reader.js';
-import { ensureTopology, dropNode } from '../../engine/vector-index-hnsw-state.js';
-import { type2Short } from '../../engine/types.js';
-import { vectorIndexMiddleware } from '../../engine/vector-middleware.js';
+import { createStore } from '../../src/storage/index.js';
+import { createSetEntry, serializeEntryEncrypted } from '../../src/storage/wal/entry.js';
+import { WALReader } from '../../src/storage/wal/reader.js';
+import { ensureTopology, dropNode } from '../../src/engine/vector-index-hnsw-state.js';
+import { type2Short } from '../../src/engine/types.js';
+import { vectorIndexMiddleware } from '../../src/engine/vector-middleware.js';
 
 const BASE = './test-data-branches-100';
 

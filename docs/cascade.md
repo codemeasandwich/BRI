@@ -122,7 +122,7 @@ Re-running cascade on the same scope id is a no-op — the second call finds no 
 
 ## See also
 
-- [`engine/cascade.js`](../engine/cascade.js) — `createCascade` / `cascadeScope` / `cascadeByField`
-- [`engine/schema-registry.js`](../engine/schema-registry.js) — `cascadeEntriesFor(scope)`
+- [`engine/cascade.js`](../src/engine/cascade.js) — `createCascade` / `cascadeScope` / `cascadeByField`
+- [`engine/schema-registry.js`](../src/engine/schema-registry.js) — `cascadeEntriesFor(scope)`
 - [`tests/e2e/cascade.test.js`](../tests/e2e/cascade.test.js) — UC-X2 acceptance suite
 - [`docs/vector.md`](vector.md) — V4 transaction lifecycle that composes with cascade

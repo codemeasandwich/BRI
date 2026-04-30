@@ -142,8 +142,8 @@ The candidate set is the same in all three branches — `.where` defines it, the
 
 ## See also
 
-- [`client/match-engine.js`](../client/match-engine.js) — execution helpers (`executeMatch` / `executeCombined`)
-- [`client/query-builder.js`](../client/query-builder.js) — chain method declarations and dispatch
+- [`client/match-engine.js`](../src/client/match-engine.js) — execution helpers (`executeMatch` / `executeCombined`)
+- [`client/query-builder.js`](../src/client/query-builder.js) — chain method declarations and dispatch
 - [`tests/e2e/match.test.js`](../tests/e2e/match.test.js) — UC-X4 + UC-V3 acceptance suite
 - [`docs/aggregation.md`](aggregation.md) — `.where` operator vocabulary that prefilters `.match`
 - [`docs/vector.md`](vector.md) — `.near` vector search that `.combine` blends with

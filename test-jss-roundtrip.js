@@ -1,4 +1,9 @@
-import JSS from './diff/jss/index.js';
+/**
+ * @file Manual JSS stringify + parse smoke script verifying reference reunion (repo root).
+ * Prints before/after reference equality assertions; authoritative coverage lives in **`tests/e2e/jss.test.js`**.
+ */
+
+import JSS from './src/utils/jss/index.js';
 
 const alice = { $ID: 'USER_alice', name: 'Alice' };
 const bob = { $ID: 'USER_bob', name: 'Bob' };

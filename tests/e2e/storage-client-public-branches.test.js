@@ -21,7 +21,7 @@ const root = path.join(os.tmpdir(), `bri-pub-branch-${Math.random().toString(36)
 
 describe('storage/index.js createStore (./storage export)', () => {
   test('bundled defaults apply when called with {} (config falsy)', async () => {
-    const { createStore } = await import('../../storage/index.js');
+    const { createStore } = await import('../../src/storage/index.js');
     const store = await createStore({});
     expect(store.config.dataDir || store.config.data_dir).toBeTruthy();
     expect(store.config.maxMemoryMB).toBeGreaterThan(0);
@@ -29,14 +29,14 @@ describe('storage/index.js createStore (./storage export)', () => {
   });
 
   test('bundled defaults apply when called with zero arguments', async () => {
-    const { createStore } = await import('../../storage/index.js');
+    const { createStore } = await import('../../src/storage/index.js');
     const store = await createStore();
     expect(store.config.maxMemoryMB).toBeGreaterThan(0);
     await store.disconnect();
   });
 
   test('explicit options.config sets data dir and budget', async () => {
-    const { createStore } = await import('../../storage/index.js');
+    const { createStore } = await import('../../src/storage/index.js');
     const dir = path.join(root, 'explicit-store');
     await fs.mkdir(dir, { recursive: true });
     const store = await createStore({
@@ -48,7 +48,7 @@ describe('storage/index.js createStore (./storage export)', () => {
   });
 
   test('config key explicitly null restores bundled defaults path', async () => {
-    const { createStore } = await import('../../storage/index.js');
+    const { createStore } = await import('../../src/storage/index.js');
     const store = await createStore({
       config: null
     });
@@ -60,7 +60,7 @@ describe('storage/index.js createStore (./storage export)', () => {
 
 describe('storage/interface.js via validateConfig (exported from ./storage)', () => {
   test('enforce maxMemoryMB rules', async () => {
-    const { validateConfig } = await import('../../storage/index.js');
+    const { validateConfig } = await import('../../src/storage/index.js');
 
     expect(() => validateConfig({ dataDir: '/' })).toThrow(/maxMemoryMB is required/i);
     expect(() => validateConfig({ dataDir: '/', maxMemoryMB: '12' }))
@@ -127,7 +127,7 @@ describe('storage/interface.js via validateConfig (exported from ./storage)', ()
 
 describe('Env + storeConfig resolution (openLocalDatabase)', () => {
   let snapshot;
-  /** @type {import('../../client/index.js')|null} */
+  /** @type {import('../../src/client/index.js')|null} */
   let db;
 
   beforeEach(() => {

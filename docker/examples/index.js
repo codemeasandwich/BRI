@@ -7,7 +7,7 @@
  * Run with: bun docker/examples/index.js
  */
 
-import { openLocalDatabase } from '../../client/ready-connection.js';
+import { openLocalDatabase } from '../../src/client/ready-connection.js';
 import { printBanner, printComplete, printCleanup } from './helpers.js';
 import { runCrudExamples } from './01-crud.js';
 import { runArrayUpdateExamples } from './02-arrays-update.js';

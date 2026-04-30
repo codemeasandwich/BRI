@@ -4,7 +4,7 @@
  * route doc SETs through applyVectorWrite and WAL DELETE lines through
  * applyVectorDelete (hardDelete emits DELETE; soft db.del uses rename only).
  */
-import { openLocalDatabase } from '../../client/ready-connection.js';
+import { openLocalDatabase } from '../../src/client/ready-connection.js';
 
 const dataDir = process.argv[2];
 if (!dataDir) {

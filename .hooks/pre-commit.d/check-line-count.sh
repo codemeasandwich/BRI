@@ -21,7 +21,7 @@ while IFS= read -r file; do
     if [[ "$file" =~ node_modules/ ]] || \
        [[ "$file" =~ ^coverage/ ]] || \
        [[ "$file" =~ \.next/ ]] || \
-       [[ "$file" =~ ^example/ ]] || \
+       [[ "$file" =~ ^quickstart-bun/ ]] || \
        [[ "$file" =~ \.test\.js$ ]]; then
         continue
     fi

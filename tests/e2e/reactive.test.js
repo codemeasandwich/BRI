@@ -4,7 +4,7 @@
  */
 
 import { openLocalDatabase } from '../helpers/open-database.js';
-import { MAKE_COPY } from '../../engine/constants.js';
+import { MAKE_COPY } from '../../src/engine/constants.js';
 import fs from 'fs/promises';
 
 const TEST_DATA_DIR = './test-data-reactive';

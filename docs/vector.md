@@ -280,8 +280,8 @@ See [docs/indexes.md](indexes.md) for the full secondary-index surface.
 
 ## See also
 
-- [`engine/vector-index.js`](../engine/vector-index.js) — index implementation
-- [`engine/schema-registry.js`](../engine/schema-registry.js) — schema → index wiring
-- [`client/query-builder.js`](../client/query-builder.js) — chainable read API
+- [`engine/vector-index.js`](../src/engine/vector-index.js) — index implementation
+- [`engine/schema-registry.js`](../src/engine/schema-registry.js) — schema → index wiring
+- [`client/query-builder.js`](../src/client/query-builder.js) — chainable read API
 - [`tests/e2e/vector.test.js`](../tests/e2e/vector.test.js) — UC-V1 acceptance suite
 - [`docs/indexes.md`](indexes.md) — secondary indexes for bounded `.where`

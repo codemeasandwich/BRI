@@ -6,7 +6,7 @@
  * Primitives should be wrapped in objects for serialization.
  */
 
-import JSS from '../../utils/jss/index.js';
+import JSS from '../../src/utils/jss/index.js';
 
 describe('JSS Serialization', () => {
   describe('encode/decode primitives in objects', () => {

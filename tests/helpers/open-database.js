@@ -9,4 +9,4 @@ export {
   normalizedWsUrl,
   openLocalDatabase,
   openRemoteDatabase
-} from '../../client/ready-connection.js';
+} from '../../src/client/ready-connection.js';

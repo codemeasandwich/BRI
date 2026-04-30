@@ -5,9 +5,9 @@
  */
 
 import { openLocalDatabase } from '../helpers/open-database.js';
-import { createEngine } from '../../engine/index.js';
-import { createStore } from '../../storage/index.js';
-import { InHouseAdapter } from '../../storage/adapters/inhouse.js';
+import { createEngine } from '../../src/engine/index.js';
+import { createStore } from '../../src/storage/index.js';
+import { InHouseAdapter } from '../../src/storage/adapters/inhouse.js';
 import fs from 'fs/promises';
 import path from 'path';
 

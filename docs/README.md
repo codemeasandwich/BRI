@@ -18,4 +18,5 @@ Capability-area documentation for Bri features. Implementation reference lives n
 | [fts.md](fts.md) | Substring FTS — `.match(stringFilter, k?)` and `.combine({alias, vector})` for blended alias + vector retrieval (UC-X4 + UC-V3) |
 | [proxy-conventions.md](proxy-conventions.md) | Entity property-access lookup algorithm (§3.5), reserved-name list, debugging "why did `entity.foo` throw?" |
 | [migration.md](migration.md) | Adopting vector + graph in an existing Bri project — what still works, the four-step path, typed-error contract change |
+| [illustrative-scenarios.md](illustrative-scenarios.md) | §F-style memory + kg walkthroughs as **non-executable** illustrative snippets only (tests are authoritative) |
 | [observability.md](observability.md) | What gets logged, diagnostic accessors, WAL inspection, worker-thread `opCount` |

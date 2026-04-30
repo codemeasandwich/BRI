@@ -16,7 +16,7 @@
  *     code/comment state machine — good enough for a tree of clean
  *     source files; not a full parser
  *
- * Roots scanned: client/, engine/, storage/, utils/, workers/.
+ * Roots scanned: src/client/, src/crypto/, src/engine/, src/storage/, src/utils/, src/workers/.
  *
  * Exit codes:
  *   0  every export has a docblock
@@ -36,7 +36,14 @@ import { fileURLToPath } from 'url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
 
-const DEFAULT_ROOTS = ['client', 'engine', 'storage', 'utils', 'workers'];
+const DEFAULT_ROOTS = [
+  'src/client',
+  'src/crypto',
+  'src/engine',
+  'src/storage',
+  'src/utils',
+  'src/workers'
+];
 
 const args = process.argv.slice(2);
 const quiet = args.includes('--quiet');

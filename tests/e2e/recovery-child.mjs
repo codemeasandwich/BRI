@@ -1,12 +1,12 @@
 /**
  * @file Child process for tests/e2e/recovery.test.js — kill -9 simulation.
  *
- * Lives as its own file so Node ESM can resolve `from '../../client'`
+ * Lives as its own file so Node ESM can resolve `from '../../src/client'`
  * relative paths the same way the Jest runner does. The parent passes
  * the data dir as ARGV[2] so each test run uses an isolated directory.
  */
 
-import { openLocalDatabase } from '../../client/ready-connection.js';
+import { openLocalDatabase } from '../../src/client/ready-connection.js';
 
 const dataDir = process.argv[2];
 if (!dataDir) {

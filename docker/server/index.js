@@ -5,7 +5,7 @@
  * Clients can use the identical BRI API through the remote wrapper.
  */
 
-import { openLocalDatabase } from '../../client/ready-connection.js';
+import { openLocalDatabase } from '../../src/client/ready-connection.js';
 import { getState, deleteState } from './utils.js';
 import { handleRPC } from './handlers.js';
 

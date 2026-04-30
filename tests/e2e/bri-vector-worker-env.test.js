@@ -8,8 +8,8 @@ import {
   disposeWorker,
   warmVectorWorkerFromEnv,
   workerDiagnostics
-} from '../../workers/index-worker-host.js';
-import { isVectorWorkerWarmRequestedFromEnv } from '../../workers/vector-worker-env.js';
+} from '../../src/workers/index-worker-host.js';
+import { isVectorWorkerWarmRequestedFromEnv } from '../../src/workers/vector-worker-env.js';
 
 const BASE = './test-data-bri-vector-worker-env';
 

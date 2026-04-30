@@ -11,20 +11,20 @@ import {
   VectorIndex,
   attachToString,
   checkMatch
-} from '../../engine/index.js';
-import { createStore } from '../../storage/index.js';
-import { InHouseAdapter } from '../../storage/adapters/inhouse.js';
-import { validateConfig } from '../../storage/interface.js';
-import { LocalPubSub } from '../../storage/pubsub/local.js';
+} from '../../src/engine/index.js';
+import { createStore } from '../../src/storage/index.js';
+import { InHouseAdapter } from '../../src/storage/adapters/inhouse.js';
+import { validateConfig } from '../../src/storage/interface.js';
+import { LocalPubSub } from '../../src/storage/pubsub/local.js';
 import { jest } from '@jest/globals';
 import fs from 'fs/promises';
 import path from 'path';
-import { compileFilter } from '../../engine/filter-compiler.js';
-import { QueryPlanner } from '../../engine/query-planner.js';
-import { executeCombined, executeMatch } from '../../client/match-engine.js';
-import { GroupedQueryBuilder } from '../../client/grouped-query-builder.js';
-import { walkChain, makeChainProxy } from '../../engine/chain-walk.js';
-import { vectorIndexMiddleware } from '../../engine/vector-middleware.js';
+import { compileFilter } from '../../src/engine/filter-compiler.js';
+import { QueryPlanner } from '../../src/engine/query-planner.js';
+import { executeCombined, executeMatch } from '../../src/client/match-engine.js';
+import { GroupedQueryBuilder } from '../../src/client/grouped-query-builder.js';
+import { walkChain, makeChainProxy } from '../../src/engine/chain-walk.js';
+import { vectorIndexMiddleware } from '../../src/engine/vector-middleware.js';
 
 // Import from diff index.js to cover re-exports
 import {
@@ -40,21 +40,21 @@ import {
   isDeepEqual,
   createPatch,
   pathToPointer
-} from '../../utils/diff/index.js';
-import { createOperationProxy } from '../../client/proxy-operations.js';
-import { makeRng, pickLevel } from '../../engine/vector-index-rng.js';
-import { hydrateEndpoints, makeRelatedAccessor } from '../../engine/predicate-inverse-related.js';
+} from '../../src/utils/diff/index.js';
+import { createOperationProxy } from '../../src/client/proxy-operations.js';
+import { makeRng, pickLevel } from '../../src/engine/vector-index-rng.js';
+import { hydrateEndpoints, makeRelatedAccessor } from '../../src/engine/predicate-inverse-related.js';
 import {
   queryBuilderFirst,
   queryBuilderCount,
   queryBuilderDistinct
-} from '../../client/query-builder-terminals.js';
-import { decorateResults } from '../../client/query-builder-residual.js';
-import { resolvePredicateAccess } from '../../engine/predicate-proxy.js';
-import { HotTierCache } from '../../storage/hot-tier/cache.js';
-import { WALWriter } from '../../storage/wal/writer.js';
-import { BriSchemaError, BriValidationError } from '../../engine/errors.js';
-import { createSchemaRegistry } from '../../engine/schema-registry.js';
+} from '../../src/client/query-builder-terminals.js';
+import { decorateResults } from '../../src/client/query-builder-residual.js';
+import { resolvePredicateAccess } from '../../src/engine/predicate-proxy.js';
+import { HotTierCache } from '../../src/storage/hot-tier/cache.js';
+import { WALWriter } from '../../src/storage/wal/writer.js';
+import { BriSchemaError, BriValidationError } from '../../src/engine/errors.js';
+import { createSchemaRegistry } from '../../src/engine/schema-registry.js';
 
 const TEST_DATA_DIR = './test-data-final-coverage';
 
@@ -1680,7 +1680,7 @@ describe('Final Coverage - DELETE WAL Replay (lines 123-125)', () => {
 
   test('onDelete callback triggers during WAL replay with DELETE entry', async () => {
     // Import WAL entry utilities
-    const { createDeleteEntry, serializeEntry } = await import('../../storage/wal/entry.js');
+    const { createDeleteEntry, serializeEntry } = await import('../../src/storage/wal/entry.js');
 
     // Phase 1: Create store and add a document
     let store = await createStore({
@@ -1735,8 +1735,8 @@ describe('Final Coverage - DELETE WAL Replay (lines 123-125)', () => {
   });
 
   test('WAL replay onDelete swallows cold deleteDoc rejection once', async () => {
-    const { ColdTierFiles } = await import('../../storage/cold-tier/files.js');
-    const { createDeleteEntry, serializeEntry } = await import('../../storage/wal/entry.js');
+    const { ColdTierFiles } = await import('../../src/storage/cold-tier/files.js');
+    const { createDeleteEntry, serializeEntry } = await import('../../src/storage/wal/entry.js');
     const orig = ColdTierFiles.prototype.deleteDoc;
     let rejectOnce = true;
     ColdTierFiles.prototype.deleteDoc = function patchDelete(key) {
@@ -1788,7 +1788,7 @@ describe('Final Coverage - DELETE WAL Replay (lines 123-125)', () => {
   });
 
   test('onDelete also removes from cold tier if doc was evicted', async () => {
-    const { createDeleteEntry, serializeEntry } = await import('../../storage/wal/entry.js');
+    const { createDeleteEntry, serializeEntry } = await import('../../src/storage/wal/entry.js');
 
     // Phase 1: Create store with tiny memory to force eviction
     let store = await createStore({
@@ -1893,7 +1893,7 @@ describe('Final Coverage - toObject() on v2 Snapshot (lines 157-158)', () => {
     expect(rawValue).not.toBeNull();
 
     // Parse it (simulating what the engine does)
-    const { default: JSS } = await import('../../utils/jss/index.js');
+    const { default: JSS } = await import('../../src/utils/jss/index.js');
     const parsed = JSS.parse(rawValue);
 
     // Check if the nested ref has $ID (it should after v2 snapshot load)
@@ -2165,7 +2165,7 @@ describe('Final Coverage - WAL Reader Unknown Action (line 85)', () => {
     const lastPointer = lastLine ? lastLine.split('|')[1] : null;
 
     // Manually append an entry with an UNKNOWN action type
-    const { serializeEntry } = await import('../../storage/wal/entry.js');
+    const { serializeEntry } = await import('../../src/storage/wal/entry.js');
     const unknownEntry = {
       action: 'UNKNOWN_OP',  // Invalid action!
       target: 'some_key'
@@ -2237,7 +2237,7 @@ describe('Final Coverage - WAL Reader Verify Integrity Read Error (line 141)', (
     await fs.chmod(path.join(walDir, activeWal), 0o000); // No permissions
 
     // Import WALReader and run verifyIntegrity
-    const { WALReader } = await import('../../storage/wal/reader.js');
+    const { WALReader } = await import('../../src/storage/wal/reader.js');
     const reader = new WALReader(walDir);
 
     const result = await reader.verifyIntegrity();
@@ -2543,7 +2543,7 @@ describe('Final Coverage — engine/client drain (sync + fault injection)', () =
       updatedAt: new Date(),
       embedding
     };
-    const { VectorIndex } = await import('../../engine/vector-index.js');
+    const { VectorIndex } = await import('../../src/engine/vector-index.js');
     const index = new VectorIndex({ dims: 8 });
     index.add('CB_1', embedding);
     const wrapper = {

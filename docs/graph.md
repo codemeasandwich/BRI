@@ -282,7 +282,7 @@ PPR (`db.algo.ppr`) is scoped for v3 per spec §6.3 / §7.5.
 
 ## See also
 
-- [`engine/graph-index.js`](../engine/graph-index.js) — adjacency maps + serialize/deserialize hooks
-- [`engine/predicate-proxy.js`](../engine/predicate-proxy.js) — `resolvePredicateAccess` and the PredicateAccessor
-- [`engine/schema-registry.js`](../engine/schema-registry.js) — `$edge` parsing, reserved-name check, predicate→edge routing
+- [`engine/graph-index.js`](../src/engine/graph-index.js) — adjacency maps + serialize/deserialize hooks
+- [`engine/predicate-proxy.js`](../src/engine/predicate-proxy.js) — `resolvePredicateAccess` and the PredicateAccessor
+- [`engine/schema-registry.js`](../src/engine/schema-registry.js) — `$edge` parsing, reserved-name check, predicate→edge routing
 - [`tests/e2e/graph.test.js`](../tests/e2e/graph.test.js) — UC-G1 acceptance suite

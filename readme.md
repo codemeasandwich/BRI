@@ -32,7 +32,7 @@ This Bri database provides an easy-to-use interface for performing CRUD (Create,
 - [Environment Variables](#environment-variables)
 - [Architecture](#architecture)
 - [Running Tests](#running-tests)
-- [Example Project](#example-project)
+- [Quickstart (Bun)](#quickstart-bun)
 
 ## Installation
 
@@ -580,7 +580,7 @@ BRI respects the following environment variables:
 | `BRI_MAX_MEMORY_MB` | Maximum memory for hot tier cache | `256` |
 | `BRI_ENCRYPTION_KEY` | Encryption key (64 hex chars = 32 bytes) | *none* |
 | `BRI_VECTOR_RNG_SEED` | Seed for HNSW level-pick RNG (deterministic snapshots/tests); omit in production for non-deterministic `Math.random` | *unset* |
-| `BRI_VECTOR_WORKER` | Set to **`true`**, **`1`**, **`yes`**, or **`on`** (trimmed, case-insensitive); set to **`0`**, **`false`**, **`no`**, or **`off`** to force-disable inherited junk. When enabled, eagerly spawns the shared worker (`warmVectorWorkerFromEnv`) so `createWorkerVectorIndex()` skips cold-start. **`bri.connect`** / **`openLocalDatabase`** vector queries stay in-process — see [`workers/vector-worker-env.js`](workers/vector-worker-env.js) and [`docs/migration.md`](docs/migration.md). | unset (off) |
+| `BRI_VECTOR_WORKER` | Set to **`true`**, **`1`**, **`yes`**, or **`on`** (trimmed, case-insensitive); set to **`0`**, **`false`**, **`no`**, or **`off`** to force-disable inherited junk. When enabled, eagerly spawns the shared worker (`warmVectorWorkerFromEnv`) so `createWorkerVectorIndex()` skips cold-start. **`bri.connect`** / **`openLocalDatabase`** vector queries stay in-process — see [`src/workers/vector-worker-env.js`](src/workers/vector-worker-env.js) and [`docs/migration.md`](docs/migration.md). | unset (off) |
 
 ```bash
 # Example usage
@@ -630,13 +630,13 @@ BRI is organized into four main modules:
 
 ### Module Descriptions
 
-- **client/** - Public surface: `.get.userS`, `user.and.friends` query wiring, proxies for collection access, and **`import bri from 'bri-db'; bri.connect(...)`** (plus READY helpers **`openLocalDatabase`** / **`openRemoteDatabase`** on the package root export).
+- **src/client/** - Public surface: `.get.userS`, `user.and.friends` query wiring, proxies for collection access, and **`import bri from 'bri-db'; bri.connect(...)`** (plus READY helpers **`openLocalDatabase`** / **`openRemoteDatabase`** on the package root export).
 
-- **engine/** - Core database engine handling in-memory data operations, query fulfillment, ID generation, CRUD operations, and reactive change tracking via proxies.
+- **src/engine/** - Core database engine handling in-memory data operations, query fulfillment, ID generation, CRUD operations, and reactive change tracking via proxies.
 
-- **storage/** - File persistence layer with the InHouse storage adapter featuring hot tier (LRU cache), cold tier (JSON files), write-ahead log (WAL), periodic snapshots, and pub/sub for change notifications.
+- **src/storage/** - File persistence layer with the InHouse storage adapter featuring hot tier (LRU cache), cold tier (JSON files), write-ahead log (WAL), periodic snapshots, and pub/sub for change notifications.
 
-- **utils/** - Shared utilities including `diff` for change tracking and path operations, and `jss` (JsonSuperSet) for extended JSON serialization supporting Date, Error, RegExp, Map, Set, and circular references.
+- **src/utils/** - Shared utilities including `diff` for change tracking and path operations, and `jss` (JsonSuperSet) for extended JSON serialization supporting Date, Error, RegExp, Map, Set, and circular references.
 
 ## Running Tests
 
@@ -662,20 +662,20 @@ See [`tests/e2e/README.md`](tests/e2e/README.md) and [`tests/e2e/files.md`](test
 
 ```bash
 # Exercise the storage layer directly
-node storage/test.js
+node src/storage/test.js
 
 # Exercise transaction helpers directly
-node storage/transaction/test.js
+node src/storage/transaction/test.js
 ```
 
-## Example Project
+## Quickstart (Bun)
 
-A complete working example is available in the `example/` directory:
+A complete Bun-linked sample lives in **`quickstart-bun/`** (local dependency **`"bri": "file:.."`** resolved to this repository root):
 
 ```bash
-cd example
+cd quickstart-bun
 bun install
 bun run start
 ```
 
-The example demonstrates all major BRI features including database initialization, CRUD operations, relationships, subscriptions, and graceful shutdown. It depends on the local alias `"bri": "file:.."`. Published consumers should depend on **`bri-db`**. See [`example/README.md`](example/README.md) for details.
+It walks through initialization, CRUD, relationships, subscriptions, and shutdown in one script. Published consumers should depend on **`bri-db`** (or **`npm link bri-db`** in their own repo). Details: [`quickstart-bun/README.md`](quickstart-bun/README.md).

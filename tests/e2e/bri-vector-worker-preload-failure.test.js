@@ -20,7 +20,7 @@ describe('openLocalDatabase vector worker host load failure', () => {
     if (envSnap === undefined) delete process.env.BRI_VECTOR_WORKER;
     else process.env.BRI_VECTOR_WORKER = envSnap;
 
-    await import('../../workers/index-worker-host.js')
+    await import('../../src/workers/index-worker-host.js')
       .then((m) => m.disposeWorker?.())
       .catch(() => {});
     await fs.rm(DATA, { recursive: true, force: true }).catch(() => {});
@@ -30,7 +30,7 @@ describe('openLocalDatabase vector worker host load failure', () => {
   test('logs warning when host shim fails to evaluate (dynamic import rejects)', async () => {
     process.env.BRI_VECTOR_WORKER = 'yes';
 
-    await jest.unstable_mockModule('../../workers/index-worker-host.js', () => {
+    await jest.unstable_mockModule('../../src/workers/index-worker-host.js', () => {
       throw new Error('simulated worker host module load failure');
     });
 
@@ -54,7 +54,7 @@ describe('openLocalDatabase vector worker host load failure', () => {
   test('stringifies non-Error rejections in preload warning', async () => {
     process.env.BRI_VECTOR_WORKER = 'on';
 
-    await jest.unstable_mockModule('../../workers/index-worker-host.js', () => {
+    await jest.unstable_mockModule('../../src/workers/index-worker-host.js', () => {
       throw 'simulated string rejection';
     });
 

@@ -14,7 +14,7 @@
  */
 import { jest } from '@jest/globals';
 import { openLocalDatabase } from '../helpers/open-database.js';
-import { BriQueryError } from '../../engine/errors.js';
+import { BriQueryError } from '../../src/engine/errors.js';
 import fs from 'fs/promises';
 
 const DIR = './test-data-qb-chain';

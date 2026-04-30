@@ -17,9 +17,9 @@
  */
 import { jest } from '@jest/globals';
 import { openLocalDatabase } from '../helpers/open-database.js';
-import { GraphIndex } from '../../engine/index.js';
-import { EDGE_ENDPOINT_INVALID } from '../../engine/errors.js';
-import JSS from '../../utils/jss/index.js';
+import { GraphIndex } from '../../src/engine/index.js';
+import { EDGE_ENDPOINT_INVALID } from '../../src/engine/errors.js';
+import JSS from '../../src/utils/jss/index.js';
 import fs from 'fs/promises';
 
 const DIR = './test-data-graph';

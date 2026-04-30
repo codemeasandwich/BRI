@@ -19,9 +19,9 @@
  */
 import { jest } from '@jest/globals';
 import { openLocalDatabase } from '../helpers/open-database.js';
-import { SecondaryIndexManager, SortedIndex, compoundKey } from '../../engine/secondary-index.js';
-import { QueryPlanner } from '../../engine/query-planner.js';
-import { compileFilter } from '../../engine/filter-compiler.js';
+import { SecondaryIndexManager, SortedIndex, compoundKey } from '../../src/engine/secondary-index.js';
+import { QueryPlanner } from '../../src/engine/query-planner.js';
+import { compileFilter } from '../../src/engine/filter-compiler.js';
 import fs from 'fs/promises';
 
 const DIR = './test-data-secondary';

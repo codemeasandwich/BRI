@@ -1,0 +1,13 @@
+{
+  "name": "bri-quickstart-bun",
+  "version": "1.0.0",
+  "description": "Bun quickstart for BRI linked to repo root via file:..",
+  "type": "module",
+  "scripts": {
+    "start": "bun run index.js",
+    "clean": "rm -rf data"
+  },
+  "dependencies": {
+    "bri": "file:.."
+  }
+}

@@ -10,17 +10,17 @@
   },
   "exports": {
     ".": "./index.js",
-    "./client": "./client/index.js",
-    "./engine": "./engine/index.js",
-    "./engine/middleware.js": "./engine/middleware.js",
-    "./remote": "./remote/index.js",
-    "./storage": "./storage/index.js",
-    "./utils/jss": "./utils/jss/index.js",
-    "./utils/diff": "./utils/diff/index.js",
-    "./utils/schema": "./utils/schema/index.js",
-    "./workers": "./workers/index-worker-host.js",
-    "./workers/index-worker-host.js": "./workers/index-worker-host.js",
-    "./workers/vector-worker-env.js": "./workers/vector-worker-env.js"
+    "./client": "./src/client/index.js",
+    "./engine": "./src/engine/index.js",
+    "./engine/middleware.js": "./src/engine/middleware.js",
+    "./remote": "./src/remote/index.js",
+    "./storage": "./src/storage/index.js",
+    "./utils/jss": "./src/utils/jss/index.js",
+    "./utils/diff": "./src/utils/diff/index.js",
+    "./utils/schema": "./src/utils/schema/index.js",
+    "./workers": "./src/workers/index-worker-host.js",
+    "./workers/index-worker-host.js": "./src/workers/index-worker-host.js",
+    "./workers/vector-worker-env.js": "./src/workers/vector-worker-env.js"
   },
   "scripts": {
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --testPathIgnorePatterns='/scale\\.test\\.js$'",

@@ -7,15 +7,15 @@
  */
 
 import fs from 'fs/promises';
-import { HotTierCache } from '../../storage/hot-tier/cache.js';
-import { attachToString, VectorIndex } from '../../engine/index.js';
+import { HotTierCache } from '../../src/storage/hot-tier/cache.js';
+import { attachToString, VectorIndex } from '../../src/engine/index.js';
 import {
   addNeighbor,
   finalizeHNSWResults,
   greedySearchOne,
   searchLayer,
   searchHNSW as searchHNSWCore
-} from '../../engine/vector-index-hnsw.js';
+} from '../../src/engine/vector-index-hnsw.js';
 
 const DIR = './test-data-hnsw-resilience';
 

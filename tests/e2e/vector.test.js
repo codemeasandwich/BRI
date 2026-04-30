@@ -145,9 +145,9 @@ describe('Vector Search (UC-V1)', () => {
   test('dimension mismatch on insert is rejected', async () => {
     // The validator throws BriValidationError with code VECTOR_DIMS_MISMATCH
     // (typed-error contract from spec §2.11; see engine/errors.js).
-    const validate = (await import('../../utils/schema/index.js')).default;
+    const validate = (await import('../../src/utils/schema/index.js')).default;
     const { BriValidationError, VECTOR_DIMS_MISMATCH } =
-      await import('../../engine/errors.js');
+      await import('../../src/engine/errors.js');
     const schema = { embedding: { type: 'vector', dims: DIMS } };
     let thrown;
     try { validate(schema, { embedding: [1, 2, 3, 4] }); }
@@ -158,9 +158,9 @@ describe('Vector Search (UC-V1)', () => {
   });
 
   test('non-finite values in embedding are rejected', async () => {
-    const validate = (await import('../../utils/schema/index.js')).default;
+    const validate = (await import('../../src/utils/schema/index.js')).default;
     const { BriValidationError, VECTOR_INVALID_VALUE } =
-      await import('../../engine/errors.js');
+      await import('../../src/engine/errors.js');
     const schema = { embedding: { type: 'vector', dims: 3 } };
     const expectThrow = (val, code) => {
       let thrown;
@@ -225,8 +225,8 @@ describe('HNSW correctness (v2)', () => {
   });
 
   test('top-k recall ≥0.95 at 1k vectors with default params', async () => {
-    const { VectorIndex } = await import('../../engine/vector-index.js');
-    const { cosine } = await import('../../engine/vector-index-codec.js');
+    const { VectorIndex } = await import('../../src/engine/vector-index.js');
+    const { cosine } = await import('../../src/engine/vector-index-codec.js');
     const D = 16;
     const N = 1000;
     const idx = new VectorIndex({ dims: D, seed: 12345, initialCapacity: N });
@@ -260,7 +260,7 @@ describe('HNSW correctness (v2)', () => {
   });
 
   test('seeded RNG produces bit-identical serialize() output', async () => {
-    const { VectorIndex } = await import('../../engine/vector-index.js');
+    const { VectorIndex } = await import('../../src/engine/vector-index.js');
     const D = 8;
     const N = 100;
     const seed = 7;
@@ -282,8 +282,8 @@ describe('HNSW correctness (v2)', () => {
     // enough that the level-0 search visits the entire frontier — exact
     // recall comes free. This test pins that property so a future tuning
     // change to defaults can't silently degrade fixture-scale tests.
-    const { VectorIndex } = await import('../../engine/vector-index.js');
-    const { cosine } = await import('../../engine/vector-index-codec.js');
+    const { VectorIndex } = await import('../../src/engine/vector-index.js');
+    const { cosine } = await import('../../src/engine/vector-index-codec.js');
     const D = 8;
     const N = 100;
     const idx = new VectorIndex({ dims: D, seed: 1, initialCapacity: N });
@@ -306,7 +306,7 @@ describe('HNSW correctness (v2)', () => {
     // a hit at low ef can find it at high ef. We rig the test by setting
     // a very low ef on the index instance, then proving the per-call
     // override produces strictly more / different results.
-    const { VectorIndex } = await import('../../engine/vector-index.js');
+    const { VectorIndex } = await import('../../src/engine/vector-index.js');
     const D = 8;
     const N = 200;
     const idx = new VectorIndex({
@@ -328,7 +328,7 @@ describe('HNSW correctness (v2)', () => {
   });
 
   test('stats() exposes HNSW parameters', async () => {
-    const { VectorIndex } = await import('../../engine/vector-index.js');
+    const { VectorIndex } = await import('../../src/engine/vector-index.js');
     const idx = new VectorIndex({ dims: 8, M: 12, efConstruction: 100, efSearch: 75 });
     idx.add('a', makeVec('a', 8));
     const s = idx.stats();
@@ -343,7 +343,7 @@ describe('HNSW correctness (v2)', () => {
     // the topology and re-inserts. Tests the integration of the dropNode +
     // insertNode path through the public surface, which is the only path
     // that exercises both topology mutations in a single call.
-    const { VectorIndex } = await import('../../engine/vector-index.js');
+    const { VectorIndex } = await import('../../src/engine/vector-index.js');
     const D = 8;
     const idx = new VectorIndex({ dims: D, seed: 13, initialCapacity: 16 });
     // Seed an initial vector under id=A.

@@ -11,7 +11,7 @@ import briRoot, {
   normalizedWsUrl,
   openRemoteDatabase
 } from '../../index.js';
-import * as clientBarrel from '../../client/index.js';
+import * as clientBarrel from '../../src/client/index.js';
 import { startMockWsRpcServer } from '../helpers/mock-bri-ws-rpc-server.js';
 
 describe('bri deferred façade + READY export coverage', () => {
@@ -20,7 +20,7 @@ describe('bri deferred façade + READY export coverage', () => {
   );
 
   test('client barrel re-exports the same bri default as the package root', async () => {
-    const mod = await import('../../client/index.js');
+    const mod = await import('../../src/client/index.js');
     expect(mod.default).toBe(clientBarrel.default);
     expect(mod.default).toBe(briRoot);
     expect(clientBarrel.bri).toBe(briRoot);

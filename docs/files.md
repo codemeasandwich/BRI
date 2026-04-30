@@ -8,6 +8,7 @@ docs/
 ├── cascade.md
 ├── fts.md
 ├── graph.md
+├── illustrative-scenarios.md
 ├── indexes.md
 ├── migration.md
 ├── observability.md
@@ -50,6 +51,10 @@ End-user walkthrough of the cancellation cascade (UC-X2, §10 non-negotiable). C
 ### `graph.md`
 
 End-user walkthrough of the knowledge-graph surface (UC-G1 slice). Covers the `$edge` schema block (with the from/to-as-collection-constraint vs field-name semantics), predicate-name reserved list (§0.4) and collision detection, predicate access mechanics (`alice.works_at` for read, `alice.works_at(target, attrs)` for write), how writes flow through middleware, how reads use the GraphIndex for O(degree) lookup, and v1 limitations with pointers to follow-up slices (inverse, multi-hop, supersession, polymorphic refs).
+
+### `illustrative-scenarios.md`
+
+Non-executable §F-inspired narrative snippets (memory artifacts, knowledge-graph triples) for contributor orientation. Explicitly states that **tests/e2e** owns behaviour; fenced code is illustrative only.
 
 ### `schema-extensions.md`
 

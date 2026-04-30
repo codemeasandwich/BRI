@@ -85,7 +85,7 @@ exercises it end-to-end.
 ## WAL record types (spec §3.3)
 
 The WAL records every committed write as a typed action. Implementation
-file: [storage/wal/record-types.js](../storage/wal/record-types.js).
+file: [storage/wal/record-types.js](../src/storage/wal/record-types.js).
 
 | Type | Carries |
 |---|---|

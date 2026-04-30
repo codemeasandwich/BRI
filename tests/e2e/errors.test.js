@@ -4,7 +4,7 @@
  */
 
 import { openLocalDatabase } from '../helpers/open-database.js';
-import { createMiddleware } from '../../engine/middleware.js';
+import { createMiddleware } from '../../src/engine/middleware.js';
 import { jest } from '@jest/globals';
 import fs from 'fs/promises';
 

@@ -5,7 +5,7 @@
 
 import bri from '../../index.js';
 import { openLocalDatabase } from '../helpers/open-database.js';
-import { type2Short } from '../../engine/types.js';
+import { type2Short } from '../../src/engine/types.js';
 import {
   stripDown$ID,
   attachToString,
@@ -15,8 +15,8 @@ import {
   mapObjectOrArray,
   findMatchingItem,
   isMatch
-} from '../../engine/helpers.js';
-import { undeclared, collectionNamePattern } from '../../engine/constants.js';
+} from '../../src/engine/helpers.js';
+import { undeclared, collectionNamePattern } from '../../src/engine/constants.js';
 import fs from 'fs/promises';
 
 const TEST_DATA_DIR = './test-data-edge';

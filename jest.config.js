@@ -8,14 +8,14 @@ export default {
   moduleFileExtensions: ['js'],
   testMatch: ['**/tests/**/*.test.js'],
   collectCoverageFrom: [
-    'client/**/*.js',
-    'engine/**/*.js',
-    'storage/**/*.js',
-    'utils/**/*.js',
+    'src/client/**/*.js',
+    'src/engine/**/*.js',
+    'src/storage/**/*.js',
+    'src/utils/**/*.js',
     '!**/test.js',
     '!**/*.test.js',
     // Pure barrel (import/export only) — instrumentation produces 0 executable spans; callers cover `bri.js` / `defer-database.js` directly from the package root.
-    '!**/client/index.js'
+    '!**/src/client/index.js'
   ],
   coverageThreshold: {
     global: {

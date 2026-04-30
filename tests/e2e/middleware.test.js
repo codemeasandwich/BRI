@@ -10,7 +10,7 @@ import {
   loggingMiddleware,
   validationMiddleware,
   hooksMiddleware
-} from '../../engine/middleware.js';
+} from '../../src/engine/middleware.js';
 import fs from 'fs/promises';
 
 const TEST_DATA_DIR = './test-data-middleware';

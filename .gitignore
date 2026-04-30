@@ -1,6 +1,6 @@
 /books
 node_modules
-/example/data
+/quickstart-bun/data
 coverage/
 /data/
 # Ephemeral repo-root dirs created by Jest E2E (wiped after each full run via globalTeardown).
