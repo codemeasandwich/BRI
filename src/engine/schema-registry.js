@@ -34,7 +34,7 @@ import {
   collectLifecycleFields,
   collectCascadeEntries
 } from './schema-edge-declare.js';
-import { canonicalPairKeyFor } from './canonical-pair.js';
+import { canonicalPairKeyFor, bindGraphIndexToStore, rebuildAdjacencyFromHot } from './canonical-pair.js';
 
 /**
  * Create a schema registry instance.
@@ -104,6 +104,8 @@ export function createSchemaRegistry(store) {
     store.bindSecondaryIndexManager(secondaryIndexes);
   }
 
+  bindGraphIndexToStore(store, graphIndex); // UC-G7; see engine/canonical-pair.js
+
   /**
    * Walk a schema definition and pick out the vector field, if any.
    * v1 supports at most ONE vector field per collection. Multiple vector
@@ -169,9 +171,11 @@ export function createSchemaRegistry(store) {
         // routing. See engine/schema-edge-declare.js for the rules.
         const { enrichedSpec, predicates } = buildEdgeSpec(collection, schemaDef);
         edgeCollections.set(collection, enrichedSpec);
+        const hadLoadedAdjacency = graphIndex.hasAdjacencyFor(collection); // UC-G7 v3→v4 migration probe
         graphIndex.declareEdge(collection, enrichedSpec);
         registerPredicateRouting(predicatesBySubject, edge, collection, predicates);
         registerInversePredicateRouting(predicatesByObject, edge, collection, predicates);
+        if (!hadLoadedAdjacency) rebuildAdjacencyFromHot(store, graphIndex, collection, type2Short(collection));
 
         /* UC-G3 — when the edge declared both `unique` and `symmetric`,
          * back the uniqueness invariant with a SortedIndex on the

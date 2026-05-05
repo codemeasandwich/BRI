@@ -1,9 +1,11 @@
 /**
  * @file Graph algorithms — `db.algo.{name}` per spec §2.7.
  *
- * Today implements `degree` (UC-G5) and `rebuildCanonicalPair` (UC-G3
- * migration). PPR (`db.algo.ppr`) remains scoped for v3 per spec §6.3 /
- * §7.5; out of scope for the UC-G3 round.
+ * Implementations: `degree` (UC-G5), `rebuildCanonicalPair` (UC-G3
+ * migration), and `ppr` (UC-G7 Personalized PageRank). PPR is delegated
+ * to engine/graph-algo-ppr.js to keep this file under the 260-source-
+ * line gate and to isolate the inner-loop math from the namespace
+ * wiring.
  *
  * Why a free namespace: parameter-rich algorithms read better as
  * `db.algo.degree({collection, via, weighted, top})` than as a property
@@ -15,10 +17,14 @@
  * Consumes: schema-registry (graphIndex, edgeSpec, secondaryIndexManager,
  *   needsCanonicalPair, canonicalPairKey), getDb for hydration through
  *   db.get[`${collection}S`]() — kept lazy so the registry can be built
- *   before the db singleton resolves.
+ *   before the db singleton resolves. PPR additionally consumes
+ *   filter-compiler.js via the ppr() helper.
  *
- * @implements UC-G5 (degree), UC-G3 migration (rebuildCanonicalPair)
+ * @implements UC-G5 (degree), UC-G3 migration (rebuildCanonicalPair),
+ *             UC-G7 (ppr — Personalized PageRank)
  */
+
+import { ppr as runPpr } from './graph-algo-ppr.js';
 
 /**
  * Build the db.algo namespace for a public db interface.
@@ -72,7 +78,22 @@ export function createAlgo({ registry, getDb }) {
      *   edges successfully indexed; useful as a smoke check after an
      *   upgrade that the index is populated.
      */
-    rebuildCanonicalPair: (args) => rebuildCanonicalPair({ ...args, registry, getDb })
+    rebuildCanonicalPair: (args) => rebuildCanonicalPair({ ...args, registry, getDb }),
+
+    /**
+     * Personalized PageRank (UC-G7) — knowledge-graph retrieval over an
+     * edge collection seeded from a node set. Random walk with restart
+     * iterating to convergence; returns top-k nodes by stationary
+     * mass. Implementation in engine/graph-algo-ppr.js (extracted to
+     * keep this namespace file under the 260-source-line gate).
+     *
+     * @param {Object} args - Forwarded to runPpr; see graph-algo-ppr.js
+     *   for the full contract. Required: `{collection, via, seeds}`.
+     *   Optional: damping, iterations, epsilon, top, edgeFilter,
+     *   weightField.
+     * @returns {Promise<Array<{entity:Object, mass:number}>>}
+     */
+    ppr: (args) => runPpr({ ...args, registry, getDb })
   };
 }
 

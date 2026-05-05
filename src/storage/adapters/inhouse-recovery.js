@@ -27,6 +27,8 @@ import {
   buildPrefixToVectorCollectionMap,
   removeFromVectorIndicesForKey
 } from './inhouse-vector-wal-route.js';
+// Persistent GraphIndex (UC-G7): mirror prefix→edge-collection map.
+import { buildPrefixToEdgeCollectionMap } from './inhouse-graph-wal-route.js';
 
 /**
  * Creates recovery and snapshot methods for InHouseAdapter
@@ -44,7 +46,16 @@ export function createRecoveryMethods() {
       let startLine = 0;
 
       if (snapshot) {
-        if (snapshot.version === 3) {
+        if (snapshot.version === 4) {
+          // v4: documents + vector + secondary indexes + GraphIndex state.
+          // Forward-compat: every v3 field is still present; v4 adds
+          // graphIndices for persistent adjacency (UC-G7 / Persistent
+          // GraphIndex).
+          this.loadSnapshotV2(snapshot.documents || {}, snapshot.collections || {});
+          this.loadVectorState(snapshot.vectorIndices || {}, snapshot.vectorSchemas || {});
+          this.setPendingSecondaryState(snapshot.secondaryIndexes || null);
+          this.setPendingGraphState(snapshot.graphIndices || null);
+        } else if (snapshot.version === 3) {
           this.loadSnapshotV2(snapshot.documents || {}, snapshot.collections || {});
           this.loadVectorState(snapshot.vectorIndices || {}, snapshot.vectorSchemas || {});
           // Stash secondary-index state for the registry to pick up on its
@@ -73,6 +84,45 @@ export function createRecoveryMethods() {
       // Shared with hardDelete() via inhouse-vector-wal-route.js so replay and
       // live WAL DELETE stay consistent.
       const prefixToCollection = buildPrefixToVectorCollectionMap(this._vectorRegistry);
+
+      /* Persistent GraphIndex (UC-G7) — build a prefix→{collection, edgeSpec}
+       * map from the loaded graph state's persisted specs. WAL records that
+       * touch an edge collection are buffered into _deferredGraphOps so the
+       * adjacency reflects post-snapshot deltas after bindGraphIndex drains
+       * them. When no graph state was loaded (fresh DB / v3-and-earlier),
+       * the map is empty and the buffering path is a no-op — the registry's
+       * declare-time auto-rebuild handles that case. */
+      const graphPrefixMap = buildPrefixToEdgeCollectionMap(this._pendingGraphState);
+      if (graphPrefixMap.size > 0) this._deferredGraphOps = [];
+      /**
+       * Buffer an edge insertion for later replay into the GraphIndex.
+       * Identifies the edge collection from the doc's $ID prefix; bails
+       * if no matching edge spec is loaded.
+       * @param {string} key - Document $ID
+       * @param {string} value - JSS-encoded body
+       */
+      const applyGraphWrite = (key, value) => {
+        const prefix = key.split('_')[0];
+        const entry = graphPrefixMap.get(prefix);
+        if (!entry) return;
+        const doc = JSS.parse(value);
+        this._deferredGraphOps.push({ op: 'insert', collection: entry.collection, doc });
+      };
+      /**
+       * Buffer an edge deletion for later replay. Must capture the doc
+       * body BEFORE the hotTier.delete fires (otherwise GraphIndex's
+       * removeEdge can't read endpoint fields to identify which buckets
+       * to clean). The MUST-fire-before-delete ordering is enforced in
+       * the onDelete callback below.
+       * @param {string} key - Document $ID
+       * @param {Object|null} oldDoc - Parsed pre-delete body, or null
+       */
+      const applyGraphDelete = (key, oldDoc) => {
+        const prefix = key.split('_')[0];
+        const entry = graphPrefixMap.get(prefix);
+        if (!entry || !oldDoc) return;
+        this._deferredGraphOps.push({ op: 'remove', collection: entry.collection, doc: oldDoc });
+      };
       /**
        * Route a WAL set record into the matching collection's vector index.
        * @param {string} key - Document $ID
@@ -105,8 +155,15 @@ export function createRecoveryMethods() {
         onSet: (key, value) => {
           this.hotTier.set(key, value, false);
           applyVectorWrite(key, value);
+          applyGraphWrite(key, value);
         },
         onDelete: (key) => {
+          // Capture the pre-delete body for graph cleanup BEFORE hotTier
+          // drops it — applyGraphDelete needs the from/to endpoint
+          // values to identify which adjacency buckets to clean.
+          const preEntry = this.hotTier.documents.get(key);
+          const preBody = preEntry && !preEntry.cold && preEntry.data
+            ? JSS.parse(preEntry.data) : null;
           this.hotTier.delete(key);
           this.coldTier.deleteDoc(key).catch(() => {});
           const segs = key.split('_');
@@ -116,6 +173,7 @@ export function createRecoveryMethods() {
             this.hotTier.sRem(`${shortType}?`, member);
           }
           applyVectorDelete(key);
+          applyGraphDelete(key, preBody);
         },
         onRename: (oldKey, newKey) => {
           this.hotTier.rename(oldKey, newKey);
@@ -226,9 +284,19 @@ export function createRecoveryMethods() {
         const ser = this._secondaryIndexManager.serialize();
         if (ser && Object.keys(ser).length > 0) secondaryState = ser;
       }
+      // Persistent GraphIndex (UC-G7): serialize the bound GraphIndex when
+      // it exists and has any registered edge collection. Non-empty graph
+      // state forces v4; readers that don't know v4 ignore the unknown
+      // field but still consume the v3 payload (forward-compat).
+      let graphState = null;
+      if (this._graphIndex) {
+        const ser = this._graphIndex.serialize();
+        if (ser && ser.specs && Object.keys(ser.specs).length > 0) graphState = ser;
+      }
       const hasV3Payload = hasVectorState || !!secondaryState;
+      const hasV4Payload = !!graphState;
       const base = {
-        version: hasV3Payload ? 3 : 2,
+        version: hasV4Payload ? 4 : (hasV3Payload ? 3 : 2),
         walLine,
         documents: this.hotTier.getAllDocumentsForSnapshot(JSS.parse),
         collections: this.hotTier.getAllCollections()
@@ -243,9 +311,8 @@ export function createRecoveryMethods() {
         base.vectorIndices = vectorIndices;
         base.vectorSchemas = vectorSchemas;
       }
-      if (secondaryState) {
-        base.secondaryIndexes = secondaryState;
-      }
+      if (secondaryState) base.secondaryIndexes = secondaryState;
+      if (graphState) base.graphIndices = graphState;
       return base;
     },
 

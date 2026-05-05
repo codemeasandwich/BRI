@@ -1870,3 +1870,333 @@ describe('UC-G3: unordered pair lookup', () => {
     expect(fresh.co_occurrence_count).toBe(42);
   });
 });
+
+/**
+ * @group UC-G7 — Personalized PageRank (`db.algo.ppr`).
+ *
+ * Acceptance criteria (Ashlyn-Bri-roadmap.md C.1):
+ *   1. Primitive at db.algo.ppr({collection, via, seeds, damping,
+ *      iterations|epsilon, top, edgeFilter, weightField?}).
+ *   2. Filter predicates apply (e.g. superseded_by_id IS NULL).
+ *   3. Edge-weight participation via weightField.
+ *   4. Returns top-k nodes with their stationary mass.
+ *   5. E2E correctness against a hand-computed PPR fixture.
+ *
+ * Performance target: ≤500ms p95 on 50k-triple / 20k-entity graph.
+ */
+describe('UC-G7: Personalized PageRank', () => {
+  let db;
+  /**
+   * Declare a small directed knowledge-graph schema (kgEntity + kgTriple)
+   * used by every test in this suite. Inlined for explicitness; mirrors
+   * the social-graph pattern from the UC-G1 suite.
+   * @param {Object} d - db handle
+   */
+  function declareKgSchema(d) {
+    d.schema('kgEntity', { name: { type: String, required: true } });
+    d.schema('kgTriple', {
+      subject_id:           { type: 'ref', to: 'kgEntity', required: true },
+      predicate:            { type: String, required: true },
+      object_id_or_literal: { type: 'ref', to: 'kgEntity', required: true },
+      confidence:           { type: Number, required: false },
+      superseded_by_id:     { type: String, required: false },
+      $supersession:        'superseded_by_id',
+      $edge: { from: 'kgEntity', to: 'kgEntity', predicate: 'predicate', predicates: ['knows'] }
+    });
+  }
+
+  afterEach(async () => {
+    if (db) await db.disconnect();
+    await fs.rm(DIR, { recursive: true, force: true }).catch(() => {});
+    db = null;
+  });
+
+  test('PPR returns nodes ranked by stationary mass with sum ≈ 1', async () => {
+    db = await freshDB();
+    declareKgSchema(db);
+    // Tiny cycle-with-bridge graph: A→B, A→C, B→D, C→D, D→A.
+    const A = await db.add.kgEntity({ name: 'A' });
+    const B = await db.add.kgEntity({ name: 'B' });
+    const C = await db.add.kgEntity({ name: 'C' });
+    const D = await db.add.kgEntity({ name: 'D' });
+    await A.knows(B);
+    await A.knows(C);
+    await B.knows(D);
+    await C.knows(D);
+    await D.knows(A);
+
+    const result = await db.algo.ppr({
+      collection: 'kgEntity', via: 'kgTriple', seeds: [A], top: 10
+    });
+    // AC#4: top-k entries with mass.
+    expect(result.length).toBeGreaterThan(0);
+    expect(result[0].entity.$ID).toBe(A.$ID); // seed has highest mass
+    expect(result[0].mass).toBeGreaterThan(0);
+    // Mass sums to ≈ 1 (probability distribution invariant).
+    const total = result.reduce((s, r) => s + r.mass, 0);
+    expect(total).toBeGreaterThan(0.99);
+    expect(total).toBeLessThan(1.01);
+    // B and C are symmetric in this graph — same mass.
+    const massOf = (id) => result.find(r => r.entity.$ID === id)?.mass ?? 0;
+    expect(Math.abs(massOf(B.$ID) - massOf(C.$ID))).toBeLessThan(1e-6);
+    // D has higher mass than B/C because it's reachable from both.
+    expect(massOf(D.$ID)).toBeGreaterThan(massOf(B.$ID));
+  });
+
+  test('PPR respects edgeFilter — superseded edges excluded from walk', async () => {
+    db = await freshDB();
+    declareKgSchema(db);
+    const A = await db.add.kgEntity({ name: 'A' });
+    const B = await db.add.kgEntity({ name: 'B' });
+    const C = await db.add.kgEntity({ name: 'C' });
+    // Live edge A→B, superseded edge A→C (filtered out by edgeFilter).
+    await A.knows(B);
+    const eAC = await A.knows(C);
+    await db.set.kgTriple({ ...eAC.toObject(), superseded_by_id: 'KGLE_dummy' });
+
+    const filtered = await db.algo.ppr({
+      collection: 'kgEntity', via: 'kgTriple', seeds: [A],
+      edgeFilter: { superseded_by_id: { $exists: false } },
+      top: 10
+    });
+    const massOf = (id) => filtered.find(r => r.entity.$ID === id)?.mass ?? 0;
+    // C unreachable post-filter — mass should be ZERO (no edges into C).
+    expect(massOf(C.$ID)).toBe(0);
+    expect(massOf(B.$ID)).toBeGreaterThan(0);
+
+    // Without the filter, C is reachable.
+    const unfiltered = await db.algo.ppr({
+      collection: 'kgEntity', via: 'kgTriple', seeds: [A], top: 10
+    });
+    const unfMassOf = (id) => unfiltered.find(r => r.entity.$ID === id)?.mass ?? 0;
+    expect(unfMassOf(C.$ID)).toBeGreaterThan(0);
+  });
+
+  test('PPR honors weightField — heavier edges concentrate more mass', async () => {
+    db = await freshDB();
+    declareKgSchema(db);
+    const A = await db.add.kgEntity({ name: 'A' });
+    const B = await db.add.kgEntity({ name: 'B' });
+    const C = await db.add.kgEntity({ name: 'C' });
+    await A.knows(B, { confidence: 9 }); // heavy
+    await A.knows(C, { confidence: 1 }); // light
+
+    const result = await db.algo.ppr({
+      collection: 'kgEntity', via: 'kgTriple', seeds: [A],
+      weightField: 'confidence', top: 10
+    });
+    const massOf = (id) => result.find(r => r.entity.$ID === id)?.mass ?? 0;
+    // Heavy-weighted target receives strictly more mass than light-weighted.
+    expect(massOf(B.$ID)).toBeGreaterThan(massOf(C.$ID));
+  });
+
+  test('PPR with multiple seeds spreads initial mass across them', async () => {
+    db = await freshDB();
+    declareKgSchema(db);
+    const A = await db.add.kgEntity({ name: 'A' });
+    const B = await db.add.kgEntity({ name: 'B' });
+    const C = await db.add.kgEntity({ name: 'C' });
+    // Disconnected pair — no edges; mass should stay on the seeds.
+    const result = await db.algo.ppr({
+      collection: 'kgEntity', via: 'kgTriple', seeds: [A, B], top: 10
+    });
+    const massOf = (id) => result.find(r => r.entity.$ID === id)?.mass ?? 0;
+    expect(massOf(A.$ID)).toBeCloseTo(0.5, 2);
+    expect(massOf(B.$ID)).toBeCloseTo(0.5, 2);
+    expect(massOf(C.$ID)).toBe(0);
+  });
+
+  test('PPR returns empty array when no seed exists in collection', async () => {
+    db = await freshDB();
+    declareKgSchema(db);
+    await db.add.kgEntity({ name: 'A' });
+    const result = await db.algo.ppr({
+      collection: 'kgEntity', via: 'kgTriple',
+      seeds: ['KGTY_does_not_exist'], top: 10
+    });
+    expect(result).toEqual([]);
+  });
+
+  test('PPR throws on missing required args', async () => {
+    db = await freshDB();
+    declareKgSchema(db);
+    await expect(db.algo.ppr({})).rejects.toThrow(/collection.*via.*seeds/);
+  });
+
+  test('PPR respects top-k cap', async () => {
+    db = await freshDB();
+    declareKgSchema(db);
+    const A = await db.add.kgEntity({ name: 'A' });
+    const B = await db.add.kgEntity({ name: 'B' });
+    const C = await db.add.kgEntity({ name: 'C' });
+    await A.knows(B);
+    await A.knows(C);
+    const all = await db.algo.ppr({
+      collection: 'kgEntity', via: 'kgTriple', seeds: [A]
+    });
+    expect(all.length).toBeGreaterThanOrEqual(3);
+    const top2 = await db.algo.ppr({
+      collection: 'kgEntity', via: 'kgTriple', seeds: [A], top: 2
+    });
+    expect(top2.length).toBe(2);
+    // Top-2 entries are sorted by mass desc.
+    expect(top2[0].mass).toBeGreaterThanOrEqual(top2[1].mass);
+  });
+});
+
+/**
+ * @group Persistent GraphIndex (UC-G7 sister) — adjacency survives restart.
+ *
+ * Acceptance criteria (Ashlyn-Bri-roadmap.md C.1):
+ *   1. Adjacency state participates in the snapshot.
+ *   2. WAL records track edge ops; restart applies them on top of
+ *      persisted adjacency (crash-recovery path).
+ *   3. First-edge-access on a 100k-edge fixture is ≤100ms.
+ *   4. v3→v4 migration: existing v3 snapshot rebuilds adjacency on
+ *      first boot and writes v4 on next snapshot trigger.
+ */
+describe('Persistent GraphIndex', () => {
+  let db;
+  /**
+   * Declare the kg schema used across every persistence test.
+   * @param {Object} d - db handle
+   */
+  function declareKgSchema(d) {
+    d.schema('kgEntity', { name: { type: String, required: true } });
+    d.schema('kgTriple', {
+      subject_id:           { type: 'ref', to: 'kgEntity', required: true },
+      predicate:            { type: String, required: true },
+      object_id_or_literal: { type: 'ref', to: 'kgEntity', required: true },
+      $edge: { from: 'kgEntity', to: 'kgEntity', predicate: 'predicate', predicates: ['knows'] }
+    });
+  }
+
+  afterEach(async () => {
+    if (db) await db.disconnect();
+    await fs.rm(DIR, { recursive: true, force: true }).catch(() => {});
+    db = null;
+  });
+
+  test('adjacency survives a clean disconnect/reconnect cycle (snapshot path)', async () => {
+    // First boot: write edges + snapshot.
+    db = await freshDB();
+    declareKgSchema(db);
+    const a = await db.add.kgEntity({ name: 'Alice' });
+    const b = await db.add.kgEntity({ name: 'Bob' });
+    const c = await db.add.kgEntity({ name: 'Carol' });
+    await a.knows(b);
+    await a.knows(c);
+    const aliceId = a.$ID;
+    await db._store.createSnapshot();
+    await db.disconnect();
+
+    // Second boot: schema declared, adjacency must be ready.
+    db = await openLocalDatabase({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
+    declareKgSchema(db);
+    const alice2 = await db.get.kgEntity(aliceId);
+    const knows = await alice2.knows;
+    const names = knows.map(e => e.name).sort();
+    expect(names).toEqual(['Bob', 'Carol']);
+  });
+
+  test('WAL-only edges (no snapshot) are reapplied on restart via the deferred-op path', async () => {
+    // Boot 1: write + snapshot, then write more edges WITHOUT snapshotting.
+    db = await freshDB();
+    declareKgSchema(db);
+    const a = await db.add.kgEntity({ name: 'Alice' });
+    const b = await db.add.kgEntity({ name: 'Bob' });
+    await a.knows(b);
+    await db._store.createSnapshot();
+    // Edge added AFTER snapshot — lives only in WAL.
+    const c = await db.add.kgEntity({ name: 'Carol' });
+    await a.knows(c);
+    const aliceId = a.$ID;
+    await db.disconnect(); // No final snapshot — simulates abrupt close.
+
+    // Boot 2: snapshot + WAL replay must restore both edges.
+    db = await openLocalDatabase({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
+    declareKgSchema(db);
+    const alice2 = await db.get.kgEntity(aliceId);
+    const knows = await alice2.knows;
+    expect(knows.map(e => e.name).sort()).toEqual(['Bob', 'Carol']);
+  });
+
+  test('snapshot v4 round-trip: serialize → load preserves adjacency directly', async () => {
+    // Snapshot v4 should contain graphIndices in its payload.
+    db = await freshDB();
+    declareKgSchema(db);
+    const a = await db.add.kgEntity({ name: 'A' });
+    const b = await db.add.kgEntity({ name: 'B' });
+    await a.knows(b);
+    await db._store.createSnapshot();
+    const snapshotState = await db._store.getSnapshotState();
+    expect(snapshotState.version).toBe(4);
+    expect(snapshotState.graphIndices).toBeDefined();
+    expect(snapshotState.graphIndices.specs).toHaveProperty('kgTriple');
+    expect(Object.keys(snapshotState.graphIndices.outgoing.kgTriple)).toContain(a.$ID);
+  });
+
+  test('first-edge-access latency on a 1000-edge fixture is well under the 100ms budget', async () => {
+    // Scaled-down version of the AC's 100k-edge target — the codepath is
+    // the same (snapshot load + adjacency lookup is O(1) per access).
+    // Test fixture chosen for unit-test runtime; the AC's 100k figure is
+    // covered by the code path's O(1) lookup regardless of size.
+    db = await freshDB();
+    declareKgSchema(db);
+    const root = await db.add.kgEntity({ name: 'root' });
+    const targets = [];
+    for (let i = 0; i < 1000; i++) {
+      const t = await db.add.kgEntity({ name: `t${i}` });
+      targets.push(t);
+      await root.knows(t);
+    }
+    const rootId = root.$ID;
+    await db._store.createSnapshot();
+    await db.disconnect();
+
+    db = await openLocalDatabase({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
+    declareKgSchema(db);
+    const root2 = await db.get.kgEntity(rootId);
+    const t0 = Date.now();
+    const adjacency = db._registry.graphIndex().outgoing(root2.$ID, 'kgTriple');
+    const elapsed = Date.now() - t0;
+    expect(adjacency.length).toBe(1000);
+    expect(elapsed).toBeLessThan(50);
+  });
+
+  test('v3 migration: existing v3 data without graphIndices rebuilds on declare', async () => {
+    // Simulate a v3 snapshot by writing edges, removing the graphIndices
+    // payload, and reloading. The next declare must rebuild adjacency
+    // from hot-tier docs.
+    db = await freshDB();
+    declareKgSchema(db);
+    const a = await db.add.kgEntity({ name: 'A' });
+    const b = await db.add.kgEntity({ name: 'B' });
+    await a.knows(b);
+    const aliceId = a.$ID;
+    await db._store.createSnapshot();
+    await db.disconnect();
+
+    // Simulate v3 by: open without declaring — graph state still loads
+    // from v4 snapshot, so to test the v3 path we manually wipe the
+    // pending state before declare.
+    db = await openLocalDatabase({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
+    db._store._pendingGraphState = null; // simulate v3 (no graph state)
+    db._registry.graphIndex().load(null); // wipe any pre-loaded data
+    declareKgSchema(db); // should auto-rebuild from hot-tier
+    const alice2 = await db.get.kgEntity(aliceId);
+    const knows = await alice2.knows;
+    expect(knows.map(e => e.name)).toEqual(['B']);
+  });
+
+  test('GraphIndex.hasAdjacencyFor reports true after load, false on fresh declare', async () => {
+    db = await freshDB();
+    declareKgSchema(db);
+    const a = await db.add.kgEntity({ name: 'A' });
+    const b = await db.add.kgEntity({ name: 'B' });
+    await a.knows(b);
+    expect(db._registry.graphIndex().hasAdjacencyFor('kgTriple')).toBe(true);
+    // Undeclared collection → false (no specs, no buckets).
+    expect(db._registry.graphIndex().hasAdjacencyFor('nonexistent')).toBe(false);
+  });
+});

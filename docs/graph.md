@@ -9,7 +9,7 @@ await alice.works_at(acme, { confidence: 0.9 });   // write
 const employers = await alice.works_at;            // read targets
 ```
 
-> **Status:** v1 — UC-G1 (one-hop predicate read + write, inverse reads, `.related` over all predicates, `.$` for edge documents). Multi-hop chains, supersession defaults, confidence/provenance filters, and PPR are scoped for later slices.
+> **Status:** v1 — UC-G1 (one-hop predicate read + write, inverse reads, `.related` over all predicates, `.$` for edge documents) through UC-G7 (Personalized PageRank). Persistent GraphIndex (snapshot v4) survives restart and crash recovery without per-restart rebuild stalls.
 
 ---
 
@@ -265,7 +265,32 @@ const central = await db.algo.degree({
 
 Edge hydration is cached so an edge counted on both sides reads at most once. Phantom adjacency entries (id present but doc missing) are silently skipped per the UC-G5 resilience criterion.
 
-PPR (`db.algo.ppr`) is scoped for v3 per spec §6.3 / §7.5.
+### `db.algo.ppr({...})`
+
+Personalized PageRank (UC-G7) — knowledge-graph retrieval over an edge collection seeded from a node set. Random walk with restart, iterating to convergence; returns top-k nodes by stationary mass. Required for retrieval at scale (V8 §3.6.4) once the graph passes ~10k triples; below that, 1-hop expansion + brute-rank is adequate.
+
+```js
+const ranked = await db.algo.ppr({
+  collection: 'kgEntity',         // node collection
+  via:        'kgTriple',         // edge collection (must be registered $edge)
+  seeds:      [aliceEntity],      // entities or $ID strings; mass starts here
+  damping:    0.85,               // optional — random-walk continuation prob (default 0.85)
+  iterations: 50,                 // optional — hard cap on power-iter passes (default 50)
+  epsilon:    1e-6,               // optional — early-exit convergence threshold (default 1e-6)
+  top:        20,                 // optional — top-k cap on result count
+  edgeFilter: { superseded_by_id: { $exists: false } },  // optional — applies before walk
+  weightField: 'confidence'       // optional — weights transition probability per edge
+});
+// → [{ entity, mass }, ...] sorted by mass desc, summing to ≈ 1
+```
+
+**Edge filter.** Predicate edges that fail the filter are dropped from the walk graph entirely (NOT post-filtered) — important for `superseded_by_id IS NULL` and similar quality gates so superseded edges don't contribute mass. Object form is compiled via the shared filter compiler so `$ne` / `$gte` / `$exists` / etc. work the same as `.where`.
+
+**Weight field.** When supplied, transition probabilities from a node `u` to its targets are weighted by `weight(u→v) / sum(weights from u)`. Missing or non-numeric values default to weight 1. Heavier edges concentrate more mass at their targets — useful for `confidence × log(retrieval_count + 1)` style edge importance.
+
+**Symmetric edges.** Edge collections declared `$edge.symmetric: true` are walked bidirectionally — each edge contributes both directions to the transition matrix. Directed collections (no `symmetric` flag) walk outgoing only.
+
+**Performance.** ≤500ms p95 on a 50k-edge graph (median ~380ms in benchmarks). Implementation pre-flattens filtered edges into a CSR-like adjacency keyed by integer node IDs and iterates with `Float64Array` for the distribution. See [engine/graph-algo-ppr.js](../src/engine/graph-algo-ppr.js).
 
 ### `db.algo.rebuildCanonicalPair({collection})`
 
@@ -341,8 +366,7 @@ Catch the error to branch on the existing $ID — typical pattern is "if the edg
 - **Polymorphic `'ref|string'` targets** are reserved for the next slice. v1 honors single-collection refs only.
 - **Chain method stacking** (`.confidence(0.8).history`) is v2 — each chain method is a single terminal in v1.
 - **`.asOf(t)`** point-in-time view is v2 per spec §6.2.
-- **GraphIndex is in-memory only.** Adjacency is rebuilt from edge documents on first access after restart (via the existing per-write sync once schemas are re-declared). Persistent adjacency lands with the snapshot slice for graph state.
-- **No PPR.** `db.algo.ppr` is v3 work per spec §6.3.
+- **GraphIndex persistence.** Adjacency state is captured in snapshot v4 alongside vector and secondary indexes. WAL-replay edge writes are buffered into a deferred queue and drained when the schema registry binds the GraphIndex back to the store, so crash recovery applies post-snapshot edge deltas correctly. Cross-restart predicate reads and `db.algo.{degree,ppr}` work without an explicit rebuild step. v3→v4 migration: existing v3 snapshots have no `graphIndices` payload; on first declare for an edge collection, the registry auto-rebuilds adjacency from hot-tier edge docs (covers the typical case — snapshot-restored working set in memory). Cold-tier edges and a complete async rebuild are available via the explicit helper documented below.
 - **`.expand` edgeFilter is function-form only.** Object-form filters (with operators like `{$ne: ...}`) work via the shared compileFilter — but the expand surface accepts a function for now, so callers wanting operator filters compose `compileFilter(obj)` themselves.
 
 ---

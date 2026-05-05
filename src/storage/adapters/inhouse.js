@@ -15,6 +15,7 @@ import { KeyManager } from '../../crypto/key-manager.js';
 import { createCrudMethods } from './inhouse-crud.js';
 import { createTxnMethods } from './inhouse-txn.js';
 import { createRecoveryMethods } from './inhouse-recovery.js';
+import JSS from '../../utils/jss/index.js';
 
 /**
  * InHouse storage adapter with hot/cold tier and transactions
@@ -46,6 +47,20 @@ export class InHouseAdapter {
     //
     // Schema shape: { field: 'embedding', dims: 1536, metric: 'cosine' }.
     this._vectorRegistry = new Map();
+
+    // Persistent GraphIndex (UC-G7 / Persistent GraphIndex):
+    //   _graphIndex: live reference set by bindGraphIndex; consulted by
+    //     getSnapshotState to serialize adjacency in v4 snapshots.
+    //   _pendingGraphState: snapshot-loaded state, drained into the live
+    //     index on bind. Null on fresh DB / v3-and-earlier snapshots.
+    //   _deferredGraphOps: WAL-replay edge insertions/deletions captured
+    //     before the registry is wired. Drained on bindGraphIndex so the
+    //     adjacency reflects post-snapshot deltas without losing data.
+    //     Required for crash recovery: if the WAL has writes after the
+    //     last snapshot, those writes need to apply to the rebuilt index.
+    this._graphIndex = null;
+    this._pendingGraphState = null;
+    this._deferredGraphOps = null;
   }
 
   /**
@@ -130,6 +145,94 @@ export class InHouseAdapter {
    */
   setPendingSecondaryState(state) {
     this._pendingSecondaryState = state || null;
+  }
+
+  /**
+   * Persistent GraphIndex (UC-G7 / Persistent GraphIndex) — bind the
+   * registry-owned GraphIndex to the store so snapshots can persist its
+   * adjacency state and recovery can hand it back. Symmetric with
+   * `bindSecondaryIndexManager`. Drains any pending state captured during
+   * recovery into the live index on bind.
+   *
+   * Why bind on the store rather than auto-discover: a single GraphIndex
+   * instance is shared across all edge collections in one db; the store
+   * snapshots it as one POJO. Multiple binds replace the reference (last
+   * writer wins) — used by tests that swap registries on the same store.
+   *
+   * @param {Object} graphIndex - GraphIndex instance from the schema registry
+   */
+  bindGraphIndex(graphIndex) {
+    this._graphIndex = graphIndex;
+    if (this._pendingGraphState) {
+      graphIndex.load(this._pendingGraphState);
+      this._pendingGraphState = null;
+    }
+    // Drain any WAL-replay edge ops that were buffered before bind.
+    if (this._deferredGraphOps && this._deferredGraphOps.length > 0) {
+      for (const op of this._deferredGraphOps) {
+        if (op.op === 'insert') graphIndex.insertEdge(op.collection, op.doc);
+        else if (op.op === 'remove') graphIndex.removeEdge(op.collection, op.doc);
+      }
+      this._deferredGraphOps = null;
+    }
+  }
+
+  /**
+   * Pre-loaded GraphIndex state from snapshot, surfaced to the registry
+   * via bindGraphIndex. Returns null when no state was loaded (fresh
+   * database or v3-and-earlier snapshot).
+   *
+   * @returns {Object|null}
+   */
+  getPendingGraphState() {
+    return this._pendingGraphState || null;
+  }
+
+  /**
+   * Capture GraphIndex state during recovery so the registry can pick it
+   * up on bindGraphIndex. Used by inhouse-recovery on v4 snapshots.
+   *
+   * @param {Object} state - GraphIndex.serialize() output, or null
+   */
+  setPendingGraphState(state) {
+    this._pendingGraphState = state || null;
+  }
+
+  /**
+   * Synchronously enumerate hot-tier doc bodies whose $ID prefix matches
+   * `prefix` (e.g. `'KGTR'`). Used by the schema-registry's auto-rebuild
+   * path on declare() of an edge collection when no persisted graph state
+   * is loaded (v3→v4 migration / fresh DB after WAL-only writes).
+   *
+   * Cold-tier docs are SKIPPED — sync iteration can't await coldLoader.
+   * For full-coverage rebuilds that include cold-tier edges, callers
+   * should use the async `db.algo.rebuildGraphIndex({collection})`
+   * helper instead. For the typical migration case (snapshot just
+   * restored, working set in memory), hot-tier coverage is sufficient.
+   *
+   * Routed via the collection-set (`{prefix}?`) so the iteration is
+   * O(|collection|), not O(|all docs|). Bad bodies (JSS parse errors)
+   * are silently skipped — the alternative would be a recovery
+   * cascade that aborts the boot on a single corrupt edge.
+   *
+   * @param {string} prefix - 4-char $ID prefix (uppercase)
+   * @returns {Array<Object>} parsed doc bodies in arbitrary order
+   */
+  iterateHotDocsByPrefix(prefix) {
+    if (!this.hotTier) return [];
+    // The collection-set members store ONLY the suffix (post-`{prefix}_`)
+    // portion of the $ID — that's how Bri's $ID-prefix-by-collection set
+    // is structured. Reassemble the full $ID before looking up the doc
+    // entry, otherwise the get returns undefined.
+    const members = this.hotTier.sMembers(`${prefix}?`);
+    const out = [];
+    for (const member of members) {
+      const fullId = `${prefix}_${member}`;
+      const entry = this.hotTier.documents.get(fullId);
+      if (!entry || entry.cold || !entry.data) continue;
+      try { out.push(JSS.parse(entry.data)); } catch (_) { /* skip bad body */ }
+    }
+    return out;
   }
 
   /**

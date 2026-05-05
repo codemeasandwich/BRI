@@ -317,6 +317,12 @@ function applyLifecycleFilters(edges, ctx, lifecycle) {
  * targets the field value may be a literal string — those pass through
  * unchanged since v1's predicate proxy is entity-target-oriented.
  *
+ * Endpoint normalization: snapshot deserialization (Bri's
+ * `getAllDocumentsForSnapshot`) replaces string-form refs with object
+ * pointers, so a doc loaded from snapshot has `edge[fieldName]` as an
+ * entity object instead of a $ID string. Live writes preserve the string
+ * form. To handle both, we extract `.$ID` when the field is an object.
+ *
  * @param {Array<Object>} edges
  * @param {string} fieldName - Either the from-field or to-field
  * @param {Object} wrapper
@@ -325,7 +331,11 @@ function applyLifecycleFilters(edges, ctx, lifecycle) {
 async function hydrateEndpoints(edges, fieldName, wrapper) {
   const targets = await Promise.all(
     edges.map(edge => {
-      const targetId = edge && edge[fieldName];
+      const raw = edge && edge[fieldName];
+      if (!raw) return null;
+      const targetId = typeof raw === 'string' ? raw
+                     : (typeof raw === 'object' && typeof raw.$ID === 'string') ? raw.$ID
+                     : null;
       if (!targetId) return null;
       return wrapper.get(null, targetId);
     })

@@ -20,6 +20,7 @@ src/engine/
 ├── graph-index.js
 ├── graph-expand.js
 ├── graph-algo.js
+├── graph-algo-ppr.js
 ├── chain-walk.js
 ├── predicate-inverse-related.js
 ├── predicate-proxy.js
@@ -225,10 +226,10 @@ Shared filter compiler used by `.where`, `.having`, and the query planner's resi
 
 ### `graph-index.js`
 
-Per-database adjacency index for edge collections. Maintains forward (outgoing) and inverse (incoming) adjacency maps keyed by `(collection, nodeId, predicate)`, populated by the middleware on edge writes. `outgoing` / `incoming` return edge $IDs in O(degree). Serializable POJO for snapshot persistence.
+Per-database adjacency index for edge collections. Maintains forward (outgoing) and inverse (incoming) adjacency maps keyed by `(collection, nodeId, predicate)`, populated by the middleware on edge writes and persisted in snapshot v4. `outgoing` / `incoming` return edge $IDs in O(degree). Endpoint normalization (`normalizeEndpointId`) handles both string-form $IDs (live writes) and resolved-object form (snapshot deserialization) so adjacency keys stay consistent across boot. `hasAdjacencyFor(collection)` is the migration-detection probe used by the schema registry to decide whether to auto-rebuild from hot-tier docs on declare. Serializable POJO for snapshot persistence (UC-G7 / Persistent GraphIndex).
 
 **Exports:**
-- `GraphIndex` class - `declareEdge`, `insertEdge`, `removeEdge`, `outgoing`, `incoming`, `edgeSpecFor`, `serialize`, `load`
+- `GraphIndex` class - `declareEdge`, `insertEdge`, `removeEdge`, `outgoing`, `incoming`, `edgeSpecFor`, `hasAdjacencyFor`, `serialize`, `load`
 - `default` - Same as GraphIndex
 
 ### `graph-expand.js`
@@ -241,11 +242,19 @@ Multi-hop BFS expansion (UC-G6) — the implementation behind `entity.expand({..
 
 ### `graph-algo.js`
 
-Graph algorithms namespace (UC-G5, UC-G3 migration) — `createAlgo({registry, getDb})` returns `{ degree, rebuildCanonicalPair }`. Degree centrality iterates every node in `collection`, sums incoming + outgoing edges from `via`, optionally weighted by a named edge field; sorts by degree desc with optional top-k cap. `rebuildCanonicalPair({collection})` is the UC-G3 migration helper: walks every edge document and inserts the canonical-pair shadow projection into the SecondaryIndexManager so a database upgraded from a Bri version that pre-dates `$edge.unique` enforcement gets a populated index. Idempotent. PPR is scoped for v3 per spec §6.3.
+Graph algorithms namespace (UC-G5, UC-G3 migration, UC-G7) — `createAlgo({registry, getDb})` returns `{ degree, rebuildCanonicalPair, ppr }`. Degree centrality iterates every node in `collection`, sums incoming + outgoing edges from `via`, optionally weighted by a named edge field; sorts by degree desc with optional top-k cap. `rebuildCanonicalPair({collection})` is the UC-G3 migration helper: walks every edge document and inserts the canonical-pair shadow projection into the SecondaryIndexManager so a database upgraded from a Bri version that pre-dates `$edge.unique` enforcement gets a populated index. Idempotent. `ppr({...})` is delegated to `graph-algo-ppr.js` to keep this file under the 260-source-line gate.
 
 **Exports:**
-- `createAlgo({registry, getDb})` - Builds the algo namespace (`{ degree, rebuildCanonicalPair }`)
+- `createAlgo({registry, getDb})` - Builds the algo namespace (`{ degree, rebuildCanonicalPair, ppr }`)
 - `default` - Same as createAlgo
+
+### `graph-algo-ppr.js`
+
+UC-G7 Personalized PageRank implementation — `ppr({collection, via, seeds, damping, iterations, epsilon, top, edgeFilter, weightField, registry, getDb})`. Materializes filtered + weighted edges into a CSR-like adjacency keyed by integer node IDs, runs power iteration with restart over the personalized distribution, returns top-k nodes by stationary mass. `Float64Array` for the distribution; plain arrays for per-source target/weight lists. Symmetric edge collections are walked bidirectionally; directed walk outgoing only. Dangling-mass redistribution to seeds preserves the probability invariant. Edge filter compiles via shared filter-compiler (object or function form). Hits the ≤500ms p95 budget for 50k-edge graphs (median ~380ms in benchmarks).
+
+**Exports:**
+- `ppr(args)` - Run PPR; returns `Promise<Array<{entity, mass}>>`
+- `default` - Same as ppr
 
 ### `chain-walk.js`
 

@@ -36,6 +36,29 @@
  */
 
 /**
+ * Normalize an edge-endpoint field value to its $ID string. Bri's
+ * snapshot serialization (`getAllDocumentsForSnapshot`) resolves
+ * string-form refs into object pointers, so a doc loaded from snapshot
+ * carries `{name: 'Alice', $ID: 'KGTY_xyz', ...}` where the originally-
+ * stored body had `'KGTY_xyz'`. Live writes (and most read paths) carry
+ * the string form. The adjacency Map keys are strings, so any path
+ * (live or restored) must normalize to a string before insert/remove.
+ *
+ * Why a free function: applies in both insertEdge and removeEdge with
+ * identical semantics; no class state needed. Keeping it module-private
+ * keeps the GraphIndex public surface unchanged.
+ *
+ * @param {string|Object|null|undefined} v - Field value
+ * @returns {string|null} $ID string, or null when the value is missing
+ */
+function normalizeEndpointId(v) {
+  if (!v) return null;
+  if (typeof v === 'string') return v;
+  if (typeof v === 'object' && typeof v.$ID === 'string') return v.$ID;
+  return null;
+}
+
+/**
  * Per-database graph index. Holds adjacency for every declared edge
  * collection.
  *
@@ -90,8 +113,8 @@ export class GraphIndex {
   insertEdge(collection, doc) {
     const spec = this.edgeSpecFor(collection);
     if (!spec || !doc || !doc.$ID) return;
-    const subjectId = doc[spec.from];
-    const objectId = doc[spec.to];
+    const subjectId = normalizeEndpointId(doc[spec.from]);
+    const objectId = normalizeEndpointId(doc[spec.to]);
     const predicate = spec.predicate ? (doc[spec.predicate] || '*') : '*';
     if (!subjectId || !objectId) return;
     this._addAdjacency(this._outgoing, collection, subjectId, predicate, doc.$ID);
@@ -108,8 +131,8 @@ export class GraphIndex {
   removeEdge(collection, doc) {
     const spec = this.edgeSpecFor(collection);
     if (!spec || !doc || !doc.$ID) return;
-    const subjectId = doc[spec.from];
-    const objectId = doc[spec.to];
+    const subjectId = normalizeEndpointId(doc[spec.from]);
+    const objectId = normalizeEndpointId(doc[spec.to]);
     const predicate = spec.predicate ? (doc[spec.predicate] || '*') : '*';
     if (!subjectId || !objectId) return;
     this._removeAdjacency(this._outgoing, collection, subjectId, predicate, doc.$ID);
@@ -138,6 +161,27 @@ export class GraphIndex {
    */
   incoming(nodeId, collection, predicate) {
     return this._lookup(this._incoming, nodeId, collection, predicate);
+  }
+
+  /**
+   * UC-G7 / Persistent GraphIndex — true iff the index has any adjacency
+   * data for `collection`. Read by the schema-registry to detect whether
+   * a snapshot-loaded edge collection already has its adjacency populated
+   * (skip rebuild) versus a fresh declaration that needs an auto-rebuild
+   * from hot-tier docs (v3→v4 migration / no persisted state).
+   *
+   * Why check both directions: an edge collection may have only outgoing
+   * or only incoming adjacency in pathological cases (orphaned data
+   * post-cascade, partial WAL replay). Either side counts as "has data."
+   *
+   * @param {string} collection
+   * @returns {boolean}
+   */
+  hasAdjacencyFor(collection) {
+    const out = this._outgoing.get(collection);
+    if (out && out.size > 0) return true;
+    const inc = this._incoming.get(collection);
+    return !!(inc && inc.size > 0);
   }
 
   /**
