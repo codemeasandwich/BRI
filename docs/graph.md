@@ -68,8 +68,8 @@ console.log(employers.map(e => e.name));   // ['Acme']
 | `to` | Collection-name constraint — which collection's entities are valid objects (`'a | b'` for polymorphic; v1 honors only single-collection refs) |
 | `predicate` | Name of the field on the edge document carrying the predicate value (e.g. `'predicate'` or `'rel'`) |
 | `predicates` | Array of registered predicate names (`['works_at', 'knows']`) — these become proxy methods on subject entities; `'*'` opens the predicate space (registered predicates required for v1 proxy resolution) |
-| `symmetric` | Reserved (v1 doesn't enforce symmetry) |
-| `unique` | Reserved (v1 doesn't enforce uniqueness) |
+| `symmetric` | Marks the edge as undirected — `(A, B)` and `(B, A)` describe the same logical edge. Required when paired with `unique: true`; otherwise advisory (governs traversal direction handling in `expand`). |
+| `unique` | Enforces at most one edge per **unordered pair** of endpoints. **Requires** `symmetric: true` (declare-time throw otherwise — ordered uniqueness has different semantics and is out of scope). Backed by the canonical-pair secondary index (UC-G3); enables `.between(a, b)` and rejects duplicate inserts with `EDGE_PAIR_NOT_UNIQUE`. |
 
 **Field-name derivation:** `$edge.from` and `$edge.to` are constraints on collection identity, not field names. The actual field names on the edge document are derived from the schema's `'ref'`-typed fields in declaration order — first ref is the from-field, second ref is the to-field.
 
@@ -78,7 +78,7 @@ console.log(employers.map(e => e.name));   // ['Acme']
 ```
 $  history  asOf  chain  expand  inverse  related  confidence  withProvenance
 near  match  where  combine  limit  count  groupBy  distinct  having
-touching  hydrate  toArray  first  save  toObject  toJSON  toJSS  and
+touching  between  hydrate  toArray  first  save  toObject  toJSON  toJSS  and
 ```
 
 This list is FROZEN — adding to it is a breaking change requiring a major version bump. Pick predicate names that don't collide; renaming a deployed predicate is a data-migration concern.
@@ -267,6 +267,71 @@ Edge hydration is cached so an edge counted on both sides reads at most once. Ph
 
 PPR (`db.algo.ppr`) is scoped for v3 per spec §6.3 / §7.5.
 
+### `db.algo.rebuildCanonicalPair({collection})`
+
+UC-G3 migration helper. Rebuilds the canonical-pair secondary index for a unique-symmetric edge collection from existing edge documents. Idempotent — re-running over a populated index re-inserts the same `(key, $ID)` pairs and is a no-op.
+
+Only needed if you have edge data on disk from a Bri version that predates `$edge.unique` enforcement (≤ v2.0.0). Fresh databases populate the index incrementally as edges are added through the middleware.
+
+```js
+const { indexed } = await db.algo.rebuildCanonicalPair({ collection: 'lexicalEdge' });
+// → { collection: 'lexicalEdge', indexed: 12345 }
+```
+
+Throws if the collection is not declared with `$edge.unique && symmetric` — there's nothing to rebuild on a non-canonical-pair collection.
+
+---
+
+## Unique symmetric edges (UC-G3)
+
+When a co-occurrence graph or reciprocal-relationship graph wants the invariant *"at most one edge per unordered pair of nodes,"* declare both flags:
+
+```js
+db.schema('lexicalEdge', {
+  node_a:               { type: 'ref', to: 'lexicalEntity', required: true },
+  node_b:               { type: 'ref', to: 'lexicalEntity', required: true },
+  co_occurrence_count:  { type: Number, required: false },
+  sessions:             { type: Array, items: String, required: false },
+  $edge: { from: 'lexicalEntity', to: 'lexicalEntity', symmetric: true, unique: true }
+});
+```
+
+This unlocks two behaviors:
+
+**1. `.between(a, b)` chain method** — single-edge lookup keyed by the unordered pair, regardless of which node was passed as `node_a` vs. `node_b`:
+
+```js
+const edge = await db.get.lexicalEdgeS.between(alpha, beta).first();   // entity, $ID, or null
+const same = await db.get.lexicalEdgeS.between(beta, alpha).first();   // ≡ above
+```
+
+Composes with `.where` for filtering on edge attributes:
+
+```js
+const strong = await db.get.lexicalEdgeS
+  .between(alpha, beta)
+  .where({ co_occurrence_count: { $gte: 5 } })
+  .first();   // null when the edge exists but fails the filter
+```
+
+Calling `.between` on a non-unique-symmetric edge collection throws `BETWEEN_NOT_A_UNIQUE_SYMMETRIC_EDGE` so misuse fails loudly. For predicate-scoped lookups `(subject, predicate, *)` use the predicate proxy `entity.{predicate}.$` instead — that's the recommended path for the V8 conflict gate.
+
+**2. Uniqueness enforcement** — duplicate inserts for the same unordered pair throw `EDGE_PAIR_NOT_UNIQUE`:
+
+```js
+await db.add.lexicalEdge({ node_a: alpha.$ID, node_b: beta.$ID });
+await db.add.lexicalEdge({ node_a: beta.$ID,  node_b: alpha.$ID });
+//                                                    ^^^^^^^^^^^
+// throws BriValidationError { code: 'EDGE_PAIR_NOT_UNIQUE',
+//   details: { collection, pairKey, existingId, operation } }
+```
+
+Catch the error to branch on the existing $ID — typical pattern is "if the edge exists, fetch it and update; otherwise add."
+
+**Implementation.** Bri stores a synthetic field `__edgePair = [min(fromId, toId), max(fromId, toId)]` in a `SortedIndex` registered alongside any other secondary indexes. The shadow projection lives only in the index — the persisted document body is never mutated. The same index serves both lookup (`.between`) and uniqueness (pre-write check in middleware). See [engine/schema-registry.js](../src/engine/schema-registry.js) and [engine/vector-middleware.js](../src/engine/vector-middleware.js) for the wiring.
+
+**Constraint.** `unique: true` requires `symmetric: true` — declare-time throw (`EDGE_UNIQUE_REQUIRES_SYMMETRIC`) otherwise. Ordered uniqueness `(A→B) ≠ (B→A)` is a different shape and not supported by this round.
+
 ---
 
 ## Limitations (v1)
@@ -285,4 +350,6 @@ PPR (`db.algo.ppr`) is scoped for v3 per spec §6.3 / §7.5.
 - [`engine/graph-index.js`](../src/engine/graph-index.js) — adjacency maps + serialize/deserialize hooks
 - [`engine/predicate-proxy.js`](../src/engine/predicate-proxy.js) — `resolvePredicateAccess` and the PredicateAccessor
 - [`engine/schema-registry.js`](../src/engine/schema-registry.js) — `$edge` parsing, reserved-name check, predicate→edge routing
-- [`tests/e2e/graph.test.js`](../tests/e2e/graph.test.js) — UC-G1 acceptance suite
+- [`engine/vector-middleware.js`](../src/engine/vector-middleware.js) — canonical-pair sync + pre-write uniqueness check (UC-G3)
+- [`engine/schema-edge-declare.js`](../src/engine/schema-edge-declare.js) — `$edge.unique` + `symmetric` validation, RESERVED_PROXY_NAMES
+- [`tests/e2e/graph.test.js`](../tests/e2e/graph.test.js) — UC-G1, UC-G3, UC-G4, UC-G5, UC-G6 acceptance suites

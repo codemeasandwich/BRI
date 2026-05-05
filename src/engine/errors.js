@@ -39,10 +39,20 @@ export const ERROR_CODES = Object.freeze({
   REF_NOT_FOUND:               'REF_NOT_FOUND',
   REF_FORMAT_INVALID:          'REF_FORMAT_INVALID',
   EDGE_ENDPOINT_INVALID:       'EDGE_ENDPOINT_INVALID',
+  // UC-G3 — write-time uniqueness on canonical-pair edges. Thrown when a
+  // second edge document targets the same unordered (from, to) pair as an
+  // existing one. Caught by callers that expect to upsert co-occurrence
+  // edges so they can branch to an update path instead.
+  EDGE_PAIR_NOT_UNIQUE:        'EDGE_PAIR_NOT_UNIQUE',
   // Query (BriQueryError)
   VECTOR_QUERY_DIMS_MISMATCH:  'VECTOR_QUERY_DIMS_MISMATCH',
   VECTOR_FIELD_NOT_DECLARED:   'VECTOR_FIELD_NOT_DECLARED',
   NOT_IMPLEMENTED_V1:          'NOT_IMPLEMENTED_V1',
+  // UC-G3 — `.between(a, b)` only meaningful on edge collections whose
+  // schema declared `$edge.unique && $edge.symmetric`. Thrown loudly so
+  // misuse on `kgTriple` or any non-symmetric edge fails at the call site
+  // rather than returning silently wrong results.
+  BETWEEN_NOT_A_UNIQUE_SYMMETRIC_EDGE: 'BETWEEN_NOT_A_UNIQUE_SYMMETRIC_EDGE',
   // Proxy (BriProxyError)
   PREDICATE_NOT_REGISTERED:    'PREDICATE_NOT_REGISTERED',
   CHAIN_CROSSES_COLLECTION:    'CHAIN_CROSSES_COLLECTION',
@@ -50,6 +60,11 @@ export const ERROR_CODES = Object.freeze({
   RESERVED_NAME_COLLISION:     'RESERVED_NAME_COLLISION',
   CASCADE_SCOPE_UNKNOWN:       'CASCADE_SCOPE_UNKNOWN',
   INDEX_FIELD_NOT_DECLARED:    'INDEX_FIELD_NOT_DECLARED',
+  // UC-G3 — schema authors who declared `$edge.unique: true` without
+  // `symmetric: true` get this at load time. Ordered uniqueness is a
+  // different shape (the canonical-pair index would have to keep `[from,
+  // to]` order-preserving) and is deliberately out of scope this round.
+  EDGE_UNIQUE_REQUIRES_SYMMETRIC: 'EDGE_UNIQUE_REQUIRES_SYMMETRIC',
   // Recovery (BriRecoveryError)
   WAL_INDEX_REPLAY_FAILED:     'WAL_INDEX_REPLAY_FAILED'
 });
@@ -71,6 +86,11 @@ export const CASCADE_SCOPE_UNKNOWN      = ERROR_CODES.CASCADE_SCOPE_UNKNOWN;
 export const INDEX_FIELD_NOT_DECLARED   = ERROR_CODES.INDEX_FIELD_NOT_DECLARED;
 export const WAL_INDEX_REPLAY_FAILED    = ERROR_CODES.WAL_INDEX_REPLAY_FAILED;
 export const NOT_IMPLEMENTED_V1         = ERROR_CODES.NOT_IMPLEMENTED_V1;
+// UC-G3 — see ERROR_CODES for diagnostic intent. Re-exported so call sites
+// catch by symbol rather than typing the string at every catch.
+export const EDGE_PAIR_NOT_UNIQUE                = ERROR_CODES.EDGE_PAIR_NOT_UNIQUE;
+export const BETWEEN_NOT_A_UNIQUE_SYMMETRIC_EDGE = ERROR_CODES.BETWEEN_NOT_A_UNIQUE_SYMMETRIC_EDGE;
+export const EDGE_UNIQUE_REQUIRES_SYMMETRIC      = ERROR_CODES.EDGE_UNIQUE_REQUIRES_SYMMETRIC;
 
 /**
  * Base class for all typed Bri errors.

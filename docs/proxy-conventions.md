@@ -47,9 +47,13 @@ before any access hit the proxy.
 $  history  asOf  chain  expand  inverse  related
 confidence  withProvenance
 near  match  where  combine  limit  count  groupBy  distinct  having
-touching  hydrate  toArray  first
+touching  between  hydrate  toArray  first
 save  toObject  toJSON  toJSS  and
 ```
+
+> `between` is the UC-G3 canonical-pair lookup chain method on the
+> QueryBuilder. Reserved here so a predicate or ref-field named `between`
+> can't shadow the chain method.
 
 Source: `engine/schema-edge-declare.js` → `RESERVED_PROXY_NAMES`. The
 list is FROZEN as part of v1 delivery; additions are breaking changes

@@ -34,6 +34,7 @@ import {
   collectLifecycleFields,
   collectCascadeEntries
 } from './schema-edge-declare.js';
+import { canonicalPairKeyFor } from './canonical-pair.js';
 
 /**
  * Create a schema registry instance.
@@ -77,6 +78,14 @@ export function createSchemaRegistry(store) {
   const predicatesByObject = new Map();
   const cascadeByScope = new Map();
   const lifecycleFields = new Map();
+  /* UC-G3 — collections whose schema declared `$edge.unique &&
+   * $edge.symmetric` (validated together in schema-edge-declare.js).
+   * Membership here drives the synthetic `__edgePair` secondary index,
+   * vector-middleware's pre-write uniqueness check, and QueryBuilder's
+   * `.between(a, b)` eligibility check. Centralized in the registry
+   * rather than re-derived from `enrichedSpec.unique && .symmetric` at
+   * every call site so all consumers observe the same truth. */
+  const canonicalPairCollections = new Set();
 
   // Per-database secondary-index manager. Populated lazily when a schema
   // declares $indexes; the registry hands out a single shared instance so
@@ -163,6 +172,22 @@ export function createSchemaRegistry(store) {
         graphIndex.declareEdge(collection, enrichedSpec);
         registerPredicateRouting(predicatesBySubject, edge, collection, predicates);
         registerInversePredicateRouting(predicatesByObject, edge, collection, predicates);
+
+        /* UC-G3 — when the edge declared both `unique` and `symmetric`,
+         * back the uniqueness invariant with a SortedIndex on the
+         * synthetic `__edgePair` field. The synthetic value is `[min,
+         * max]` of the endpoint $IDs, projected onto a shadow doc by
+         * vector-middleware (the body itself is never mutated). The same
+         * SecondaryIndexManager that backs declared `$indexes` carries
+         * this index — it already serializes inside the snapshot,
+         * already integrates with the add/set/del middleware flow, and
+         * already supports the canonical-pair key shape via
+         * compoundKey(JSON.stringify). A parallel structure would
+         * duplicate three subsystems for no gain. */
+        if (enrichedSpec.unique && enrichedSpec.symmetric) {
+          secondaryIndexes.declare(collection, ['__edgePair']);
+          canonicalPairCollections.add(collection);
+        }
       }
 
       // cascadeOn flagged fields: helper validates + emits; we just file.
@@ -401,6 +426,34 @@ export function createSchemaRegistry(store) {
      */
     lifecycleFieldsOf(collection) {
       return lifecycleFields.get(collection);
+    },
+
+    /**
+     * UC-G3 — true iff `collection` is an edge collection whose schema
+     * declared both `$edge.unique` and `$edge.symmetric`. Read by:
+     *   - vector-middleware (whether to project `__edgePair` into the
+     *     shadow doc and whether to run the pre-write uniqueness check),
+     *   - QueryBuilder (whether `.between(a, b)` is legal on this
+     *     collection — throws otherwise so misuse fails loudly).
+     *
+     * @param {string} collection
+     * @returns {boolean}
+     */
+    needsCanonicalPair(collection) {
+      return canonicalPairCollections.has(collection);
+    },
+
+    /**
+     * UC-G3 — compute the canonical-pair key for an edge document via
+     * the engine/canonical-pair.js helper. Returns `[min, max]` of the
+     * two endpoint $IDs or null when an endpoint is missing.
+     *
+     * @param {string} collection - Edge collection name
+     * @param {Object} doc - Edge document (must carry the from/to fields)
+     * @returns {Array<string>|null}
+     */
+    canonicalPairKey(collection, doc) {
+      return canonicalPairKeyFor(edgeCollections.get(collection), doc);
     }
   };
 }

@@ -1510,3 +1510,201 @@ describe('GraphIndex persistence contract (serialize/load + edgeSpec paths)', ()
     }
   });
 });
+
+/**
+ * @group UC-G3 — unordered-pair lookup with uniqueness invariant.
+ *
+ * Acceptance criteria (spec §4 UC-G3):
+ *   - between_returns_single_edge: insert order doesn't matter; the same
+ *     edge comes back regardless of which endpoint is passed first.
+ *   - between_null_when_absent: missing pair resolves cleanly to null.
+ *   - duplicate_pair_throws: a second edge for the same unordered pair
+ *     fails at write time with EDGE_PAIR_NOT_UNIQUE.
+ *   - between_rejects_wrong_collection: calling .between on a non-
+ *     unique-symmetric edge collection throws so misuse fails loudly.
+ *
+ * Plus: schema-level enforcement that `unique: true` requires
+ * `symmetric: true` (declare-time throw).
+ */
+describe('UC-G3: unordered pair lookup', () => {
+  let db;
+  /**
+   * Declare the lexical-graph schema fixture: lexicalEntity (nodes)
+   * and lexicalEdge (symmetric+unique edges with co_occurrence_count).
+   * Inlined rather than reusing the test-fixture loader to keep the
+   * test surface explicit at a glance.
+   * @param {Object} d
+   */
+  function declareLexicalSchema(d) {
+    d.schema('lexicalEntity', {
+      term: { type: String, required: true }
+    });
+    d.schema('lexicalEdge', {
+      node_a:               { type: 'ref', to: 'lexicalEntity', required: true },
+      node_b:               { type: 'ref', to: 'lexicalEntity', required: true },
+      co_occurrence_count:  { type: Number, required: false },
+      sessions:             { type: Array, items: String, required: false },
+      $edge: {
+        from: 'lexicalEntity', to: 'lexicalEntity',
+        symmetric: true, unique: true
+      }
+    });
+  }
+
+  afterEach(async () => {
+    if (db) await db.disconnect();
+    await fs.rm(DIR, { recursive: true, force: true }).catch(() => {});
+    db = null;
+  });
+
+  test('between(a, b) returns the same edge regardless of insert direction', async () => {
+    db = await freshDB();
+    declareLexicalSchema(db);
+    const alpha = await db.add.lexicalEntity({ term: 'alpha' });
+    const beta  = await db.add.lexicalEntity({ term: 'beta' });
+    const edge  = await db.add.lexicalEdge({
+      node_a: alpha.$ID, node_b: beta.$ID,
+      co_occurrence_count: 7, sessions: ['s1', 's2']
+    });
+
+    // Direction 1: same as insert.
+    const found1 = await db.get.lexicalEdgeS.between(alpha, beta).first();
+    expect(found1).not.toBeNull();
+    expect(found1.$ID).toBe(edge.$ID);
+    expect(found1.co_occurrence_count).toBe(7);
+    expect(found1.sessions).toEqual(['s1', 's2']);
+
+    // Direction 2: swapped — same edge must come back (unordered pair).
+    const found2 = await db.get.lexicalEdgeS.between(beta, alpha).first();
+    expect(found2).not.toBeNull();
+    expect(found2.$ID).toBe(edge.$ID);
+
+    // String-arg form: $ID strings should work just like entity refs.
+    const found3 = await db.get.lexicalEdgeS.between(alpha.$ID, beta.$ID).first();
+    expect(found3.$ID).toBe(edge.$ID);
+  });
+
+  test('between returns null when no edge exists for the pair', async () => {
+    db = await freshDB();
+    declareLexicalSchema(db);
+    const alpha = await db.add.lexicalEntity({ term: 'alpha' });
+    const beta  = await db.add.lexicalEntity({ term: 'beta' });
+    // Two entities exist but no edge — .first() must resolve to null,
+    // never throw, never return a bogus row.
+    const found = await db.get.lexicalEdgeS.between(alpha, beta).first();
+    expect(found).toBeNull();
+  });
+
+  test('inserting a second edge for the same unordered pair throws EDGE_PAIR_NOT_UNIQUE', async () => {
+    db = await freshDB();
+    declareLexicalSchema(db);
+    const alpha = await db.add.lexicalEntity({ term: 'alpha' });
+    const beta  = await db.add.lexicalEntity({ term: 'beta' });
+    await db.add.lexicalEdge({
+      node_a: alpha.$ID, node_b: beta.$ID, co_occurrence_count: 1
+    });
+
+    // Same pair in opposite direction — uniqueness invariant must reject.
+    let captured = null;
+    try {
+      await db.add.lexicalEdge({
+        node_a: beta.$ID, node_b: alpha.$ID, co_occurrence_count: 99
+      });
+    } catch (e) {
+      captured = e;
+    }
+    expect(captured).not.toBeNull();
+    expect(captured.code).toBe('EDGE_PAIR_NOT_UNIQUE');
+    // Diagnostic message must name the offending pair so callers can branch.
+    expect(captured.message).toMatch(/EDGE_PAIR_NOT_UNIQUE|unordered pair/);
+
+    // Original edge must still resolve cleanly — the rejected duplicate
+    // didn't corrupt the index.
+    const found = await db.get.lexicalEdgeS.between(alpha, beta).first();
+    expect(found).not.toBeNull();
+    expect(found.co_occurrence_count).toBe(1);
+  });
+
+  test('between on a non-unique-symmetric edge collection throws BETWEEN_NOT_A_UNIQUE_SYMMETRIC_EDGE', async () => {
+    db = await freshDB();
+    declareSocialSchema(db); // kgTriple is NOT symmetric+unique
+    const alice = await db.add.kgEntity({ name: 'Alice' });
+    const acme  = await db.add.kgEntity({ name: 'Acme' });
+
+    // Calling .between on kgTriple must fail eagerly with a clear code.
+    let captured = null;
+    try {
+      db.get.kgTripleS.between(alice, acme);
+    } catch (e) {
+      captured = e;
+    }
+    expect(captured).not.toBeNull();
+    expect(captured.code).toBe('BETWEEN_NOT_A_UNIQUE_SYMMETRIC_EDGE');
+    // Diagnostic should point users at predicate proxy / .touching as
+    // the right alternative.
+    expect(captured.message).toMatch(/predicate proxy|touching/);
+  });
+
+  test('schema declaration with unique: true but symmetric: false throws at load', async () => {
+    db = await freshDB();
+    let captured = null;
+    try {
+      db.schema('weirdEdge', {
+        from_id: { type: 'ref', to: 'kgEntity', required: true },
+        to_id:   { type: 'ref', to: 'kgEntity', required: true },
+        $edge:   { from: 'kgEntity', to: 'kgEntity', unique: true /* no symmetric */ }
+      });
+    } catch (e) {
+      captured = e;
+    }
+    expect(captured).not.toBeNull();
+    expect(captured.code).toBe('EDGE_UNIQUE_REQUIRES_SYMMETRIC');
+  });
+
+  test('between composes with .where on edge attributes', async () => {
+    db = await freshDB();
+    declareLexicalSchema(db);
+    const alpha = await db.add.lexicalEntity({ term: 'alpha' });
+    const beta  = await db.add.lexicalEntity({ term: 'beta' });
+    await db.add.lexicalEdge({
+      node_a: alpha.$ID, node_b: beta.$ID, co_occurrence_count: 3
+    });
+
+    // Filter that the edge satisfies — should return the edge.
+    const found1 = await db.get.lexicalEdgeS
+      .between(alpha, beta)
+      .where({ co_occurrence_count: { $gte: 2 } })
+      .first();
+    expect(found1).not.toBeNull();
+
+    // Filter that the edge fails — must return null even though .between
+    // matched the canonical pair.
+    const found2 = await db.get.lexicalEdgeS
+      .between(alpha, beta)
+      .where({ co_occurrence_count: { $gte: 99 } })
+      .first();
+    expect(found2).toBeNull();
+  });
+
+  test('db.algo.rebuildCanonicalPair populates the index from existing edges', async () => {
+    db = await freshDB();
+    declareLexicalSchema(db);
+    const alpha = await db.add.lexicalEntity({ term: 'alpha' });
+    const beta  = await db.add.lexicalEntity({ term: 'beta' });
+    const gamma = await db.add.lexicalEntity({ term: 'gamma' });
+    await db.add.lexicalEdge({ node_a: alpha.$ID, node_b: beta.$ID,  co_occurrence_count: 1 });
+    await db.add.lexicalEdge({ node_a: beta.$ID,  node_b: gamma.$ID, co_occurrence_count: 2 });
+
+    // Rebuild is idempotent — re-running over an already-populated index
+    // must not throw and must report 2 edges indexed (the two we just
+    // inserted).
+    const result = await db.algo.rebuildCanonicalPair({ collection: 'lexicalEdge' });
+    expect(result.collection).toBe('lexicalEdge');
+    expect(result.indexed).toBe(2);
+
+    // Lookups still work correctly post-rebuild.
+    const e1 = await db.get.lexicalEdgeS.between(alpha, beta).first();
+    expect(e1).not.toBeNull();
+    expect(e1.co_occurrence_count).toBe(1);
+  });
+});

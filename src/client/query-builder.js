@@ -102,11 +102,7 @@ import {
   BriQueryError,
   NOT_IMPLEMENTED_V1
 } from '../engine/errors.js';
-import {
-  composeResidualFilter,
-  decorateResults,
-  touchingCandidateIds
-} from './query-builder-residual.js';
+import { composeResidualFilter, decorateResults, touchingCandidateIds, betweenCandidateIds, resolveBetween, applyBetweenConstraint } from './query-builder-residual.js';
 import { executeVectorPlan } from './query-builder-vector-exec.js';
 import { executeWherePlan } from './query-builder-where-exec.js';
 import {
@@ -500,7 +496,7 @@ export class QueryBuilder {
     const { collection, wrapper, registry } = this._ctx;
     const {
       filter, near, match, combine, limit,
-      touching, hydrate, confidence, history, withProvenance
+      touching, between, hydrate, confidence, history, withProvenance
     } = this._state;
 
     // Pass the user's original filter to the planner so it can use the
@@ -524,6 +520,7 @@ export class QueryBuilder {
       confidence,
       touching: adjacencyIds
     });
+    applyBetweenConstraint(plan, between ? betweenCandidateIds(this._ctx, between) : null); /* UC-G3 */
     /**
      * Apply $provenance + ref `_field` hydration after the scan executors finish.
      * @param {Array<Object>} rows - Raw hydrated rows before decoration
@@ -673,6 +670,7 @@ export class QueryBuilder {
     return this.toArray().then(onResolve, onReject);
   }
 }
+QueryBuilder.prototype.between = function between(a, b) { return this._next({ between: resolveBetween(this._ctx, a, b) }); }; /* UC-G3; see resolveBetween in query-builder-residual.js */
 
 // GroupedQueryBuilder lives in client/grouped-query-builder.js — extracted
 // to keep this file under the 260-source-line gate. Re-exported here so

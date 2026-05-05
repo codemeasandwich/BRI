@@ -2,7 +2,7 @@
  * @file Helpers for processing the `$edge` block at schema-declaration time.
  *
  * Lives next to schema-registry.js so the registry's declare() stays
- * compact. The two responsibilities here:
+ * compact. Responsibilities here:
  *
  *   1. Resolve the concrete from/to field names from the schema's ref-type
  *      fields (per spec §2.1.3, declaration order picks the from then to).
@@ -11,15 +11,27 @@
  *
  *   2. Validate predicate names against the frozen RESERVED_PROXY_NAMES
  *      list (§0.4). Throws on collision so reserved tokens stay reserved.
+ *      `between` is reserved here for the UC-G3 chain method on
+ *      QueryBuilder (canonical-pair edge lookup).
  *
  *   3. Detect cross-schema predicate ambiguity — the same predicate name
  *      cannot map to two different edge collections from the same subject.
+ *
+ *   4. Enforce the UC-G3 invariant `$edge.unique` ⇒ `$edge.symmetric`. The
+ *      canonical-pair index used to honor `unique: true` is keyed by the
+ *      unordered pair, which only matches schema intent when the edge is
+ *      symmetric. Ordered uniqueness is deliberately out of scope.
+ *
+ * Consumed by: schema-registry.js (calls buildEdgeSpec / collectLifecycleFields
+ * / register*PredicateRouting / collectCascadeEntries during declare()).
+ * Consumes: errors.js (typed BriSchemaError + the frozen error-code vocabulary).
  */
 
 import {
   BriSchemaError,
   RESERVED_NAME_COLLISION,
-  INDEX_FIELD_NOT_DECLARED
+  INDEX_FIELD_NOT_DECLARED,
+  EDGE_UNIQUE_REQUIRES_SYMMETRIC
 } from './errors.js';
 
 /**
@@ -33,6 +45,11 @@ export const RESERVED_PROXY_NAMES = new Set([
   'near', 'match', 'where', 'combine', 'limit', 'count', 'groupBy',
   'distinct', 'having',
   'touching', 'hydrate', 'toArray', 'first',
+  // 'between' reserved by UC-G3: chain method on QueryBuilder for
+  // canonical-pair edge lookup. Reserving here means a schema author who
+  // names a predicate or ref field 'between' is rejected at load time —
+  // otherwise the proxy fall-through routing would shadow the chain method.
+  'between',
   'save', 'toObject', 'toJSON', 'toJSS', 'and'
 ]);
 
@@ -96,6 +113,24 @@ export function buildEdgeSpec(collection, schemaDef) {
         details: { collection, field }
       });
     }
+  }
+
+  // UC-G3 invariant: `$edge.unique` enables the canonical-pair secondary
+  // index (see schema-registry + vector-middleware). The index keys edges
+  // by [min(fromId, toId), max(fromId, toId)], which is only correct when
+  // (A→B) and (B→A) describe the same logical edge — i.e. `symmetric: true`.
+  // Reject ordered uniqueness loudly at declare-time rather than letting
+  // the index silently coalesce ordered pairs that should remain distinct.
+  if (edge.unique && !edge.symmetric) {
+    throw new BriSchemaError({
+      code: EDGE_UNIQUE_REQUIRES_SYMMETRIC,
+      message:
+        `Schema '${collection}' declares $edge.unique: true without $edge.symmetric: true. ` +
+        `Bri's canonical-pair uniqueness keys edges by the unordered {from, to} pair, which only ` +
+        `matches the schema's intent when the edge is symmetric. Either add 'symmetric: true' to the ` +
+        `$edge block, or drop 'unique: true' and enforce ordered uniqueness in application logic.`,
+      details: { collection, hasUnique: true, hasSymmetric: false }
+    });
   }
 
   const enrichedSpec = {

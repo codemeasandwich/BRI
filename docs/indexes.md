@@ -98,6 +98,16 @@ Secondary indexes are persisted as part of snapshot v3 — the same format that 
 
 There is no drift detection on `$indexes` today: re-declaring with a different spec simply adds the new spec alongside the loaded one. The next snapshot then carries both. To rebuild from scratch, delete the data directory or call `db._store.createSnapshot()` after manually clearing the manager.
 
+### Internal canonical-pair index (UC-G3)
+
+When a schema declares `$edge.unique && $edge.symmetric`, the registry registers a synthetic-field secondary index on `__edgePair = [min(fromId, toId), max(fromId, toId)]`. The synthetic field is projected onto a SHADOW copy of the doc inside `vector-middleware.js` for the index manager to read; the persisted document body never carries `__edgePair`. The same `SortedIndex` infrastructure (and the same snapshot format) backs both user-declared `$indexes` and the canonical-pair index — no separate persistence path. See [docs/graph.md → Unique symmetric edges](graph.md#unique-symmetric-edges-uc-g3) for the user-facing API (`.between(a, b)`).
+
+Rebuild after upgrading a database that pre-dates UC-G3 enforcement:
+
+```js
+await db.algo.rebuildCanonicalPair({ collection: 'lexicalEdge' });
+```
+
 ---
 
 ## Limitations (v1)

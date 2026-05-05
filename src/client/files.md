@@ -66,10 +66,10 @@ Per-operation Proxy factory for `db.add`, `db.set`, `db.del` — constructs the 
 
 ### `query-builder-residual.js`
 
-Layers planner residual filters with supersession/confidence/graph-touching gates; `decorateResults` for `$provenance` and `_field` hydrates; `touchingCandidateIds` for GraphIndex adjacency.
+Layers planner residual filters with supersession/confidence/graph-touching gates; `decorateResults` for `$provenance` and `_field` hydrates; `touchingCandidateIds` for GraphIndex adjacency. **UC-G3:** `betweenCandidateIds(ctx, {aId, bId})` resolves `.between(a, b)` to its 0-or-1 candidate $ID set via the canonical-pair secondary index — keys into `__edgePair` through `idxMgr.candidatesFor` using the lex-sorted [min, max] pair from `registry.canonicalPairKey`. Returns a Set so the toArray dispatcher can intersect with plan.candidateIds uniformly with the touching path.
 
 **Exports:**
-- `composeResidualFilter`, `decorateResults`, `touchingCandidateIds`
+- `composeResidualFilter`, `decorateResults`, `touchingCandidateIds`, `betweenCandidateIds`
 
 ### `query-builder-vector-exec.js`
 
@@ -110,6 +110,7 @@ Proxy-based API handlers with middleware integration.
 - `db.schema(collection, schemaDef)` - Register a schema; auto-instantiates vector index if schema declares a vector field
 - `db.cascade.{scope}(id, opts?)` - Schema-scoped bulk delete (UC-X2); operates only on collections that declared a field with cascadeOn for the matching scope. `db.cascade.byField({collections, filter})` is the explicit-list escape hatch.
 - `db.algo.degree({collection, via, weighted?, top?})` - Degree centrality over a registered edge collection (UC-G5). PPR scoped for v3.
+- `db.algo.rebuildCanonicalPair({collection})` - UC-G3 migration: rebuild the canonical-pair secondary index for a unique-symmetric edge collection from existing edges. Idempotent. Only needed after upgrading from a Bri version that pre-dates `$edge.unique` enforcement.
 - `entity.expand({via, hops, budget, predicates, direction, edgeFilter})` - Parameterized BFS from the entity (UC-G6); see graph.md.
 
 **Transaction Methods:**
@@ -142,7 +143,7 @@ Transaction lifecycle bindings (rec/fin/nop/pop/txnStatus) for the public db int
 Chainable query builder used by the new `db.get.{collection}S.where(...).near(...)` surface. Immutable per-link chain (each chain method returns a new builder). Composes attribute filters with vector search by feeding `.where` predicates into the `VectorIndex.searchFiltered` traversal so filtering happens before k-truncation. Honors active transactions: when `db._activeTxnId` is set, `.near` calls `searchInTxn` (committed + pending merge) and propagates `txnId` to hydration. `.near` accepts an optional opts object (`{txnId: null}` to force-bypass the active txn, `{txnId: '<id>'}` to target a specific txn) for advanced query routing. `.count()`, `.distinct(field)`, and `.groupBy(field)` (UC-X3) provide aggregation primitives; the GroupedQueryBuilder it returns supports `.count()`, `.sum(field)`, `.having(filter)` with the shared filter compiler.
 
 **Exports:**
-- `QueryBuilder` class - chain methods: `where`, `near`, `match`, `combine`, `limit`, `toArray`, `first`, `count`, `distinct`, `groupBy`; thenable so `await builder` works.
+- `QueryBuilder` class - chain methods: `where`, `near`, `match`, `combine`, `limit`, `toArray`, `first`, `count`, `distinct`, `groupBy`, `touching`, `between`, `hydrate`, `confidence`, `history`, `withProvenance`; thenable so `await builder` works. `between(nodeA, nodeB)` is the UC-G3 canonical-pair lookup — only legal on edge collections declared `$edge.unique && symmetric`; throws `BETWEEN_NOT_A_UNIQUE_SYMMETRIC_EDGE` otherwise.
 - `default` - Same as QueryBuilder
 
 ### `grouped-query-builder.js`

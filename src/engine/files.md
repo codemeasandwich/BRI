@@ -23,6 +23,7 @@ src/engine/
 ├── predicate-inverse-related.js
 ├── predicate-proxy.js
 ├── schema-edge-declare.js
+├── canonical-pair.js
 ├── cascade.js
 ├── vector-index.js
 ├── vector-index-codec.js
@@ -130,7 +131,7 @@ Middleware plugin system.
 Per-database schema registry. Holds schemas declared via `db.schema('name', def)` and instantiates the per-collection VectorIndex when a schema declares a vector field. On startup, consults the storage adapter's persisted vector entries (loaded from snapshot during recovery) and reuses the deserialized index when present, or creates a fresh one otherwise. Validates dims/metric/field drift against persisted state and refuses incompatible re-declarations with a diagnostic error. Single source of truth for schema-driven features (validation, vector indexing, future secondary indexes / refs / cascade scopes).
 
 **Exports:**
-- `createSchemaRegistry(store)` - Returns registry with `declare`, `get`, `vectorIndex`, `vectorFieldOf`, `validate`, `secondaryIndexManager`, `vectorIndices`, `graphIndex`, `edgeSpec`, `collectionForPrefix`, `predicateEdge`, `inversePredicateEdge`, `predicatesForSubject`, `cascadeEntriesFor`, `lifecycleFieldsOf`. Reserved-name collision check fires at `declare` time when a `$edge.predicates` entry collides with the frozen proxy-method list. `cascadeOn`-flagged fields and `$supersession`/`$confidence`/`$provenance` flags are registered for `db.cascade` and the predicate proxy's chain methods respectively; `$`-flag values are validated against declared field names so a typo throws at schema load instead of silently filtering nothing. The optional `store` argument enables persistence-aware declares.
+- `createSchemaRegistry(store)` - Returns registry with `declare`, `get`, `vectorIndex`, `vectorFieldOf`, `validate`, `secondaryIndexManager`, `vectorIndices`, `graphIndex`, `edgeSpec`, `collectionForPrefix`, `predicateEdge`, `inversePredicateEdge`, `predicatesForSubject`, `cascadeEntriesFor`, `lifecycleFieldsOf`, `needsCanonicalPair(collection)`, `canonicalPairKey(collection, doc)`. Reserved-name collision check fires at `declare` time when a `$edge.predicates` entry collides with the frozen proxy-method list. `cascadeOn`-flagged fields and `$supersession`/`$confidence`/`$provenance` flags are registered for `db.cascade` and the predicate proxy's chain methods respectively; `$`-flag values are validated against declared field names so a typo throws at schema load instead of silently filtering nothing. UC-G3: when an edge schema declares `$edge.unique && symmetric`, the registry registers a synthetic `__edgePair` secondary index and adds the collection to a `canonicalPairCollections` Set; `needsCanonicalPair` and `canonicalPairKey` are read by `vector-middleware.js` (for sync + uniqueness pre-check) and the QueryBuilder's `.between(a, b)` chain method. The optional `store` argument enables persistence-aware declares.
 
 ### `vector-index.js`
 
@@ -181,7 +182,7 @@ Per-transaction deferred-linking buffer for the vector index (spec §7.1). `_pen
 
 ### `vector-middleware.js`
 
-Middleware that keeps the per-collection VectorIndex, any declared secondary indexes, AND the GraphIndex in sync with add/set/del operations and enforces schemas registered through the registry. Validation runs before next() (invalid writes short-circuit before storage); index sync runs after next() (so ctx.result.$ID is populated). For set/del on collections with secondary indexes or edge collections, the middleware pre-fetches the old document so SortedIndex.update and GraphIndex.removeEdge can target the OLD field values before applying the NEW. When `ctx.opts.txnId` is set, vector writes route through `addStaged` / `removeStaged` so the committed index buffer is never touched until `db.fin()` flushes the pending bucket.
+Middleware that keeps the per-collection VectorIndex, any declared secondary indexes, AND the GraphIndex in sync with add/set/del operations and enforces schemas registered through the registry. Validation runs before next() (invalid writes short-circuit before storage); index sync runs after next() (so ctx.result.$ID is populated). For set/del on collections with secondary indexes or edge collections, the middleware pre-fetches the old document so SortedIndex.update and GraphIndex.removeEdge can target the OLD field values before applying the NEW. When `ctx.opts.txnId` is set, vector writes route through `addStaged` / `removeStaged` so the committed index buffer is never touched until `db.fin()` flushes the pending bucket. **UC-G3:** for collections that declared `$edge.unique && symmetric`, runs a pre-write uniqueness check using the canonical-pair index and throws `EDGE_PAIR_NOT_UNIQUE` on duplicate pairs (pre-validate to avoid orphan cleanup). Post-write index sync projects a synthetic `__edgePair` field onto a SHADOW copy of the doc so the SecondaryIndexManager keys the canonical pair without mutating the persisted body.
 
 **Exports:**
 - `vectorIndexMiddleware(registry)` - Returns the middleware function
@@ -229,10 +230,10 @@ Multi-hop BFS expansion (UC-G6) — the implementation behind `entity.expand({..
 
 ### `graph-algo.js`
 
-Graph algorithms namespace (UC-G5) — `createAlgo({registry, getDb})` returns `{ degree, ... }`. Degree centrality iterates every node in `collection`, sums incoming + outgoing edges from `via`, optionally weighted by a named edge field; sorts by degree desc with optional top-k cap. PPR is scoped for v3 per spec §6.3.
+Graph algorithms namespace (UC-G5, UC-G3 migration) — `createAlgo({registry, getDb})` returns `{ degree, rebuildCanonicalPair }`. Degree centrality iterates every node in `collection`, sums incoming + outgoing edges from `via`, optionally weighted by a named edge field; sorts by degree desc with optional top-k cap. `rebuildCanonicalPair({collection})` is the UC-G3 migration helper: walks every edge document and inserts the canonical-pair shadow projection into the SecondaryIndexManager so a database upgraded from a Bri version that pre-dates `$edge.unique` enforcement gets a populated index. Idempotent. PPR is scoped for v3 per spec §6.3.
 
 **Exports:**
-- `createAlgo({registry, getDb})` - Builds the algo namespace
+- `createAlgo({registry, getDb})` - Builds the algo namespace (`{ degree, rebuildCanonicalPair }`)
 - `default` - Same as createAlgo
 
 ### `chain-walk.js`
@@ -260,13 +261,21 @@ Resolves property accesses on reactive entities to predicate-aware accessors whe
 
 ### `schema-edge-declare.js`
 
-Helpers for processing the `$edge` block at schema-declaration time. `buildEdgeSpec(collection, schemaDef)` resolves concrete from/to field names from the schema's ref-typed fields in declaration order (per spec §2.1.3), validates predicate names against the frozen `RESERVED_PROXY_NAMES` list (§0.4), and emits the enriched edge spec consumed by GraphIndex + predicate-proxy. `registerPredicateRouting` wires (subject collection, predicate) to the matching edge collection and rejects cross-schema ambiguity. `registerInversePredicateRouting` mirrors that under the to-collection so `acme.inverse.works_at` can find the matching edge collection (polymorphic `'a | b'` to-constraints split on `|`; the literal `string` pseudo-collection is skipped).
+Helpers for processing the `$edge` block at schema-declaration time. `buildEdgeSpec(collection, schemaDef)` resolves concrete from/to field names from the schema's ref-typed fields in declaration order (per spec §2.1.3), validates predicate names against the frozen `RESERVED_PROXY_NAMES` list (§0.4), enforces the UC-G3 invariant `$edge.unique ⇒ $edge.symmetric` (throws `EDGE_UNIQUE_REQUIRES_SYMMETRIC` otherwise — ordered uniqueness has different semantics and is out of scope), and emits the enriched edge spec consumed by GraphIndex + predicate-proxy + canonical-pair index. `'between'` is reserved here for the UC-G3 chain method. `registerPredicateRouting` wires (subject collection, predicate) to the matching edge collection and rejects cross-schema ambiguity. `registerInversePredicateRouting` mirrors that under the to-collection so `acme.inverse.works_at` can find the matching edge collection (polymorphic `'a | b'` to-constraints split on `|`; the literal `string` pseudo-collection is skipped).
 
 **Exports:**
 - `RESERVED_PROXY_NAMES` - Frozen set of reserved proxy method names
 - `buildEdgeSpec(collection, schemaDef)` - Returns `{enrichedSpec, predicates}`
 - `registerPredicateRouting(map, edge, edgeCollection, predicates)` - Mutates the routing map in-place
 - `registerInversePredicateRouting(map, edge, edgeCollection, predicates)` - Mirror for the object-side
+
+### `canonical-pair.js`
+
+UC-G3 helpers extracted from schema-registry.js to keep that file under the 260-source-line gate. `canonicalPairKeyFor(edgeSpec, doc)` returns the lex-sorted `[min(fromId, toId), max(fromId, toId)]` two-element key for an edge document, or null when an endpoint is missing — pure utility, used by both schema-registry's `canonicalPairKey` method and graph-algo's `rebuildCanonicalPair` migration helper to avoid a registry round-trip per edge.
+
+**Exports:**
+- `canonicalPairKeyFor(edgeSpec, doc)` - Compute the canonical-pair key
+- `default` - Same as canonicalPairKeyFor
 
 ### `cascade.js`
 
@@ -278,7 +287,7 @@ Schema-scoped cancellation cascade — the §10 NON-NEGOTIABLE. `createCascade({
 
 ### `errors.js`
 
-Typed error classes for the vector + graph surface (spec §2.11). Exports `BriError` and subclasses `BriValidationError`, `BriQueryError`, `BriProxyError`, `BriSchemaError`, `BriRecoveryError`, plus frozen string constants (`VECTOR_DIMS_MISMATCH`, `CASCADE_SCOPE_UNKNOWN`, etc.) so catch sites can branch on `error.code` without regexing messages.
+Typed error classes for the vector + graph surface (spec §2.11). Exports `BriError` and subclasses `BriValidationError`, `BriQueryError`, `BriProxyError`, `BriSchemaError`, `BriRecoveryError`, plus frozen string constants (`VECTOR_DIMS_MISMATCH`, `CASCADE_SCOPE_UNKNOWN`, etc.) so catch sites can branch on `error.code` without regexing messages. UC-G3 codes: `EDGE_PAIR_NOT_UNIQUE` (write-time duplicate-pair on a unique-symmetric edge), `BETWEEN_NOT_A_UNIQUE_SYMMETRIC_EDGE` (`.between` called on the wrong collection shape), `EDGE_UNIQUE_REQUIRES_SYMMETRIC` (schema-load enforcement).
 
 **Exports:**
 - Error classes and `ERROR_CODES` / individual code re-exports

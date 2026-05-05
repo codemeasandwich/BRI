@@ -107,8 +107,8 @@ const KGTripleSchema = {
 | `to` | Collection name (or `'A | B'` for polymorphic, where `string` means "literal"). |
 | `predicate` | Name of the field on the edge document that holds the predicate string. Optional — if absent the edge is treated as relation-typed. |
 | `predicates` | Array of allowed predicate values, or `'*'` for open. v1 routes only explicit lists (`'*'` disables predicate-proxy routing for that edge). |
-| `symmetric` | Boolean. When true, `.coOccursWith(b, attrs)` and `b.coOccursWith(a, attrs)` produce a canonical edge by sorting the endpoint pair lexicographically. |
-| `unique` | Boolean. When true, `(from, to, predicate)` is a uniqueness key — repeat writes upsert. |
+| `symmetric` | Boolean. Marks the edge as undirected — `(A, B)` and `(B, A)` describe the same logical edge. Required when paired with `unique: true`. Also governs traversal direction in `expand({direction: 'both'})`. |
+| `unique` | Boolean. When true, the edge collection enforces **at most one edge per unordered pair** of endpoints (UC-G3). **Requires** `symmetric: true` — declaring `unique: true` without `symmetric: true` throws `EDGE_UNIQUE_REQUIRES_SYMMETRIC` at schema-load time, since ordered uniqueness has different semantics. Backed by the canonical-pair secondary index; duplicate inserts throw `EDGE_PAIR_NOT_UNIQUE`. Enables the `.between(a, b)` chain method on the QueryBuilder. See [docs/graph.md → Unique symmetric edges](graph.md#unique-symmetric-edges-uc-g3). |
 
 ### Field-level `cascadeOn`
 

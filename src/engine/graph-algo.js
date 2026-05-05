@@ -1,8 +1,9 @@
 /**
  * @file Graph algorithms — `db.algo.{name}` per spec §2.7.
  *
- * v1 implements `degree` (centrality) only. PPR (`db.algo.ppr`) is scoped
- * for v3 per spec §6.3 / §7.5.
+ * Today implements `degree` (UC-G5) and `rebuildCanonicalPair` (UC-G3
+ * migration). PPR (`db.algo.ppr`) remains scoped for v3 per spec §6.3 /
+ * §7.5; out of scope for the UC-G3 round.
  *
  * Why a free namespace: parameter-rich algorithms read better as
  * `db.algo.degree({collection, via, weighted, top})` than as a property
@@ -10,7 +11,13 @@
  * algorithms that operate over an entire collection / edge set belong in
  * a separate, deliberate namespace.
  *
- * @implements UC-G5 (degree)
+ * Consumed by: client/index.js (db.algo wiring).
+ * Consumes: schema-registry (graphIndex, edgeSpec, secondaryIndexManager,
+ *   needsCanonicalPair, canonicalPairKey), getDb for hydration through
+ *   db.get[`${collection}S`]() — kept lazy so the registry can be built
+ *   before the db singleton resolves.
+ *
+ * @implements UC-G5 (degree), UC-G3 migration (rebuildCanonicalPair)
  */
 
 /**
@@ -36,7 +43,36 @@ export function createAlgo({ registry, getDb }) {
      * @param {number} [args.top] - Cap result count (top-k)
      * @returns {Promise<Array<{entity:Object, degree:number}>>}
      */
-    degree: (args) => degree({ ...args, registry, getDb })
+    degree: (args) => degree({ ...args, registry, getDb }),
+
+    /**
+     * UC-G3 migration helper — rebuild the canonical-pair secondary index
+     * for an edge collection from existing edge documents.
+     *
+     * When to call: only ONCE, after upgrading from a Bri version that
+     * predates `$edge.unique && symmetric` enforcement (≤ v2.0.0) and
+     * still has edge documents on disk. The canonical-pair index is
+     * normally populated by vector-middleware on every add/set, so fresh
+     * databases never need this. The rebuild is idempotent — if the
+     * index is already populated it re-inserts the same keys.
+     *
+     * Why expose it here vs. running automatically at registry construction:
+     *   The registry's declare() is synchronous; the rebuild requires
+     *   async iteration of the store via `db.get[`${collection}S`]()`,
+     *   which depends on the db singleton being fully wired (middleware
+     *   chain, proxy traps, etc.). Making declare() async would ripple
+     *   through every consumer; an explicit one-shot call keeps the cost
+     *   visible.
+     *
+     * @param {Object} args
+     * @param {string} args.collection - Edge collection name (must be
+     *   declared with `$edge.unique && $edge.symmetric` — throws otherwise
+     *   so misuse on a non-canonical-pair collection fails loudly).
+     * @returns {Promise<{collection:string, indexed:number}>} count of
+     *   edges successfully indexed; useful as a smoke check after an
+     *   upgrade that the index is populated.
+     */
+    rebuildCanonicalPair: (args) => rebuildCanonicalPair({ ...args, registry, getDb })
   };
 }
 
@@ -129,6 +165,68 @@ async function degree({ collection, via, weighted, top, registry, getDb }) {
     if (entity) out.push({ entity, degree: d });
   }
   return out;
+}
+
+/**
+ * Implementation: UC-G3 canonical-pair index rebuild.
+ *
+ * Iterates every edge document in `collection` and inserts a shadow
+ * `__edgePair` projection into the SecondaryIndexManager — same shape
+ * the live `vector-middleware.js` uses on add/set, so the index ends up
+ * identical to one populated incrementally.
+ *
+ * Why this is safe to run on a populated index:
+ *   `SortedIndex.insert(key, id)` is idempotent on `(key, id)` pairs.
+ *   Re-inserting an already-indexed edge is a no-op.
+ *
+ * Why we read via `db.get[`${collection}S`]()` rather than the raw store:
+ *   Goes through the same hydration path as production reads, so any
+ *   reactive-proxy or schema transform applies uniformly. Identical to
+ *   `degree`'s iteration pattern at line 82 — see file docblock.
+ *
+ * Phantom safety: if a doc is missing `from`/`to` fields,
+ * `canonicalPairKey` returns null and we skip the insert (would have
+ * been impossible to index in the live path either).
+ *
+ * @param {Object} args
+ * @param {string} args.collection - Edge collection name
+ * @param {Object} args.registry   - Schema registry
+ * @param {Function} args.getDb    - Lazy db accessor
+ * @returns {Promise<{collection:string, indexed:number}>}
+ * @throws {Error} when collection is not declared as $edge.unique && symmetric
+ */
+async function rebuildCanonicalPair({ collection, registry, getDb }) {
+  if (!collection) {
+    throw new Error('db.algo.rebuildCanonicalPair: requires { collection }');
+  }
+  if (!registry.needsCanonicalPair(collection)) {
+    throw new Error(
+      `db.algo.rebuildCanonicalPair: '${collection}' is not declared as a ` +
+      `unique-symmetric edge collection ($edge.unique && $edge.symmetric). ` +
+      `Either declare both flags on the schema, or skip the rebuild — ` +
+      `non-canonical-pair collections have nothing to rebuild.`
+    );
+  }
+  const idxMgr = registry.secondaryIndexManager();
+  const db = getDb();
+  // Enumerate all edges in the collection. Same `${collection}S` shape
+  // as `degree` uses; the trailing 'S' triggers the legacy callable-form
+  // group-get (returns Array<entity>).
+  const edges = await db.get[`${collection}S`]();
+  let indexed = 0;
+  for (const edge of edges) {
+    if (!edge || !edge.$ID) continue;
+    const pairKey = registry.canonicalPairKey(collection, edge);
+    if (!pairKey) continue;
+    // Mirror the live shadow-doc pattern from vector-middleware.js: a
+    // plain POJO with `__edgePair` projected; the persisted body is
+    // never mutated.
+    const shadow = typeof edge.toObject === 'function' ? edge.toObject() : { ...edge };
+    shadow.__edgePair = pairKey;
+    idxMgr.insert(collection, shadow);
+    indexed++;
+  }
+  return { collection, indexed };
 }
 
 export default createAlgo;

@@ -135,7 +135,13 @@ function createGetProxy(wrapper, registry, middleware, getDb) {
     'match', 'combine',
     // Spec §2.2 chain-method completion (see client/query-builder.js):
     'touching', 'hydrate', 'confidence',
-    'history', 'withProvenance', 'asOf'
+    'history', 'withProvenance', 'asOf',
+    // UC-G3 — canonical-pair edge lookup. Routed here so
+    // `db.get.lexicalEdgeS.between(a, b).first()` constructs a chain
+    // builder instead of falling through to the legacy callable. Mirrors
+    // the RESERVED_PROXY_NAMES entry in engine/schema-edge-declare.js so
+    // a schema author can't shadow it with a predicate or ref-field name.
+    'between'
   ]);
 
   return new Proxy(function() {}, {
