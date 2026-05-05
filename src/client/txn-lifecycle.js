@@ -15,6 +15,11 @@
  */
 
 import { type2Short } from '../engine/types.js';
+import {
+  commitTxn as commitSecondaryTxn,
+  rollbackTxn as rollbackSecondaryTxn,
+  popStagedOp as popSecondaryStagedOp
+} from '../engine/secondary-index-txn.js';
 
 /**
  * Build the lifecycle methods bound to a store + registry. Returns an
@@ -68,6 +73,11 @@ export function createTxnLifecycle(store, registry, getDb) {
         for (const [_collection, index] of registry.vectorIndices()) {
           index.commit(txnId);
         }
+        // Drop the secondary-index rollback log — forward writes are
+        // already in the live index; the log was the safety net for
+        // undoing them and is no longer needed (UC-G3 AC#4).
+        const sIdx = registry.secondaryIndexManager?.();
+        if (sIdx) commitSecondaryTxn(sIdx, txnId);
         if (db._activeTxnId === txnId) {
           db._activeTxnId = null;
           db._activeTxnSessionId = null;
@@ -95,6 +105,12 @@ export function createTxnLifecycle(store, registry, getDb) {
         for (const [_collection, index] of registry.vectorIndices()) {
           index.rollback(txnId);
         }
+        // Walk the secondary-index rollback log in reverse and apply
+        // inverse ops — required so a cancelled txn leaves the index
+        // bit-identical to its pre-rec() state (UC-V4 AC#2 cited by
+        // UC-G3 AC#4 for the canonical-pair uniqueness invariant).
+        const sIdx = registry.secondaryIndexManager?.();
+        if (sIdx) rollbackSecondaryTxn(sIdx, txnId);
         if (db._activeTxnId === txnId) {
           db._activeTxnId = null;
           db._activeTxnSessionId = null;
@@ -131,6 +147,12 @@ export function createTxnLifecycle(store, registry, getDb) {
               index.popStaged(txnId, action.target);
             }
           }
+          // Mirror the pop into the secondary-index rollback log so the
+          // canonical-pair / $indexes entries stay in lock-step with
+          // storage. No-op when the popped target had no logged op
+          // (e.g. SADD-only popped before its paired SET).
+          const sIdx = registry.secondaryIndexManager?.();
+          if (sIdx) popSecondaryStagedOp(sIdx, txnId, action.target);
         }
         return action;
       });

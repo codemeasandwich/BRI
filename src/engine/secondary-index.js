@@ -29,6 +29,8 @@
  * @implements engine portion of UC-X1 / UC-V1 .where-prefilter path
  */
 
+import { logTxnOp } from './secondary-index-txn.js';
+
 /**
  * Compute the JSON-encoded compound key for a given list of field values.
  *
@@ -200,6 +202,14 @@ class SortedIndex {
  * Per-database secondary-index manager. Owns one or more SortedIndex
  * instances per collection and routes writes/lookups.
  *
+ * Transaction semantics: insert/update/remove accept an optional `txnId`
+ * argument. When supplied, the call is logged into a per-txn rollback
+ * buffer (`_txnLog`) so `commitTxn` / `rollbackTxn` / `popStagedOp` can
+ * keep the index consistent with storage-layer commit/cancel/pop. The
+ * forward write itself still applies immediately — required for reads
+ * inside the same txn (e.g. UC-G3 canonical-pair uniqueness pre-check)
+ * to observe the staged state.
+ *
  * @class SecondaryIndexManager
  */
 export class SecondaryIndexManager {
@@ -210,6 +220,9 @@ export class SecondaryIndexManager {
   constructor() {
     // collection -> [{ fields: string[], index: SortedIndex }, ...]
     this._byCollection = new Map();
+    // txnId -> Array<{op, collection, doc?, oldDoc?, newDoc?}> rollback log.
+    // Empty for txnIds with no logged ops; populated lazily via logTxnOp.
+    this._txnLog = new Map();
   }
 
   /**
@@ -237,11 +250,64 @@ export class SecondaryIndexManager {
   }
 
   /**
-   * Sync all indexes for a collection on a fresh insert.
+   * Sync all indexes for a collection on a fresh insert. When `txnId` is
+   * supplied (i.e. the write happened inside an open transaction), log
+   * an inverse-op so `rollbackTxn` can undo the change if the txn is
+   * cancelled. The forward write applies immediately either way — reads
+   * inside the same txn must observe the staged state (UC-G3 uniqueness
+   * pre-check depends on this).
+   *
    * @param {string} collection
    * @param {Object} doc - Document with $ID and the indexed fields
+   * @param {string|null} [txnId] - Active transaction id, or null
    */
-  insert(collection, doc) {
+  insert(collection, doc, txnId = null) {
+    if (txnId) logTxnOp(this, txnId, { op: 'insert', collection, doc: { ...doc } });
+    this._applyInsert(collection, doc);
+  }
+
+  /**
+   * Sync all indexes on a delete (uses the pre-delete doc body). Logs
+   * an inverse-insert when called inside a txn so rollback restores the
+   * removed entry.
+   *
+   * @param {string} collection
+   * @param {Object} doc - The document being removed
+   * @param {string|null} [txnId]
+   */
+  remove(collection, doc, txnId = null) {
+    if (txnId) logTxnOp(this, txnId, { op: 'remove', collection, doc: { ...doc } });
+    this._applyRemove(collection, doc);
+  }
+
+  /**
+   * Sync all indexes on an update — removes the OLD key entries, inserts the
+   * NEW. Logs the (oldDoc, newDoc) snapshot so rollback can swap back.
+   *
+   * @param {string} collection
+   * @param {Object} oldDoc
+   * @param {Object} newDoc
+   * @param {string|null} [txnId]
+   */
+  update(collection, oldDoc, newDoc, txnId = null) {
+    if (txnId) {
+      logTxnOp(this, txnId, {
+        op: 'update', collection,
+        oldDoc: { ...oldDoc }, newDoc: { ...newDoc }
+      });
+    }
+    this._applyUpdate(collection, oldDoc, newDoc);
+  }
+
+  /**
+   * Apply the insert side-effect to every declared index for the
+   * collection. Pure side-effect — no logging, no validation. Internal
+   * use only (called by `insert` and by the rollback path).
+   * @param {string} collection
+   * @param {Object} doc
+   * @private
+   */
+  _applyInsert(collection, doc) {
     const specs = this._byCollection.get(collection);
     if (!specs) return;
     for (const { fields, index } of specs) {
@@ -251,11 +317,13 @@ export class SecondaryIndexManager {
   }
 
   /**
-   * Sync all indexes on a delete (uses the pre-delete doc body).
+   * Apply the remove side-effect. See _applyInsert for the logging
+   * contract.
    * @param {string} collection
-   * @param {Object} doc - The document being removed
+   * @param {Object} doc
+   * @private
    */
-  remove(collection, doc) {
+  _applyRemove(collection, doc) {
     const specs = this._byCollection.get(collection);
     if (!specs) return;
     for (const { fields, index } of specs) {
@@ -265,14 +333,14 @@ export class SecondaryIndexManager {
   }
 
   /**
-   * Sync all indexes on an update — removes the OLD key entries, inserts the
-   * NEW. Caller must supply both pre- and post-state docs.
-   *
+   * Apply the update side-effect (key churn only when oldKey !== newKey,
+   * matching the public `update` semantics).
    * @param {string} collection
    * @param {Object} oldDoc
    * @param {Object} newDoc
+   * @private
    */
-  update(collection, oldDoc, newDoc) {
+  _applyUpdate(collection, oldDoc, newDoc) {
     const specs = this._byCollection.get(collection);
     if (!specs) return;
     for (const { fields, index } of specs) {
@@ -284,6 +352,7 @@ export class SecondaryIndexManager {
       }
     }
   }
+
 
   /**
    * Find candidate IDs for a filter. Picks the index that covers the longest

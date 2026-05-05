@@ -175,17 +175,20 @@ export function vectorIndexMiddleware(registry) {
       }
     }
 
-    // POST: sync secondary indexes.
-    //
-    // For canonical-pair collections (UC-G3), project the synthetic
-    // `__edgePair` field onto a SHADOW copy of the doc passed to the
-    // index manager. The shadow lives only for the duration of the
-    // insert/update/remove call; the persisted document body never carries
-    // `__edgePair`. SecondaryIndexManager keys each spec by reading
-    // doc[field], so the synthetic key has to appear on the object the
-    // manager sees — but it must not appear on the doc on disk (would
-    // round-trip through validation, JSON, etc. and become a leaking
-    // implementation detail).
+    /* POST: sync secondary indexes.
+     *
+     * For canonical-pair collections (UC-G3), project the synthetic
+     * `__edgePair` field onto a SHADOW copy of the doc passed to the
+     * index manager. The shadow lives only for the duration of the
+     * insert/update/remove call; the persisted body never carries
+     * `__edgePair`.
+     *
+     * txnId pass-through: when the write happens inside an open
+     * transaction, route the manager call through the rollback-log path
+     * (UC-G3 AC#4 / UC-V4 isolation). The forward write applies
+     * immediately so reads inside the same txn observe the staged
+     * state — the log only matters for nop / pop. */
+    const idxTxnId = ctx.opts.txnId || null;
     if (hasSecondary) {
       /**
        * Project __edgePair onto a SHADOW copy of an edge doc for the
@@ -211,15 +214,15 @@ export function vectorIndexMiddleware(registry) {
 
       if (ctx.operation === 'add') {
         const entity = ctx.result;
-        if (entity && entity.$ID) idxMgr.insert(ctx.type, projectShadow(entity));
+        if (entity && entity.$ID) idxMgr.insert(ctx.type, projectShadow(entity), idxTxnId);
       } else if (ctx.operation === 'set') {
         const entity = ctx.result;
         if (entity && entity.$ID) {
-          if (preDoc) idxMgr.update(ctx.type, projectShadow(preDoc), projectShadow(entity));
-          else idxMgr.insert(ctx.type, projectShadow(entity));
+          if (preDoc) idxMgr.update(ctx.type, projectShadow(preDoc), projectShadow(entity), idxTxnId);
+          else idxMgr.insert(ctx.type, projectShadow(entity), idxTxnId);
         }
       } else if (ctx.operation === 'del') {
-        if (preDoc && preDoc.$ID) idxMgr.remove(ctx.type, projectShadow(preDoc));
+        if (preDoc && preDoc.$ID) idxMgr.remove(ctx.type, projectShadow(preDoc), idxTxnId);
       }
     }
 

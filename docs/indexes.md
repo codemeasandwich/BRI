@@ -90,6 +90,8 @@ The engine keeps secondary indexes in sync on every write:
 
 These updates happen inside the same middleware that handles vector indexing, so a write that satisfies validation always leaves both the document store and the indexes in a consistent state.
 
+**Transactions.** When the write happens inside `db.rec()`/`db.fin()`, the index update applies immediately (so reads inside the same txn observe staged state — required for UC-G3 canonical-pair uniqueness pre-check). The middleware also passes the `txnId` to `SecondaryIndexManager.insert/update/remove`, which logs an inverse-op into a per-txn rollback buffer. `db.fin()` drops the buffer; `db.nop()` walks it in reverse and applies inverse ops (UC-V4 AC#2 / UC-G3 AC#4); `db.pop()` undoes the most recent logged op for the popped $ID. See [`engine/secondary-index-txn.js`](../src/engine/secondary-index-txn.js).
+
 ---
 
 ## Persistence

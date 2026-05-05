@@ -330,6 +330,8 @@ Catch the error to branch on the existing $ID — typical pattern is "if the edg
 
 **Implementation.** Bri stores a synthetic field `__edgePair = [min(fromId, toId), max(fromId, toId)]` in a `SortedIndex` registered alongside any other secondary indexes. The shadow projection lives only in the index — the persisted document body is never mutated. The same index serves both lookup (`.between`) and uniqueness (pre-write check in middleware). See [engine/schema-registry.js](../src/engine/schema-registry.js) and [engine/vector-middleware.js](../src/engine/vector-middleware.js) for the wiring.
 
+**Transactions.** Edge upserts inside `db.rec()`/`db.fin()` participate in the canonical-pair index via the secondary-index rollback log. `db.fin()` commits the index entries; `db.nop()` walks back and undoes them so the index ends up bit-identical to its pre-`rec()` state (UC-V4 AC#2 cited by UC-G3 AC#4). `db.pop()` mirrors the per-action undo. Reads inside the same txn observe the staged write — required for the uniqueness pre-check to detect a same-txn duplicate on the same pair.
+
 **Constraint.** `unique: true` requires `symmetric: true` — declare-time throw (`EDGE_UNIQUE_REQUIRES_SYMMETRIC`) otherwise. Ordered uniqueness `(A→B) ≠ (B→A)` is a different shape and not supported by this round.
 
 ---

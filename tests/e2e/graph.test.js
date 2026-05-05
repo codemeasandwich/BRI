@@ -1707,4 +1707,166 @@ describe('UC-G3: unordered pair lookup', () => {
     expect(e1).not.toBeNull();
     expect(e1.co_occurrence_count).toBe(1);
   });
+
+  test('delete on canonical-pair edge clears the index entry', async () => {
+    db = await freshDB();
+    declareLexicalSchema(db);
+    const alpha = await db.add.lexicalEntity({ term: 'alpha' });
+    const beta  = await db.add.lexicalEntity({ term: 'beta' });
+    const e = await db.add.lexicalEdge({
+      node_a: alpha.$ID, node_b: beta.$ID, co_occurrence_count: 1
+    });
+    expect((await db.get.lexicalEdgeS.between(alpha, beta).first())?.$ID).toBe(e.$ID);
+
+    await db.del.lexicalEdge(e.$ID);
+
+    // Index entry must be gone — between returns null AND a fresh insert
+    // for the same pair must succeed (no stale uniqueness conflict).
+    expect(await db.get.lexicalEdgeS.between(alpha, beta).first()).toBeNull();
+    const e2 = await db.add.lexicalEdge({
+      node_a: alpha.$ID, node_b: beta.$ID, co_occurrence_count: 99
+    });
+    expect(e2.$ID).not.toBe(e.$ID);
+    expect((await db.get.lexicalEdgeS.between(alpha, beta).first())?.co_occurrence_count).toBe(99);
+  });
+
+  test('set that changes endpoints updates the canonical-pair index', async () => {
+    db = await freshDB();
+    declareLexicalSchema(db);
+    const a = await db.add.lexicalEntity({ term: 'a' });
+    const b = await db.add.lexicalEntity({ term: 'b' });
+    const c = await db.add.lexicalEntity({ term: 'c' });
+    const e = await db.add.lexicalEdge({
+      node_a: a.$ID, node_b: c.$ID, co_occurrence_count: 1
+    });
+
+    // set: change the pair from {a,c} to {b,c}, also bump the counter.
+    await db.set.lexicalEdge({
+      $ID: e.$ID, node_a: b.$ID, node_b: c.$ID, co_occurrence_count: 5
+    });
+
+    expect(await db.get.lexicalEdgeS.between(a, c).first()).toBeNull();
+    const found = await db.get.lexicalEdgeS.between(b, c).first();
+    expect(found.$ID).toBe(e.$ID);
+    expect(found.co_occurrence_count).toBe(5);
+  });
+
+  test('self-edge {a, a} indexes correctly and rejects duplicates', async () => {
+    db = await freshDB();
+    declareLexicalSchema(db);
+    const a = await db.add.lexicalEntity({ term: 'a' });
+    const e = await db.add.lexicalEdge({ node_a: a.$ID, node_b: a.$ID });
+    const found = await db.get.lexicalEdgeS.between(a, a).first();
+    expect(found.$ID).toBe(e.$ID);
+
+    let captured = null;
+    try {
+      await db.add.lexicalEdge({ node_a: a.$ID, node_b: a.$ID });
+    } catch (err) {
+      captured = err;
+    }
+    expect(captured?.code).toBe('EDGE_PAIR_NOT_UNIQUE');
+  });
+
+  test('UC-G3 AC#4: db.nop() leaves canonical-pair index bit-identical to pre-rec()', async () => {
+    db = await freshDB();
+    declareLexicalSchema(db);
+    const a = await db.add.lexicalEntity({ term: 'a' });
+    const b = await db.add.lexicalEntity({ term: 'b' });
+
+    // Insert an edge inside a txn, then cancel.
+    const t = db.rec();
+    await db.add.lexicalEdge(
+      { node_a: a.$ID, node_b: b.$ID, co_occurrence_count: 1 },
+      { txnId: t }
+    );
+    await db.nop(t);
+
+    // The doc rolled back AND the canonical-pair index entry rolled back
+    // — verified end-to-end: a fresh insert for the same pair must
+    // succeed (would throw EDGE_PAIR_NOT_UNIQUE on a stale leak).
+    const fresh = await db.add.lexicalEdge({
+      node_a: a.$ID, node_b: b.$ID, co_occurrence_count: 99
+    });
+    expect(fresh.co_occurrence_count).toBe(99);
+    expect((await db.get.lexicalEdgeS.between(a, b).first()).$ID).toBe(fresh.$ID);
+  });
+
+  test('UC-G3 AC#4: db.fin() commits the canonical-pair entry as expected', async () => {
+    db = await freshDB();
+    declareLexicalSchema(db);
+    const a = await db.add.lexicalEntity({ term: 'a' });
+    const b = await db.add.lexicalEntity({ term: 'b' });
+
+    const t = db.rec();
+    const e = await db.add.lexicalEdge(
+      { node_a: a.$ID, node_b: b.$ID, co_occurrence_count: 7 },
+      { txnId: t }
+    );
+    await db.fin(t);
+    // Edge visible from outside the (now-committed) txn.
+    const found = await db.get.lexicalEdgeS.between(a, b).first();
+    expect(found.$ID).toBe(e.$ID);
+    // Subsequent same-pair add still throws (commit kept the entry).
+    let captured = null;
+    try {
+      await db.add.lexicalEdge({ node_a: a.$ID, node_b: b.$ID });
+    } catch (err) {
+      captured = err;
+    }
+    expect(captured?.code).toBe('EDGE_PAIR_NOT_UNIQUE');
+  });
+
+  test('UC-G3 AC#4: uniqueness check fires INSIDE a txn (same-txn duplicate detection)', async () => {
+    db = await freshDB();
+    declareLexicalSchema(db);
+    const a = await db.add.lexicalEntity({ term: 'a' });
+    const b = await db.add.lexicalEntity({ term: 'b' });
+
+    const t = db.rec();
+    await db.add.lexicalEdge(
+      { node_a: a.$ID, node_b: b.$ID, co_occurrence_count: 1 },
+      { txnId: t }
+    );
+    // Second add of the same pair INSIDE THE SAME TXN must throw —
+    // the rollback-log path applies forward writes immediately so the
+    // uniqueness pre-check sees the staged entry.
+    let captured = null;
+    try {
+      await db.add.lexicalEdge(
+        { node_a: b.$ID, node_b: a.$ID, co_occurrence_count: 99 },
+        { txnId: t }
+      );
+    } catch (err) {
+      captured = err;
+    }
+    expect(captured?.code).toBe('EDGE_PAIR_NOT_UNIQUE');
+    await db.nop(t); // clean up the txn
+  });
+
+  test('UC-G3 AC#4: db.pop() rolls back the canonical-pair entry for the popped action', async () => {
+    db = await freshDB();
+    declareLexicalSchema(db);
+    const a = await db.add.lexicalEntity({ term: 'a' });
+    const b = await db.add.lexicalEntity({ term: 'b' });
+
+    const t = db.rec();
+    await db.add.lexicalEdge(
+      { node_a: a.$ID, node_b: b.$ID, co_occurrence_count: 1 },
+      { txnId: t }
+    );
+    // db.add records SET + SADD; pop twice to fully undo the edge add.
+    await db.pop(t);
+    await db.pop(t);
+    await db.fin(t);
+
+    // After commit, the popped edge should NOT exist anywhere — the
+    // canonical-pair index must be clean (a fresh insert for the same
+    // pair must succeed).
+    expect(await db.get.lexicalEdgeS.between(a, b).first()).toBeNull();
+    const fresh = await db.add.lexicalEdge({
+      node_a: a.$ID, node_b: b.$ID, co_occurrence_count: 42
+    });
+    expect(fresh.co_occurrence_count).toBe(42);
+  });
 });

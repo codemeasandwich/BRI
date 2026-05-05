@@ -132,7 +132,7 @@ Proxy-based API handlers with middleware integration.
 
 ### `txn-lifecycle.js`
 
-Transaction lifecycle bindings (rec/fin/nop/pop/txnStatus) for the public db interface. Bridges the storage-layer transaction lifecycle to the schema registry's vector indexes — fin flushes each index's pending bucket via index.commit(txnId), nop calls rollback, and pop targets popStaged on the matching collection's index when the popped action was a SET on a vector-bearing $ID.
+Transaction lifecycle bindings (rec/fin/nop/pop/txnStatus) for the public db interface. Bridges the storage-layer transaction lifecycle to the schema registry's vector indexes AND the secondary-index manager via the free functions in `engine/secondary-index-txn.js` (commitTxn / rollbackTxn / popStagedOp) — fin flushes each vector index's pending bucket and drops the secondary-index rollback log; nop calls index.rollback and walks the secondary-index log in reverse applying inverse ops (required for UC-G3 AC#4 / UC-V4 isolation); pop targets popStaged on the matching vector-bearing $ID's collection AND the secondary-index manager.
 
 **Exports:**
 - `createTxnLifecycle(store, registry, getDb)` - Returns `{rec, fin, nop, pop, txnStatus}` for spread into the db interface

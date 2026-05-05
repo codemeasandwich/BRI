@@ -14,6 +14,7 @@ src/engine/
 ├── middleware.js
 ├── schema-registry.js
 ├── secondary-index.js
+├── secondary-index-txn.js
 ├── query-planner.js
 ├── filter-compiler.js
 ├── graph-index.js
@@ -182,7 +183,7 @@ Per-transaction deferred-linking buffer for the vector index (spec §7.1). `_pen
 
 ### `vector-middleware.js`
 
-Middleware that keeps the per-collection VectorIndex, any declared secondary indexes, AND the GraphIndex in sync with add/set/del operations and enforces schemas registered through the registry. Validation runs before next() (invalid writes short-circuit before storage); index sync runs after next() (so ctx.result.$ID is populated). For set/del on collections with secondary indexes or edge collections, the middleware pre-fetches the old document so SortedIndex.update and GraphIndex.removeEdge can target the OLD field values before applying the NEW. When `ctx.opts.txnId` is set, vector writes route through `addStaged` / `removeStaged` so the committed index buffer is never touched until `db.fin()` flushes the pending bucket. **UC-G3:** for collections that declared `$edge.unique && symmetric`, runs a pre-write uniqueness check using the canonical-pair index and throws `EDGE_PAIR_NOT_UNIQUE` on duplicate pairs (pre-validate to avoid orphan cleanup). Post-write index sync projects a synthetic `__edgePair` field onto a SHADOW copy of the doc so the SecondaryIndexManager keys the canonical pair without mutating the persisted body.
+Middleware that keeps the per-collection VectorIndex, any declared secondary indexes, AND the GraphIndex in sync with add/set/del operations and enforces schemas registered through the registry. Validation runs before next() (invalid writes short-circuit before storage); index sync runs after next() (so ctx.result.$ID is populated). For set/del on collections with secondary indexes or edge collections, the middleware pre-fetches the old document so SortedIndex.update and GraphIndex.removeEdge can target the OLD field values before applying the NEW. When `ctx.opts.txnId` is set, vector writes route through `addStaged` / `removeStaged` so the committed index buffer is never touched until `db.fin()` flushes the pending bucket; secondary-index calls receive the same `txnId` so the rollback log can undo on `db.nop()` / `db.pop()` (UC-V4 isolation extended to secondary indexes for UC-G3 AC#4). **UC-G3:** for collections that declared `$edge.unique && symmetric`, runs a pre-write uniqueness check using the canonical-pair index and throws `EDGE_PAIR_NOT_UNIQUE` on duplicate pairs (pre-validate to avoid orphan cleanup). Post-write index sync projects a synthetic `__edgePair` field onto a SHADOW copy of the doc so the SecondaryIndexManager keys the canonical pair without mutating the persisted body.
 
 **Exports:**
 - `vectorIndexMiddleware(registry)` - Returns the middleware function
@@ -190,12 +191,22 @@ Middleware that keeps the per-collection VectorIndex, any declared secondary ind
 
 ### `secondary-index.js`
 
-Schema-declared compound indexes used to bound `.where` lookups. `SortedIndex` holds parallel arrays of (sortedKey, ids[]) entries with binary-search lookup; `SecondaryIndexManager` owns one or more SortedIndex instances per collection, routes write/lookup calls, and computes the best-fit candidate set for a filter via `candidatesFor(collection, filter)`. Persisted as POJO inside snapshot v3.
+Schema-declared compound indexes used to bound `.where` lookups. `SortedIndex` holds parallel arrays of (sortedKey, ids[]) entries with binary-search lookup; `SecondaryIndexManager` owns one or more SortedIndex instances per collection, routes write/lookup calls, and computes the best-fit candidate set for a filter via `candidatesFor(collection, filter)`. Persisted as POJO inside snapshot v3. **UC-G3 / UC-V4:** insert/update/remove accept an optional `txnId` argument that logs an inverse-op into a per-txn rollback buffer (`_txnLog`). The txn lifecycle (commit / rollback / pop) is driven from `client/txn-lifecycle.js` calling the free functions in `secondary-index-txn.js` directly against the manager — keeps this file under the 260-source-line gate. The forward write applies immediately so reads inside the same txn observe the staged state — required for the canonical-pair uniqueness pre-check to detect same-txn duplicates.
 
 **Exports:**
-- `SecondaryIndexManager` (default) - Per-database registry of compound indexes
+- `SecondaryIndexManager` (default) - Per-database registry of compound indexes; methods `declare`, `insert`, `remove`, `update`, `candidatesFor`, `serialize`, `load`, `collections`. Txn lifecycle driven via `secondary-index-txn.js` free functions.
 - `SortedIndex` - Single sorted compound index
 - `compoundKey(values)` - Canonical JSON-encoded key
+
+### `secondary-index-txn.js`
+
+Per-transaction rollback log for SecondaryIndexManager. Free functions (`logTxnOp`, `commitTxn`, `rollbackTxn`, `popStagedOp`) that mirror the vector-index → vector-index-txn split — extracted so secondary-index.js stays under the 260-source-line gate AND the txn surface is reviewable independent of the SortedIndex internals. Log-and-undo (not deferred-linking) so reads inside the same txn observe staged writes — required for the UC-G3 canonical-pair uniqueness pre-check to detect same-txn duplicates.
+
+**Exports:**
+- `logTxnOp(mgr, txnId, entry)` - Append one rollback-log entry
+- `commitTxn(mgr, txnId)` - Drop the log on successful commit
+- `rollbackTxn(mgr, txnId)` - Walk log in reverse, apply inverse ops
+- `popStagedOp(mgr, txnId, $ID)` - Undo the most recent op for a $ID
 
 ### `query-planner.js`
 
