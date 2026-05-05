@@ -236,6 +236,39 @@ export class InHouseAdapter {
   }
 
   /**
+   * Async variant of `iterateHotDocsByPrefix` that ALSO loads cold-tier
+   * docs via the hot-tier's `coldLoader` (re-promotes them on access,
+   * matching the standard read path's behavior). Returns plain POJOs —
+   * NO reactive-proxy overhead, NO ref auto-hydration. The PPR
+   * algorithm consumes this for the iteration phase: at AC scale
+   * (50k triples / 20k entities) the proxy + auto-hydrate cost
+   * dominates the perf budget; raw POJOs cut total PPR runtime
+   * roughly 3× without sacrificing cold-tier coverage.
+   *
+   * Why a sibling method instead of replacing the sync version: the
+   * sync helper is the right tool for the schema-registry's
+   * declare-time auto-rebuild path — declare() is sync and must stay
+   * sync. Algorithms that can `await` (PPR, future graph algos) prefer
+   * this async variant.
+   *
+   * @param {string} prefix - 4-char $ID prefix (uppercase)
+   * @returns {Promise<Array<Object>>} parsed doc bodies in any order
+   */
+  async getDocsByPrefix(prefix) {
+    if (!this.hotTier) return [];
+    const members = this.hotTier.sMembers(`${prefix}?`);
+    const out = [];
+    for (const member of members) {
+      const fullId = `${prefix}_${member}`;
+      // hotTier.get is async — handles cold-tier promotion transparently.
+      const data = await this.hotTier.get(fullId);
+      if (typeof data !== 'string') continue;
+      try { out.push(JSS.parse(data)); } catch (_) { /* skip bad body */ }
+    }
+    return out;
+  }
+
+  /**
    * Connect and initialize all subsystems
    * @returns {Promise<void>}
    */

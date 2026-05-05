@@ -25,6 +25,8 @@
  *             UC-G7 (Persistent GraphIndex bootstrap)
  */
 
+import { refToId } from './helpers.js';
+
 /**
  * Compute the canonical-pair key for an edge document — the lex-sorted
  * `[min(fromId, toId), max(fromId, toId)]` two-element array, or null
@@ -51,8 +53,10 @@
  */
 export function canonicalPairKeyFor(edgeSpec, doc) {
   if (!edgeSpec || !doc) return null;
-  const fromId = doc[edgeSpec.from];
-  const toId = doc[edgeSpec.to];
+  // Normalize ref values via the shared refToId helper — handles both
+  // live string-form refs and post-snapshot object-form refs uniformly.
+  const fromId = refToId(doc[edgeSpec.from]);
+  const toId = refToId(doc[edgeSpec.to]);
   if (!fromId || !toId) return null;
   return fromId < toId ? [fromId, toId] : [toId, fromId];
 }

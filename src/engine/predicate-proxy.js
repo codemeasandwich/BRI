@@ -23,6 +23,7 @@
  */
 
 import { type2Short } from '../engine/types.js';
+import { refToId } from './helpers.js';
 import { expand as runExpand } from './graph-expand.js';
 import { makeChainProxy } from './chain-walk.js';
 import { makeInverseProxy, makeRelatedAccessor } from './predicate-inverse-related.js';
@@ -317,11 +318,8 @@ function applyLifecycleFilters(edges, ctx, lifecycle) {
  * targets the field value may be a literal string — those pass through
  * unchanged since v1's predicate proxy is entity-target-oriented.
  *
- * Endpoint normalization: snapshot deserialization (Bri's
- * `getAllDocumentsForSnapshot`) replaces string-form refs with object
- * pointers, so a doc loaded from snapshot has `edge[fieldName]` as an
- * entity object instead of a $ID string. Live writes preserve the string
- * form. To handle both, we extract `.$ID` when the field is an object.
+ * Endpoint normalization via shared `refToId` in engine/helpers.js —
+ * handles both live string-form refs and post-snapshot object-form refs.
  *
  * @param {Array<Object>} edges
  * @param {string} fieldName - Either the from-field or to-field
@@ -331,11 +329,7 @@ function applyLifecycleFilters(edges, ctx, lifecycle) {
 async function hydrateEndpoints(edges, fieldName, wrapper) {
   const targets = await Promise.all(
     edges.map(edge => {
-      const raw = edge && edge[fieldName];
-      if (!raw) return null;
-      const targetId = typeof raw === 'string' ? raw
-                     : (typeof raw === 'object' && typeof raw.$ID === 'string') ? raw.$ID
-                     : null;
+      const targetId = refToId(edge && edge[fieldName]);
       if (!targetId) return null;
       return wrapper.get(null, targetId);
     })

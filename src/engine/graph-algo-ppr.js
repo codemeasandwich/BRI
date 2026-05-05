@@ -33,6 +33,8 @@
  */
 
 import { compileFilter } from './filter-compiler.js';
+import { type2Short } from './types.js';
+import { refToId } from './helpers.js';
 
 /**
  * Run PPR over a registered edge collection seeded from a node set.
@@ -95,20 +97,35 @@ export async function ppr({
   const filterFn = !edgeFilter ? null
                  : (typeof edgeFilter === 'function' ? edgeFilter : compileFilter(edgeFilter));
 
-  // 1. Materialize node + edge data. db.get[$collectionS]() returns
-  //    reactive entities post-hydration; we need stable $ID + body.
-  const nodes = await db.get[`${collection}S`]();
-  const edges = await db.get[`${via}S`]();
+  /* 1. Materialize node + edge data via the store's raw getDocsByPrefix
+   *    when available — bypasses the reactive-entity / ref-auto-hydration
+   *    overhead that dominates the perf budget at AC scale (50k triples).
+   *    Cold-tier docs ARE loaded by the async path (hotTier.get
+   *    transparently promotes). The fallback to `db.get[`${X}S`]()` keeps
+   *    the algo working on storage adapters that don't expose
+   *    `getDocsByPrefix` (test stubs, alternative backends). Result
+   *    entities are hydrated at the end via db.get[coll](id) so the
+   *    public surface still returns reactive entities. */
+  const store = db._store;
+  const fastPath = store && typeof store.getDocsByPrefix === 'function';
+  const nodeDocs = fastPath
+    ? await store.getDocsByPrefix(type2Short(collection))
+    : await db.get[`${collection}S`]();
+  const edges = fastPath
+    ? await store.getDocsByPrefix(type2Short(via))
+    : await db.get[`${via}S`]();
 
-  // 2. Build node $ID → integer index map (and inverse for result hydration).
+  // 2. Build node $ID → integer index map. We don't need entities yet —
+  //    only $IDs matter for the iteration phase. Top-k entities are
+  //    hydrated at the end (step 7).
   const idxOfId = new Map();
-  const idToEntity = [];
-  for (const n of nodes) {
+  const idsByIdx = [];
+  for (const n of nodeDocs) {
     if (!n || !n.$ID) continue;
     idxOfId.set(n.$ID, idxOfId.size);
-    idToEntity.push(n);
+    idsByIdx.push(n.$ID);
   }
-  const N = idToEntity.length;
+  const N = idsByIdx.length;
   if (N === 0) return [];
 
   // 3. CSR-like adjacency: per-source target+weight arrays + sumWeight.
@@ -118,10 +135,8 @@ export async function ppr({
   for (const edge of edges) {
     if (!edge || !edge.$ID) continue;
     if (filterFn && !filterFn(edge)) continue;
-    const fromVal = edge[edgeSpec.from];
-    const toVal = edge[edgeSpec.to];
-    const fromId = typeof fromVal === 'string' ? fromVal : (fromVal && fromVal.$ID);
-    const toId = typeof toVal === 'string' ? toVal : (toVal && toVal.$ID);
+    const fromId = refToId(edge[edgeSpec.from]);
+    const toId = refToId(edge[edgeSpec.to]);
     const fromIdx = idxOfId.get(fromId);
     const toIdx = idxOfId.get(toId);
     if (fromIdx === undefined || toIdx === undefined) continue;
@@ -190,10 +205,16 @@ export async function ppr({
   ranked.sort((a, b) => b.mass - a.mass);
   const sliced = typeof top === 'number' ? ranked.slice(0, top) : ranked;
 
-  // 7. Hydrate result rows. idToEntity is the pre-built inverse map so
-  //    this is O(top), not O(N²).
+  /* 7. Hydrate result rows. We held only $IDs through the iteration to
+   *    keep memory + setup cost minimal; now we fetch reactive entities
+   *    for the top-k survivors via db.get[coll](id) so callers receive
+   *    the same entity shape every other Bri read returns. O(top), not
+   *    O(N²) — only the survivors hit the proxy/hydration path. */
   const out = [];
-  for (const { idx, mass } of sliced) out.push({ entity: idToEntity[idx], mass });
+  for (const { idx, mass } of sliced) {
+    const entity = await db.get[collection](idsByIdx[idx]).catch(() => null);
+    if (entity) out.push({ entity, mass });
+  }
   return out;
 }
 

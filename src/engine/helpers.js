@@ -1,8 +1,45 @@
 /**
- * Engine helper functions
+ * @file Engine helper functions — pure utilities consumed across the
+ * engine and storage layers. No side effects, no class state. Includes
+ * `refToId` (normalize ref-typed values to $ID strings, handling both
+ * live string-form refs and post-snapshot object-form refs),
+ * `stripDown$ID`, `attachToString`, `checkMatch`, `buildOverlayObject`,
+ * `isObjectOrArray`, `mapObjectOrArray`, `findMatchingItem`, `isMatch`.
  */
 
 import { undeclared } from './constants.js';
+
+/**
+ * Normalize a ref-typed field value to its $ID string.
+ *
+ * Bri stores ref-typed fields as $ID strings, but the snapshot serializer
+ * (`hot-tier/cache-snapshot.js getAllDocumentsForSnapshot`) rewrites ref
+ * strings into nested entity object pointers before persisting. After
+ * restart, the loaded body therefore carries entity objects in ref-typed
+ * fields. Code paths that key off ref values must normalize to string
+ * $IDs to stay consistent across the round-trip — otherwise comparisons
+ * fail (object !== string) and Map keys become objects instead of
+ * strings, silently breaking adjacency lookups, traversal, and
+ * canonical-pair uniqueness.
+ *
+ * Used by:
+ *   - engine/graph-index.js insertEdge / removeEdge (adjacency keys)
+ *   - engine/canonical-pair.js canonicalPairKeyFor (UC-G3 uniqueness)
+ *   - engine/graph-expand.js pickNextNode (BFS traversal — UC-G6)
+ *   - engine/graph-algo-ppr.js (CSR-build endpoint resolution — UC-G7)
+ *   - engine/predicate-proxy.js hydrateEndpoints (target lookup)
+ *
+ * @param {string|Object|null|undefined} v - Field value (ref string,
+ *   resolved entity object with `$ID`, or absent)
+ * @returns {string|null} $ID string, or null when the value is missing
+ *   or shaped neither as a string nor an object with `.$ID`.
+ */
+export function refToId(v) {
+  if (!v) return null;
+  if (typeof v === 'string') return v;
+  if (typeof v === 'object' && typeof v.$ID === 'string') return v.$ID;
+  return null;
+}
 
 /**
  * Strip nested objects with $ID to just their ID reference
@@ -162,6 +199,15 @@ export function mapObjectOrArray(objOrArray, path, oldRef) {
 export function findMatchingItem(ids, testFn, findOne) {
   let index = 1;
 
+  /**
+   * Drives the recursive iteration: tests the current item, advances to
+   * the next id (loaded via `findOne`), and resolves with the first
+   * match or null. Closes over `index`, `ids`, `findOne`, `testFn`,
+   * `findOne` so the recursion stays linear without rebuilding the
+   * closure each step.
+   * @param {*} item - Current candidate
+   * @returns {Promise|*} - Resolved match, the eager match, or null
+   */
   const loadNrunFn = (item) => {
     let dataPromise = null;
     if (index < ids.length) {

@@ -25,6 +25,8 @@
  * @implements UC-G6
  */
 
+import { refToId } from './helpers.js';
+
 /**
  * Run the BFS expansion.
  *
@@ -172,11 +174,18 @@ function collectEdgeIds(graphIndex, nodeId, via, predicates, direction) {
  * @returns {string|null}
  */
 function pickNextNode(edge, edgeSpec, currentNodeId, direction) {
-  if (direction === 'out') return edge[edgeSpec.to];
-  if (direction === 'in')  return edge[edgeSpec.from];
-  // 'both': the other endpoint, whichever it is
-  if (edge[edgeSpec.from] === currentNodeId) return edge[edgeSpec.to];
-  return edge[edgeSpec.from];
+  // Normalize via shared refToId — handles post-snapshot object-form
+  // refs (engine/helpers.js for full contract). Without it, the
+  // direction='both' equality check would compare an object to a $ID
+  // string (always false) and the function would return entities to
+  // the BFS instead of $ID strings — silently breaking traversal
+  // post-restart.
+  const fromId = refToId(edge[edgeSpec.from]);
+  const toId = refToId(edge[edgeSpec.to]);
+  if (direction === 'out') return toId;
+  if (direction === 'in')  return fromId;
+  if (fromId === currentNodeId) return toId;
+  return fromId;
 }
 
 export default expand;

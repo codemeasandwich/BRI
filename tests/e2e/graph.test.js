@@ -2199,4 +2199,51 @@ describe('Persistent GraphIndex', () => {
     // Undeclared collection → false (no specs, no buckets).
     expect(db._registry.graphIndex().hasAdjacencyFor('nonexistent')).toBe(false);
   });
+
+  test('predicate proxy reads return correct entities post-restart', async () => {
+    // Regression: snapshot serialization rewrites string refs into entity
+    // object pointers, and the read path's hydrateEndpoints assumed
+    // string-form. With Persistent GraphIndex restoring adjacency,
+    // edge reads now actually hydrate post-restart for the first time.
+    db = await freshDB();
+    declareKgSchema(db);
+    const alice = await db.add.kgEntity({ name: 'Alice' });
+    const bob = await db.add.kgEntity({ name: 'Bob' });
+    await alice.knows(bob);
+    const aliceId = alice.$ID;
+    await db._store.createSnapshot();
+    await db.disconnect();
+
+    db = await openLocalDatabase({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
+    declareKgSchema(db);
+    const aliceAgain = await db.get.kgEntity(aliceId);
+    const knows = await aliceAgain.knows;
+    expect(knows.map(e => e.name)).toEqual(['Bob']);
+  });
+
+  test('expand traversal honors string-or-object endpoint refs post-restart (UC-G6 regression)', async () => {
+    // pickNextNode in graph-expand.js previously read edge[from]/edge[to]
+    // raw and compared to currentNodeId — broken when the field is an
+    // entity object (post-snapshot) instead of a $ID string. Now uses
+    // refToId for normalization. Verifies BFS still works post-restart.
+    db = await freshDB();
+    declareKgSchema(db);
+    const a = await db.add.kgEntity({ name: 'A' });
+    const b = await db.add.kgEntity({ name: 'B' });
+    const c = await db.add.kgEntity({ name: 'C' });
+    await a.knows(b);
+    await b.knows(c);
+    const aId = a.$ID;
+    await db._store.createSnapshot();
+    await db.disconnect();
+
+    db = await openLocalDatabase({ storeConfig: { dataDir: DIR, maxMemoryMB: 64 } });
+    declareKgSchema(db);
+    const aAgain = await db.get.kgEntity(aId);
+    const result = await aAgain.expand({ via: 'kgTriple', hops: 2, direction: 'out' });
+    const reached = result.nodes.map(n => n.name).sort();
+    // 2-hop from A reaches B (1-hop) and C (2-hop).
+    expect(reached).toContain('B');
+    expect(reached).toContain('C');
+  });
 });
