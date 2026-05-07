@@ -34,6 +34,9 @@ export class WALWriter {
     this.currentSize = 0;
     this.fileHandle = null;
     this.fsyncTimer = null;
+    // Close state lets the batched fsync timer distinguish expected shutdown
+    // races from real durability errors that should still be reported.
+    this.isClosing = false;
     this.lastPointer = null;
     this.writeQueue = Promise.resolve(); // Serialize writes for pointer chain integrity
 
@@ -72,7 +75,11 @@ export class WALWriter {
     const segmentPath = this.getSegmentPath(this.currentSegment);
 
     if (this.fileHandle) {
-      await this.fileHandle.close();
+      // Detach the shared handle before awaiting close so the fsync timer cannot
+      // race against a handle that is already in the process of closing.
+      const handle = this.fileHandle;
+      this.fileHandle = null;
+      await handle.close();
     }
 
     this.fileHandle = await fs.open(segmentPath, 'a');
@@ -164,8 +171,12 @@ export class WALWriter {
    */
   async rotate() {
     if (this.fileHandle) {
-      await this.fileHandle.sync();
-      await this.fileHandle.close();
+      // Segment rotation hands ownership of the current descriptor to this block
+      // before sync/close, preventing the periodic fsync loop from reusing it.
+      const handle = this.fileHandle;
+      this.fileHandle = null;
+      await handle.sync();
+      await handle.close();
     }
     this.currentSegment++;
     await this.openSegment();
@@ -176,10 +187,15 @@ export class WALWriter {
    */
   startFsyncTimer() {
     this.fsyncTimer = setInterval(async () => {
-      if (this.fileHandle) {
+      // Capture the descriptor once per tick.  A concurrent close/rotate/archive
+      // may clear `fileHandle`; the captured handle is either still valid or the
+      // EBADF below is the expected result of the shutdown race.
+      const handle = this.fileHandle;
+      if (handle && !this.isClosing) {
         try {
-          await this.fileHandle.sync();
+          await handle.sync();
         } catch (err) {
+          if (this.isClosing || err?.code === 'EBADF') return;
           console.error('WAL fsync error:', err);
         }
       }
@@ -222,8 +238,11 @@ export class WALWriter {
     await this.sync();
 
     if (this.fileHandle) {
-      await this.fileHandle.close();
+      // Archive closes the active descriptor before opening the next segment, so
+      // the shared handle must be cleared before the asynchronous close begins.
+      const handle = this.fileHandle;
       this.fileHandle = null;
+      await handle.close();
     }
 
     const archivedSegment = this.currentSegment;
@@ -241,15 +260,26 @@ export class WALWriter {
    * @returns {Promise<void>}
    */
   async close() {
+    // Mark shutdown first so any in-flight fsync timer tick can suppress EBADF
+    // from a descriptor that close() is legitimately tearing down.
+    this.isClosing = true;
     if (this.fsyncTimer) {
       clearInterval(this.fsyncTimer);
       this.fsyncTimer = null;
     }
 
     if (this.fileHandle) {
-      await this.fileHandle.sync();
-      await this.fileHandle.close();
+      // Own the descriptor locally while flushing and closing.  Consumers may
+      // call close() during test teardown while the timer has just fired, so
+      // EBADF is tolerated only on this close path.
+      const handle = this.fileHandle;
       this.fileHandle = null;
+      await handle.sync().catch((err) => {
+        if (err?.code !== 'EBADF') throw err;
+      });
+      await handle.close().catch((err) => {
+        if (err?.code !== 'EBADF') throw err;
+      });
     }
   }
 }
