@@ -1,13 +1,15 @@
 # Observability — what gets logged, where to look
 
 Bri's substrate-style philosophy means observability is built around
-the existing logging surface plus a small set of diagnostic accessors
-on the engine modules. There is no metrics SDK; every signal below is
-read from process logs, return values, or stat methods.
+a small logger boundary plus diagnostic accessors on the database and
+engine modules. There is no metrics SDK; every signal below is read
+from structured log events, default process logs, return values, or
+stat methods.
 
 ## Process logs
 
-The engine prints connection/recovery/snapshot events to `stdout`:
+By default, local Bri prints connection/recovery/snapshot events to
+`stdout` so one-file scripts remain easy to operate:
 
 ```
 Snapshot: No snapshot found
@@ -16,6 +18,40 @@ Snapshot: Scheduler started (every 30 minutes)
 InHouse Store: Connected and ready
 BRI: Connected to storage
 ```
+
+Embedded applications can replace that console behavior with a structured
+logger:
+
+```js
+const events = [];
+const db = await openLocalDatabase({
+  logger: {
+    info: (event) => events.push(event),
+    warn: (event) => events.push(event),
+    error: (event) => events.push(event),
+    debug: (event) => events.push(event)
+  },
+  storeConfig: { dataDir: './data', maxMemoryMB: 256 }
+});
+```
+
+Each event has this stable shape:
+
+```js
+{
+  event: 'storage.snapshot.created',
+  level: 'info',
+  severity: 'info',
+  message: 'Snapshot: Created at WAL line 42',
+  metadata: { walLine: 42, path: 'data/snapshot.jss' },
+  error: undefined
+}
+```
+
+Passing `logger: false` silences Bri's human stdout/stderr output for
+tests and embedded production runtimes. Passing a custom logger also
+disables raw console output by default; the application owns event
+routing from there.
 
 Nothing is logged per-write or per-search by default. To inspect query
 behaviour, register the built-in `loggingMiddleware` exported from **`bri-db/engine`**
@@ -30,17 +66,29 @@ Every CRUD op logs `{operation}.{collection}` plus duration in ms.
 
 ## Diagnostic accessors
 
-Each index module exposes a `stats()` for pulling current state:
+The public database diagnostic namespace exposes collection identity
+state:
+
+```js
+db.diag.collectionIdentities();
+db.diag.collectionIdentities(['alpha', 'alpineHa']); // preflight names
+```
+
+Rows include `{ collection, storageIdentity, prefix, unique, conflicts }`.
+The optional argument projects names without registering them, so tools
+can preflight a schema before calling `db.schema()` or writing data.
+
+The vector index exposes `stats()` for pulling current state:
 
 | Accessor | Returns |
 |---|---|
 | `VectorIndex.stats()` | `{ count, capacity, dims, metric, memoryBytes, entryLevel, M, efConstruction, efSearch }` |
-| `SecondaryIndexManager.stats()` (if implemented) | per-index entry counts |
-| `GraphIndex.stats()` | per-edge-collection adjacency sizes |
 
-Use these in test assertions or dev tooling — `process.hrtime.bigint()`
-+ `stats()` is enough to do ad-hoc latency profiling without an
-external APM.
+Secondary and graph index state is persisted and verified through the
+database APIs, snapshots, WAL replay, and collection identity diagnostics;
+they do not currently expose a public `stats()` method. Use
+`process.hrtime.bigint()` plus the public query surfaces for ad-hoc
+latency profiling without an external APM.
 
 ## WAL inspection
 
@@ -50,7 +98,7 @@ Physical line shape (see [`serializeEntry()`](../src/storage/wal/entry.js)):
 {timestamp}|{pointer}|{entryJSON}
 ```
 
-Use [`storage/wal/record-types.js`](storage/wal/record-types.js) for vocabulary. With encryption off, **`grep VECTOR_ADD data/wal/000001.wal`** still matches the literal token inside the JSON payload.
+Use [`storage/wal/record-types.js`](../src/storage/wal/record-types.js) for vocabulary. With encryption off, **`grep VECTOR_ADD data/wal/000001.wal`** still matches the literal token inside the JSON payload.
 
 ```bash
 grep VECTOR_ADD data/wal/000001.wal
@@ -75,24 +123,36 @@ boundary.
 
 ## Recovery / startup signals
 
-Recovery prints `InHouse Store: Recovered` once snapshot + WAL replay
-completes; it prints the chosen format version (`Snapshot v3 detected`)
-on snapshot load. If WAL replay fails, the recovery layer throws
-`BriRecoveryError` with code `WAL_INDEX_REPLAY_FAILED` — catch this at
-the boot path to surface the problem rather than running on partial
-state.
+Recovery emits `storage.inhouse.recovered` once snapshot + WAL replay
+completes. Snapshot load/create events use `storage.snapshot.*`, WAL
+replay events use `storage.wal.*`, and collection identity registration
+uses `collection.identity.registered`. If WAL replay fails, the recovery
+layer throws `BriRecoveryError` with code `WAL_INDEX_REPLAY_FAILED`; if
+persisted collection identity state is ambiguous it throws
+`BriRecoveryError` with code `COLLECTION_IDENTITY_COLLISION`.
+
+Encrypted stores route key-provider lifecycle through the same logger
+boundary. Remote key-provider retry failures emit
+`crypto.key_provider.fetch_failed`; background refresh failures emit
+`crypto.key_manager.refresh_failed` and keep using the cached key. Passing
+`logger: false` or a custom logger suppresses the old direct terminal
+warnings for these encrypted boot and refresh paths too.
 
 ## Production checklist
 
 | Concern | What to watch | Where |
 |---|---|---|
-| Snapshot freshness | `Snapshot: Saved` log lines | stdout |
+| Snapshot freshness | `storage.snapshot.created` | logger/default stdout |
 | WAL growth | segment files in `data/wal/` | filesystem |
+| WAL replay | `storage.wal.replayed` | logger/default stdout |
+| Collection identity conflicts | `COLLECTION_IDENTITY_COLLISION` | `db.schema`, write/read paths, or boot |
+| Encryption key-provider retries | `crypto.key_provider.fetch_failed` | logger/default stderr |
+| Encryption key refresh failures | `crypto.key_manager.refresh_failed` | logger/default stderr |
 | Vector index size | `idx.stats().memoryBytes` | engine accessor |
 | Failed validations | `BriValidationError` thrown — catch and log at the boundary | application code |
 | Cascade deletes | `cascade.session(id)` returns `{deleted, byCollection}` — log it | application code |
 
 There is no built-in alerting, no metrics endpoint, no distributed
-tracing hookup. v2 may add a `db.diag` namespace that aggregates the
-above into a single object; v1 keeps the surface minimal so the
-embedding in larger systems is unopinionated.
+tracing hookup. The logger boundary is intentionally dependency-free so
+applications can bridge Bri events into whatever logging, metrics, or
+test capture system they already use.

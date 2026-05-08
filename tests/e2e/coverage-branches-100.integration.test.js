@@ -194,7 +194,7 @@ describe('Branch coverage 100% — integration', () => {
     db.schema('midVec', {
       emb: { type: 'vector', dims: 2 }
     });
-    db.schema('midSec', {
+    db.schema('midIndex', {
       tag: { type: String },
       $indexes: [['tag']]
     });
@@ -203,7 +203,7 @@ describe('Branch coverage 100% — integration', () => {
 
     const ctxSetNoId = {
       operation: 'set',
-      type: 'midSec',
+      type: 'midIndex',
       args: [{ tag: 'solo' }],
       opts: {},
       db,
@@ -227,7 +227,7 @@ describe('Branch coverage 100% — integration', () => {
 
     const ctxAddSec = {
       operation: 'add',
-      type: 'midSec',
+      type: 'midIndex',
       args: [{ tag: 'only' }],
       opts: {},
       db,
@@ -239,7 +239,7 @@ describe('Branch coverage 100% — integration', () => {
 
     const ctxSetSecNoEntityId = {
       operation: 'set',
-      type: 'midSec',
+      type: 'midIndex',
       args: [{ $ID: 'MID_x', tag: 'b' }],
       opts: {},
       db,
@@ -252,12 +252,12 @@ describe('Branch coverage 100% — integration', () => {
     await mw(
       {
         operation: 'del',
-        type: 'midSec',
+        type: 'midIndex',
         args: ['MID_z'],
         opts: {},
         db: {
           get: {
-            midSec: async () => null
+            midIndex: async () => null
           }
         },
         result: null

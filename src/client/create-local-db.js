@@ -15,6 +15,7 @@ import { createStore } from '../storage/index.js';
 import { createEngine } from '../engine/index.js';
 import { createDBInterface } from './proxy.js';
 import { isVectorWorkerWarmRequestedFromEnv } from '../workers/vector-worker-env.js';
+import { createBriLogger } from '../observability/logger.js';
 
 /**
  * Resolve to a connected local {@link Database} (in-house storage by default).
@@ -25,26 +26,40 @@ import { isVectorWorkerWarmRequestedFromEnv } from '../workers/vector-worker-env
  * @returns {Promise<Object>} Real database façade (same shape as `deferDatabase`/local connect)
  */
 export async function createLocalDatabasePromise(options = {}) {
+  const storeConfig = options.storeConfig || {
+    dataDir: process.env.BRI_DATA_DIR || './data',
+    maxMemoryMB: parseInt(process.env.BRI_MAX_MEMORY_MB) || 256
+  };
+  const loggerConfig = options.logger !== undefined ? options.logger : storeConfig.logger;
+  const logger = createBriLogger(loggerConfig);
   const store = await createStore({
     type: options.storeType || 'inhouse',
-    config: options.storeConfig || {
-      dataDir: process.env.BRI_DATA_DIR || './data',
-      maxMemoryMB: parseInt(process.env.BRI_MAX_MEMORY_MB) || 256
-    }
+    config: loggerConfig !== undefined && storeConfig.logger === undefined
+      ? { ...storeConfig, logger: loggerConfig }
+      : storeConfig,
+    logger: loggerConfig
   });
 
-  console.log('BRI: Connected to storage');
+  logger.info({
+    event: 'client.local.connected',
+    message: 'BRI: Connected to storage',
+    metadata: { storeType: options.storeType || 'inhouse' }
+  });
 
   if (isVectorWorkerWarmRequestedFromEnv()) {
     try {
       const { warmVectorWorkerFromEnv } = await import('../workers/index-worker-host.js');
-      warmVectorWorkerFromEnv();
+      warmVectorWorkerFromEnv(logger);
     } catch (err) {
       const msg =
         err && typeof err === 'object' && 'message' in err
           ? /** @type {Error} */ (err).message
           : String(err);
-      console.warn(`bri-db: vector worker preload module failed (${msg})`);
+      logger.warn({
+        event: 'worker.vector.preload.failed',
+        message: `bri-db: vector worker preload module failed (${msg})`,
+        metadata: { message: msg }
+      });
     }
   }
 

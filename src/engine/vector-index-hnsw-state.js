@@ -30,6 +30,7 @@
  */
 
 import { insertNode } from './vector-index-hnsw.js';
+import { createBriLogger } from '../observability/logger.js';
 
 /**
  * Allocate or grow the per-slot level table and neighbour-list array.
@@ -125,8 +126,9 @@ export function dropNode(index, slot) {
  *
  * @param {Object} index - VectorIndex with slot storage populated and
  *   topology arrays already allocated (ensureTopology already called)
+ * @param {Object} [logger] - Bri logger boundary used for boot observability.
  */
-export function rebuildTopology(index) {
+export function rebuildTopology(index, logger = createBriLogger()) {
   index._levels.fill(-1);
   for (let i = 0; i < index._neighbors.length; i++) index._neighbors[i] = null;
   index._entryPoint = -1;
@@ -138,7 +140,11 @@ export function rebuildTopology(index) {
     count++;
   }
   if (count > 0) {
-    console.log(`VectorIndex: rebuilt HNSW topology from ${count} vectors`);
+    logger.info({
+      event: 'engine.vector_index.hnsw_rebuild.completed',
+      message: `VectorIndex: rebuilt HNSW topology from ${count} vectors`,
+      metadata: { count }
+    });
   }
 }
 

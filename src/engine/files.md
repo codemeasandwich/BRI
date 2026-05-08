@@ -12,7 +12,10 @@ src/engine/
 ├── operations-remove.js
 ├── reactive.js
 ├── middleware.js
+├── collection-identity.js
 ├── schema-registry.js
+├── schema-registry-identity.js
+├── schema-registry-vector.js
 ├── secondary-index.js
 ├── secondary-index-txn.js
 ├── query-planner.js
@@ -134,6 +137,28 @@ Per-database schema registry. Holds schemas declared via `db.schema('name', def)
 
 **Exports:**
 - `createSchemaRegistry(store)` - Returns registry with `declare`, `get`, `vectorIndex`, `vectorFieldOf`, `validate`, `secondaryIndexManager`, `vectorIndices`, `graphIndex`, `edgeSpec`, `collectionForPrefix`, `predicateEdge`, `inversePredicateEdge`, `predicatesForSubject`, `cascadeEntriesFor`, `lifecycleFieldsOf`, `needsCanonicalPair(collection)`, `canonicalPairKey(collection, doc)`. Reserved-name collision check fires at `declare` time when a `$edge.predicates` entry collides with the frozen proxy-method list. `cascadeOn`-flagged fields and `$supersession`/`$confidence`/`$provenance` flags are registered for `db.cascade` and the predicate proxy's chain methods respectively; `$`-flag values are validated against declared field names so a typo throws at schema load instead of silently filtering nothing. UC-G3: when an edge schema declares `$edge.unique && symmetric`, the registry registers a synthetic `__edgePair` secondary index and adds the collection to a `canonicalPairCollections` Set; `needsCanonicalPair` and `canonicalPairKey` are read by `vector-middleware.js` (for sync + uniqueness pre-check) and the QueryBuilder's `.between(a, b)` chain method. The optional `store` argument enables persistence-aware declares.
+
+### `collection-identity.js`
+
+Collection storage identity invariant helpers. Computes diagnostic rows for known and candidate collection names, detects derived-prefix collisions, and creates typed `COLLECTION_IDENTITY_COLLISION` errors with the conflicting collection names plus storage identity.
+
+**Exports:**
+- `createCollectionIdentityCollisionError(collection, otherCollection, storageIdentity)` - Typed schema/recovery collision error.
+- `collectionIdentityDiagnostics(known, candidates, deriveIdentity)` - Public diagnostic rows `{collection, storageIdentity, prefix, unique, conflicts}`.
+
+### `schema-registry-identity.js`
+
+Storage-backed identity facade used by `schema-registry.js`. Reserves derived collection identities at schema declaration time, asserts read/write preflight safety, and delegates to the store when persisted identity state is available.
+
+**Exports:**
+- `createSchemaRegistryIdentity(store)` - Returns `declare`, `register`, `ensure`, `assert`, and `diagnostics` methods.
+
+### `schema-registry-vector.js`
+
+Vector schema helper extracted from the registry coordinator. Scans one schema declaration for the single supported vector field and rejects multi-vector declarations before any registry state mutates.
+
+**Exports:**
+- `findVectorField(schemaDef)` - Returns `{name, dims, metric}` or `null`.
 
 ### `vector-index.js`
 

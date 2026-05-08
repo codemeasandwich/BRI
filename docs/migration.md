@@ -44,9 +44,19 @@ Those helpers use the same implementations as **`bri.connect`**: **`openLocalDat
 
 - Snapshots + WAL replay — old format snapshots load and rebuild
   vector + secondary indexes from documents on first boot. New
-  snapshots are v3 format with embedded index buffers.
+  snapshots with collection identity state are v5 format and still carry
+  the vector, secondary-index, and graph payloads from v3/v4.
 - `BRI_ENCRYPTION_KEY` — at-rest encryption covers the new index state
   (snapshot AES-256-GCM is the same gate).
+
+Collection identity hardening is automatic. Existing stores with
+non-colliding collection names continue to load; the next write or
+snapshot records the derived collection identity catalog. If two logical
+collection names derive the same four-letter prefix, Bri now throws
+`COLLECTION_IDENTITY_COLLISION` at schema declaration, write/read
+preflight, or boot when persisted identity state is already ambiguous.
+Rename one collection and migrate its rows before continuing; Bri does
+not support explicit user-defined storage identities.
 
 ## Step 1 — declare schemas for the collections you want to upgrade
 

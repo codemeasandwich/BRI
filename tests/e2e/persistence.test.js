@@ -233,7 +233,8 @@ describe('Persistence', () => {
       const content = await fs.readFile(snapshotPath, 'utf8');
       const snapshot = JSON.parse(content);
 
-      expect(snapshot.version).toBe(2);
+      expect(snapshot.version).toBe(5);
+      expect(snapshot.collectionIdentities).toMatchObject({ snapdata: 'SNTA' });
       expect(snapshot.documents).toBeDefined();
 
       await db.disconnect();

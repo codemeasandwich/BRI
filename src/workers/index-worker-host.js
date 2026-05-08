@@ -30,6 +30,7 @@ import { Worker } from 'worker_threads';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import { isVectorWorkerWarmRequestedFromEnv } from './vector-worker-env.js';
+import { createBriLogger } from '../observability/logger.js';
 
 let _sharedWorker = null;
 let _nextRequestId = 1;
@@ -94,9 +95,10 @@ function getWorker() {
  * Errors (missing `worker_threads` in sandbox, permission denied creating Worker):
  * swallowed with a stderr warning — local Bri bootstrap must remain usable without offload.
  *
+ * @param {Object} [logger] - Bri logger boundary for embedded runtimes.
  * @returns {void}
  */
-export function warmVectorWorkerFromEnv() {
+export function warmVectorWorkerFromEnv(logger = createBriLogger()) {
   if (!isVectorWorkerWarmRequestedFromEnv()) return;
   try {
     getWorker();
@@ -105,7 +107,11 @@ export function warmVectorWorkerFromEnv() {
       err && typeof err === 'object' && 'message' in err
         ? /** @type {Error} */ (err).message
         : String(err);
-    console.warn(`bri-db: vector worker warm-up skipped (${msg})`);
+    logger.warn({
+      event: 'worker.vector.warmup.skipped',
+      message: `bri-db: vector worker warm-up skipped (${msg})`,
+      metadata: { message: msg }
+    });
   }
 }
 /**

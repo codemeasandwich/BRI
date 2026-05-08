@@ -1,4 +1,6 @@
 /**
+ * @file BRI storage adapter factory and public storage exports.
+ *
  * BRI Storage - Storage adapter factory
  *
  * Provides a unified interface for storage backends.
@@ -21,10 +23,14 @@ import { validateConfig, DEFAULTS } from './interface.js';
  * @returns {Promise<Object>}
  */
 export async function createStore(options = {}) {
-  const adapter = new InHouseAdapter(options.config || {
+  const baseConfig = options.config || {
     dataDir: './data',
     maxMemoryMB: 256
-  });
+  };
+  const config = options.logger !== undefined && baseConfig.logger === undefined
+    ? { ...baseConfig, logger: options.logger }
+    : baseConfig;
+  const adapter = new InHouseAdapter(config);
 
   await adapter.connect();
   return adapter;

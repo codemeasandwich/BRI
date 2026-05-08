@@ -29,7 +29,11 @@ export function createRemoveOperation(store, wrapper, publish) {
     }
 
     if (!deletedBy || !deletedBy.includes('_')) {
-      console.warn(`Who is deleting this?`, { type, $ID, deletedBy });
+      wrapper._logger?.warn({
+        event: 'engine.remove.deleted_by_missing',
+        message: 'Who is deleting this?',
+        metadata: { type, $ID, deletedBy }
+      });
     }
 
     const shortType = type2Short(type);

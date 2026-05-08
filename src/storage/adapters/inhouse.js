@@ -15,7 +15,10 @@ import { KeyManager } from '../../crypto/key-manager.js';
 import { createCrudMethods } from './inhouse-crud.js';
 import { createTxnMethods } from './inhouse-txn.js';
 import { createRecoveryMethods } from './inhouse-recovery.js';
-import JSS from '../../utils/jss/index.js';
+import { createIdentityMethods } from './inhouse-identity.js';
+import { createSnapshotMethods } from './inhouse-snapshot.js';
+import { createGraphStateMethods } from './inhouse-graph-state.js';
+import { createBriLogger } from '../../observability/logger.js';
 
 /**
  * InHouse storage adapter with hot/cold tier and transactions
@@ -27,6 +30,7 @@ export class InHouseAdapter {
    */
   constructor(config) {
     this.config = validateConfig(config);
+    this.logger = createBriLogger(this.config.logger);
     this.initialized = false;
 
     this.hotTier = null;
@@ -61,6 +65,8 @@ export class InHouseAdapter {
     this._graphIndex = null;
     this._pendingGraphState = null;
     this._deferredGraphOps = null;
+    this._collectionIdentities = new Map();
+    this._persistedCollectionIdentities = new Set();
   }
 
   /**
@@ -148,127 +154,6 @@ export class InHouseAdapter {
   }
 
   /**
-   * Persistent GraphIndex (UC-G7 / Persistent GraphIndex) — bind the
-   * registry-owned GraphIndex to the store so snapshots can persist its
-   * adjacency state and recovery can hand it back. Symmetric with
-   * `bindSecondaryIndexManager`. Drains any pending state captured during
-   * recovery into the live index on bind.
-   *
-   * Why bind on the store rather than auto-discover: a single GraphIndex
-   * instance is shared across all edge collections in one db; the store
-   * snapshots it as one POJO. Multiple binds replace the reference (last
-   * writer wins) — used by tests that swap registries on the same store.
-   *
-   * @param {Object} graphIndex - GraphIndex instance from the schema registry
-   */
-  bindGraphIndex(graphIndex) {
-    this._graphIndex = graphIndex;
-    if (this._pendingGraphState) {
-      graphIndex.load(this._pendingGraphState);
-      this._pendingGraphState = null;
-    }
-    // Drain any WAL-replay edge ops that were buffered before bind.
-    if (this._deferredGraphOps && this._deferredGraphOps.length > 0) {
-      for (const op of this._deferredGraphOps) {
-        if (op.op === 'insert') graphIndex.insertEdge(op.collection, op.doc);
-        else if (op.op === 'remove') graphIndex.removeEdge(op.collection, op.doc);
-      }
-      this._deferredGraphOps = null;
-    }
-  }
-
-  /**
-   * Pre-loaded GraphIndex state from snapshot, surfaced to the registry
-   * via bindGraphIndex. Returns null when no state was loaded (fresh
-   * database or v3-and-earlier snapshot).
-   *
-   * @returns {Object|null}
-   */
-  getPendingGraphState() {
-    return this._pendingGraphState || null;
-  }
-
-  /**
-   * Capture GraphIndex state during recovery so the registry can pick it
-   * up on bindGraphIndex. Used by inhouse-recovery on v4 snapshots.
-   *
-   * @param {Object} state - GraphIndex.serialize() output, or null
-   */
-  setPendingGraphState(state) {
-    this._pendingGraphState = state || null;
-  }
-
-  /**
-   * Synchronously enumerate hot-tier doc bodies whose $ID prefix matches
-   * `prefix` (e.g. `'KGTR'`). Used by the schema-registry's auto-rebuild
-   * path on declare() of an edge collection when no persisted graph state
-   * is loaded (v3→v4 migration / fresh DB after WAL-only writes).
-   *
-   * Cold-tier docs are SKIPPED — sync iteration can't await coldLoader.
-   * For full-coverage rebuilds that include cold-tier edges, callers
-   * should use the async `db.algo.rebuildGraphIndex({collection})`
-   * helper instead. For the typical migration case (snapshot just
-   * restored, working set in memory), hot-tier coverage is sufficient.
-   *
-   * Routed via the collection-set (`{prefix}?`) so the iteration is
-   * O(|collection|), not O(|all docs|). Bad bodies (JSS parse errors)
-   * are silently skipped — the alternative would be a recovery
-   * cascade that aborts the boot on a single corrupt edge.
-   *
-   * @param {string} prefix - 4-char $ID prefix (uppercase)
-   * @returns {Array<Object>} parsed doc bodies in arbitrary order
-   */
-  iterateHotDocsByPrefix(prefix) {
-    if (!this.hotTier) return [];
-    // The collection-set members store ONLY the suffix (post-`{prefix}_`)
-    // portion of the $ID — that's how Bri's $ID-prefix-by-collection set
-    // is structured. Reassemble the full $ID before looking up the doc
-    // entry, otherwise the get returns undefined.
-    const members = this.hotTier.sMembers(`${prefix}?`);
-    const out = [];
-    for (const member of members) {
-      const fullId = `${prefix}_${member}`;
-      const entry = this.hotTier.documents.get(fullId);
-      if (!entry || entry.cold || !entry.data) continue;
-      try { out.push(JSS.parse(entry.data)); } catch (_) { /* skip bad body */ }
-    }
-    return out;
-  }
-
-  /**
-   * Async variant of `iterateHotDocsByPrefix` that ALSO loads cold-tier
-   * docs via the hot-tier's `coldLoader` (re-promotes them on access,
-   * matching the standard read path's behavior). Returns plain POJOs —
-   * NO reactive-proxy overhead, NO ref auto-hydration. The PPR
-   * algorithm consumes this for the iteration phase: at AC scale
-   * (50k triples / 20k entities) the proxy + auto-hydrate cost
-   * dominates the perf budget; raw POJOs cut total PPR runtime
-   * roughly 3× without sacrificing cold-tier coverage.
-   *
-   * Why a sibling method instead of replacing the sync version: the
-   * sync helper is the right tool for the schema-registry's
-   * declare-time auto-rebuild path — declare() is sync and must stay
-   * sync. Algorithms that can `await` (PPR, future graph algos) prefer
-   * this async variant.
-   *
-   * @param {string} prefix - 4-char $ID prefix (uppercase)
-   * @returns {Promise<Array<Object>>} parsed doc bodies in any order
-   */
-  async getDocsByPrefix(prefix) {
-    if (!this.hotTier) return [];
-    const members = this.hotTier.sMembers(`${prefix}?`);
-    const out = [];
-    for (const member of members) {
-      const fullId = `${prefix}_${member}`;
-      // hotTier.get is async — handles cold-tier promotion transparently.
-      const data = await this.hotTier.get(fullId);
-      if (typeof data !== 'string') continue;
-      try { out.push(JSS.parse(data)); } catch (_) { /* skip bad body */ }
-    }
-    return out;
-  }
-
-  /**
    * Connect and initialize all subsystems
    * @returns {Promise<void>}
    */
@@ -280,10 +165,13 @@ export class InHouseAdapter {
     // Initialize encryption if enabled
     let encryptionKey = null;
     if (encryption?.enabled) {
-      this.keyManager = new KeyManager(encryption);
+      this.keyManager = new KeyManager({ ...encryption, logger: this.logger });
       await this.keyManager.initialize(); // Fails fast if key unavailable
       encryptionKey = this.keyManager.getKey();
-      console.log('InHouse Store: Encryption enabled');
+      this.logger.info({
+        event: 'storage.inhouse.encryption.enabled',
+        message: 'InHouse Store: Encryption enabled'
+      });
     }
 
     this.coldTier = new ColdTierFiles(dataDir);
@@ -291,6 +179,7 @@ export class InHouseAdapter {
     this.hotTier = new HotTierCache({
       maxMemoryMB,
       evictionThreshold,
+      logger: this.logger,
       onEvict: async (key, value) => {
         await this.coldTier.writeDoc(key, value);
       },
@@ -307,23 +196,29 @@ export class InHouseAdapter {
       fsyncMode: this.config.fsyncMode,
       fsyncIntervalMs: this.config.fsyncIntervalMs,
       segmentSize: this.config.walSegmentSize,
-      encryptionKey
+      encryptionKey,
+      logger: this.logger
     });
 
     this.snapshots = new SnapshotManager(dataDir, {
       intervalMs: this.config.snapshotIntervalMs,
       keepCount: this.config.keepSnapshots,
-      encryptionKey
+      encryptionKey,
+      logger: this.logger
     });
 
     this.pubsub = new LocalPubSub();
-    this.txnManager = new TransactionManager(dataDir);
+    this.txnManager = new TransactionManager(dataDir, { logger: this.logger });
 
     await this.recover();
     this.snapshots.startScheduler(() => this.createSnapshot());
 
     this.initialized = true;
-    console.log('InHouse Store: Connected and ready');
+    this.logger.info({
+      event: 'storage.inhouse.connected',
+      message: 'InHouse Store: Connected and ready',
+      metadata: { dataDir, maxMemoryMB }
+    });
   }
 
   /**
@@ -376,7 +271,11 @@ export class InHouseAdapter {
     try {
       await this.createSnapshot();
     } catch (err) {
-      console.error('InHouse Store: Final snapshot failed:', err);
+      this.logger.error({
+        event: 'storage.inhouse.snapshot.final_failed',
+        message: 'InHouse Store: Final snapshot failed:',
+        error: err
+      });
     }
 
     await this.wal.close();
@@ -387,7 +286,10 @@ export class InHouseAdapter {
     }
 
     this.initialized = false;
-    console.log('InHouse Store: Disconnected');
+    this.logger.info({
+      event: 'storage.inhouse.disconnected',
+      message: 'InHouse Store: Disconnected'
+    });
   }
 }
 
@@ -395,3 +297,6 @@ export class InHouseAdapter {
 Object.assign(InHouseAdapter.prototype, createCrudMethods());
 Object.assign(InHouseAdapter.prototype, createTxnMethods());
 Object.assign(InHouseAdapter.prototype, createRecoveryMethods());
+Object.assign(InHouseAdapter.prototype, createIdentityMethods());
+Object.assign(InHouseAdapter.prototype, createSnapshotMethods());
+Object.assign(InHouseAdapter.prototype, createGraphStateMethods());

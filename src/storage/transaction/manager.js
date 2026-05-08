@@ -9,6 +9,7 @@ import path from 'path';
 import { createTxnOperationMethods } from './txn-operations.js';
 import { createUndoMethods } from './txn-undo.js';
 import { createRecoveryMethods } from './txn-recovery.js';
+import { createBriLogger } from '../../observability/logger.js';
 
 /**
  * Manages long-lived transactions with WAL-based durability
@@ -17,10 +18,13 @@ export class TransactionManager {
   /**
    * Creates a new TransactionManager
    * @param {string} dataDir - Data directory path
+   * @param {Object} [options] - Optional transaction manager dependencies.
+   * @param {Object|false} [options.logger] - Logger boundary or false.
    */
-  constructor(dataDir) {
+  constructor(dataDir, options = {}) {
     this.txnDir = path.join(dataDir, 'txn');
     this.pending = new Map();
+    this.logger = createBriLogger(options.logger);
 
     if (!existsSync(this.txnDir)) {
       mkdirSync(this.txnDir, { recursive: true });

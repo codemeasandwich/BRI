@@ -46,7 +46,7 @@ tests/
 ## Coverage Thresholds
 
 Jest is configured with minimum coverage thresholds:
-- Branches: 80%
-- Functions: 80%
-- Lines: 80%
-- Statements: 80%
+- Branches: 100%
+- Functions: 100%
+- Lines: 100%
+- Statements: 100%

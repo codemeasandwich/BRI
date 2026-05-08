@@ -118,11 +118,20 @@ export function createRecoveryMethods() {
               }
             }
           } catch (err) {
-            console.warn(`TransactionManager: Failed to replay ${txnId}:`, err.message);
+            this.logger.warn({
+              event: 'storage.transaction.replay_failed',
+              message: `TransactionManager: Failed to replay ${txnId}:`,
+              error: err,
+              metadata: { txnId, reason: err.message }
+            });
           }
 
           this.pending.set(txnId, txn);
-          console.log(`TransactionManager: Recovered transaction ${txnId} with ${txn.actions.length} actions`);
+          this.logger.info({
+            event: 'storage.transaction.recovered',
+            message: `TransactionManager: Recovered transaction ${txnId} with ${txn.actions.length} actions`,
+            metadata: { txnId, actionCount: txn.actions.length }
+          });
         }
       } catch (err) {
         // txn directory might not exist yet

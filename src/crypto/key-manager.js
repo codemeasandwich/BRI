@@ -8,6 +8,7 @@
 import crypto from 'crypto';
 import { KeyUnavailableError } from './errors.js';
 import { EnvKeyProvider, FileKeyProvider, RemoteKeyProvider } from './providers/index.js';
+import { createBriLogger } from '../observability/logger.js';
 
 /**
  * Manages encryption key lifecycle with pluggable providers
@@ -19,11 +20,13 @@ export class KeyManager {
    * @param {string} [config.keyProvider='env'] - Provider type: 'env', 'file', or 'remote'
    * @param {Object} [config.keyProviderConfig={}] - Provider-specific configuration
    * @param {number} [config.keyRefreshIntervalMs=0] - Key refresh interval (0 to disable)
+   * @param {false|Object} [config.logger] - Bri logger boundary for runtime failures
    */
   constructor(config = {}) {
     this.providerType = config.keyProvider || 'env';
     this.providerConfig = config.keyProviderConfig || {};
     this.refreshIntervalMs = config.keyRefreshIntervalMs || 0;
+    this.logger = createBriLogger(config.logger);
 
     this.provider = null;
     this.currentKey = null;
@@ -66,7 +69,10 @@ export class KeyManager {
       case 'file':
         return new FileKeyProvider(this.providerConfig);
       case 'remote':
-        return new RemoteKeyProvider(this.providerConfig);
+        return new RemoteKeyProvider({
+          ...this.providerConfig,
+          logger: this.logger
+        });
       default:
         throw new Error(`Unknown key provider: ${this.providerType}`);
     }
@@ -102,8 +108,11 @@ export class KeyManager {
         this.currentKey = keyData.key;
         this.currentKeyId = keyData.keyId;
       } catch (err) {
-        // Log but don't throw - continue using cached key
-        console.error('KeyManager: Key refresh failed:', err.message);
+        this.logger.error({
+          event: 'crypto.key_manager.refresh_failed',
+          message: `KeyManager: Key refresh failed: ${err.message}`,
+          error: err
+        });
       }
     }, this.refreshIntervalMs);
 

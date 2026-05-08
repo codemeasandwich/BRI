@@ -7,6 +7,7 @@
 
 import https from 'https';
 import { InvalidKeyError, KeyServiceUnavailableError } from '../errors.js';
+import { createBriLogger } from '../../observability/logger.js';
 
 /**
  * Key provider that fetches from a remote HTTPS service
@@ -21,6 +22,7 @@ export class RemoteKeyProvider {
    * @param {number} [config.retryAttempts=3] - Number of retry attempts
    * @param {number} [config.retryDelayMs=1000] - Base delay between retries
    * @param {Object} [config.mtls] - mTLS configuration {cert, key, ca}
+   * @param {false|Object} [config.logger] - Bri logger boundary for retry warnings
    */
   constructor(config = {}) {
     if (!config.endpoint) {
@@ -32,6 +34,7 @@ export class RemoteKeyProvider {
     this.retryAttempts = config.retryAttempts || 3;
     this.retryDelayMs = config.retryDelayMs || 1000;
     this.mtls = config.mtls || null; // { cert, key, ca }
+    this.logger = createBriLogger(config.logger);
   }
 
   /**
@@ -48,7 +51,14 @@ export class RemoteKeyProvider {
         return await this._doFetch(keyId);
       } catch (err) {
         lastError = err;
-        console.warn(`KeyProvider: Fetch attempt ${attempt}/${this.retryAttempts} failed:`, err.message);
+        this.logger.warn({
+          event: 'crypto.key_provider.fetch_failed',
+          message:
+            `KeyProvider: Fetch attempt ${attempt}/${this.retryAttempts} failed: ` +
+            `${err.message}`,
+          error: err,
+          metadata: { attempt, retryAttempts: this.retryAttempts, keyId }
+        });
 
         if (attempt < this.retryAttempts) {
           await this._delay(this.retryDelayMs * attempt);

@@ -8,6 +8,9 @@ The storage layer provides a three-tier architecture:
 - **Hot Tier** - In-memory LRU cache for fast access
 - **Cold Tier** - JSON file-based storage for overflow
 - **WAL** - Write-ahead log for crash recovery
+- **Collection Identity Catalog** - Durable collection-name to prefix mapping
+  used to reject ambiguous `$ID` and group-read namespaces before writes and
+  during boot.
 
 ## Architecture
 
@@ -33,6 +36,7 @@ const config = {
   maxMemoryMB: 100,          // Required: Memory limit
   dataDir: './data',         // Data directory
   fsyncMode: 'batched',      // 'always' | 'batched' | 'none'
-  snapshotIntervalMs: 1800000 // Snapshot interval (30 min)
+  snapshotIntervalMs: 1800000, // Snapshot interval (30 min)
+  logger: false              // Optional: silence runtime lifecycle logs
 };
 ```

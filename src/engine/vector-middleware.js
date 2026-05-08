@@ -124,11 +124,9 @@ export function vectorIndexMiddleware(registry) {
         if (pairKey) {
           // Look up the existing $ID(s) for this canonical pair, if any.
           const candidates = idxMgr.candidatesFor(ctx.type, { __edgePair: pairKey });
-          const existingIds = candidates ? candidates.ids : [];
+          const existingIds = candidates.ids;
           // For set: ignore self-matches (the doc updating itself).
-          const selfId = ctx.operation === 'set'
-            ? (typeof candidateBody === 'string' ? candidateBody : candidateBody.$ID)
-            : null;
+          const selfId = ctx.operation === 'set' ? candidateBody.$ID : null;
           const conflict = existingIds.find(id => id !== selfId);
           if (conflict) {
             throw new BriValidationError({

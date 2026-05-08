@@ -16,9 +16,10 @@ import { collectionNamePattern } from '../engine/constants.js';
  * @param {string} opName - Exactly 'add', 'set', or 'del' (never 'get'; reads use operations-get.js)
  * @param {Object} middleware - Middleware runner from createMiddleware()
  * @param {Function} getDb - Lazy db accessor
+ * @param {Object} [registry] - Schema registry for collection identity safety
  * @returns {Proxy}
  */
-export function createOperationProxy(operation, opName, middleware, getDb) {
+export function createOperationProxy(operation, opName, middleware, getDb, registry) {
   return new Proxy(function() {}, {
     /**
      * @param {Function} target
@@ -53,7 +54,10 @@ export function createOperationProxy(operation, opName, middleware, getDb) {
           }
         }
 
-        return middleware.run(ctx, (ctx) => {
+        return middleware.run(ctx, async (ctx) => {
+          if (registry && typeof registry.ensureCollectionIdentity === 'function') {
+            await registry.ensureCollectionIdentity(prop);
+          }
           let finalArgs;
 
           if (opName === 'add' || opName === 'set') {

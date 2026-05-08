@@ -9,20 +9,22 @@
  *        process restart restores vector capability without re-embedding;
  *        also carries secondaryIndexes (POJO from SecondaryIndexManager.
  *        serialize()) so declared $indexes survive restart
+ *   v4 - adds graphIndices so edge adjacency survives restart without a
+ *        declare-time scan of every edge document.
+ *   v5 - adds collectionIdentities so durable collection prefixes are
+ *        validated before writes or group reads can mix logical collections.
  *
  * Backwards compatibility:
- *   v1/v2 snapshots load as before. The first snapshot written after
- *   startup is v3 (no migration step required). Reading a v3 snapshot in a
- *   build that doesn't know v3 would still work for the documents/collections
- *   keys; the vectorIndices and secondaryIndexes keys would simply be
- *   ignored by older code.
+ *   v1/v2/v3/v4 snapshots load as before. The first snapshot written after
+ *   any collection identity is known is v5 (no separate migration step).
+ *   Older snapshots do not carry identity catalogs, so the first declared or
+ *   written collection claims its derived prefix and persists that mapping
+ *   before user data is written.
  */
 
 import path from 'path';
 import { WALReader } from '../wal/reader.js';
 import JSS from '../../utils/jss/index.js';
-import { VectorIndex } from '../../engine/vector-index.js';
-import { attachToString } from '../../engine/helpers.js';
 import {
   buildPrefixToVectorCollectionMap,
   removeFromVectorIndicesForKey
@@ -55,6 +57,15 @@ export function createRecoveryMethods() {
           this.loadVectorState(snapshot.vectorIndices || {}, snapshot.vectorSchemas || {});
           this.setPendingSecondaryState(snapshot.secondaryIndexes || null);
           this.setPendingGraphState(snapshot.graphIndices || null);
+        } else if (snapshot.version === 5) {
+          // v5: v4 payload plus a durable collection identity catalog. The
+          // catalog is loaded before WAL replay, then replay-scanned again below
+          // so WAL-only identity registrations after the snapshot are included.
+          this.loadSnapshotV2(snapshot.documents || {}, snapshot.collections || {});
+          this.loadVectorState(snapshot.vectorIndices || {}, snapshot.vectorSchemas || {});
+          this.setPendingSecondaryState(snapshot.secondaryIndexes || null);
+          this.setPendingGraphState(snapshot.graphIndices || null);
+          this.loadCollectionIdentityState(snapshot.collectionIdentities || {});
         } else if (snapshot.version === 3) {
           this.loadSnapshotV2(snapshot.documents || {}, snapshot.collections || {});
           this.loadVectorState(snapshot.vectorIndices || {}, snapshot.vectorSchemas || {});
@@ -150,7 +161,10 @@ export function createRecoveryMethods() {
       };
 
       const encryptionKey = this.keyManager?.getKey() || null;
-      const walReader = new WALReader(path.join(this.config.dataDir, 'wal'), { encryptionKey });
+      const walReader = new WALReader(path.join(this.config.dataDir, 'wal'), {
+        encryptionKey,
+        logger: this.logger
+      });
       await walReader.replay(startLine, {
         onSet: (key, value) => {
           this.hotTier.set(key, value, false);
@@ -187,148 +201,11 @@ export function createRecoveryMethods() {
       });
 
       await this.txnManager.recover();
-      console.log('InHouse Store: Recovered');
-    },
-
-    /**
-     * Restore vector indices and schemas from a v3 snapshot payload.
-     *
-     * Each entry in `serializedIndices` is a base64-encoded buffer produced
-     * by VectorIndex.serialize(); we decode and reconstruct via deserialize().
-     * The schema POJOs hold the field name, dims, and metric so WAL replay
-     * (and later db.schema() validation) can act on them.
-     *
-     * Vector wire-format compatibility:
-     *   The buffer's internal version is independent of the snapshot
-     *   version. VectorIndex.deserialize transparently handles both v1
-     *   (no graph topology — triggers a one-shot HNSW rebuild from slot
-     *   storage at boot) and v2 (HNSW topology installed directly). The
-     *   first snapshot written after a v1→v2 upgrade is automatically
-     *   v2 because packIndex always emits the current format.
-     *
-     * @param {Object} serializedIndices - { collection -> base64 string }
-     * @param {Object} schemas - { collection -> {field, dims, metric} }
-     */
-    loadVectorState(serializedIndices, schemas) {
-      for (const [collection, schema] of Object.entries(schemas)) {
-        const b64 = serializedIndices[collection];
-        if (!b64) {
-          // Schema declared but no index buffer — should not happen in
-          // practice, but tolerate by registering an empty index that
-          // matches the persisted shape.
-          const empty = new VectorIndex({
-            dims: schema.dims, metric: schema.metric || 'cosine'
-          });
-          this._vectorRegistry.set(collection, { schema, index: empty });
-          continue;
-        }
-        const buf = Buffer.from(b64, 'base64');
-        const index = VectorIndex.deserialize(buf);
-        this._vectorRegistry.set(collection, { schema, index });
-      }
-      const count = Object.keys(schemas).length;
-      if (count > 0) {
-        console.log(`InHouse Store: Loaded vector state for ${count} collection(s)`);
-      }
-    },
-
-    /**
-     * Load v2 snapshot format with resolved object references
-     * @param {Object} documents - Document objects
-     * @param {Object} collections - Collection objects
-     */
-    loadSnapshotV2(documents, collections) {
-      // Root documents need $ID→toString like runtime get(); nested refs use the
-      // shared attachToString walk (same helper as operations-get) so snapshots
-      // behave consistently after JSS round-trip.
-      for (const doc of Object.values(documents)) {
-        if (doc && typeof doc === 'object' && doc.$ID) {
-          const $ID = doc.$ID;
-          Object.setPrototypeOf(doc, {
-            toString: () => $ID,
-            toObject: () => doc
-          });
-          void doc.toString();
-          void doc.toObject();
-        }
-        attachToString(doc);
-      }
-
-      for (const [$ID, doc] of Object.entries(documents)) {
-        this.hotTier.set($ID, JSS.stringify(doc), false);
-      }
-
-      this.hotTier.loadCollections(collections);
-      console.log(`InHouse Store: Loaded v2 snapshot with ${Object.keys(documents).length} documents`);
-    },
-
-    /**
-     * Get current state for snapshot.
-     *
-     * Always emits v3 when any vector data is registered, otherwise v2.
-     * Why conditional: v3 readers handle v2 snapshots fine, but a v2 snapshot
-     * can't carry vector state — so the version reflects the actual payload.
-     *
-     * @returns {Object} Snapshot state
-     */
-    async getSnapshotState() {
-      const encryptionKey = this.keyManager?.getKey() || null;
-      const walReader = new WALReader(path.join(this.config.dataDir, 'wal'), { encryptionKey });
-      const walLine = await walReader.getLineCount();
-      const hasVectorState = this._vectorRegistry.size > 0;
-      // Secondary state is captured if the manager is bound and has any
-      // declared specs. We snapshot proactively so future restarts don't
-      // re-declare against an empty manager and silently lose persistence.
-      let secondaryState = null;
-      if (this._secondaryIndexManager) {
-        const ser = this._secondaryIndexManager.serialize();
-        if (ser && Object.keys(ser).length > 0) secondaryState = ser;
-      }
-      // Persistent GraphIndex (UC-G7): serialize the bound GraphIndex when
-      // it exists and has any registered edge collection. Non-empty graph
-      // state forces v4; readers that don't know v4 ignore the unknown
-      // field but still consume the v3 payload (forward-compat).
-      let graphState = null;
-      if (this._graphIndex) {
-        const ser = this._graphIndex.serialize();
-        if (ser && ser.specs && Object.keys(ser.specs).length > 0) graphState = ser;
-      }
-      const hasV3Payload = hasVectorState || !!secondaryState;
-      const hasV4Payload = !!graphState;
-      const base = {
-        version: hasV4Payload ? 4 : (hasV3Payload ? 3 : 2),
-        walLine,
-        documents: this.hotTier.getAllDocumentsForSnapshot(JSS.parse),
-        collections: this.hotTier.getAllCollections()
-      };
-      if (hasVectorState) {
-        const vectorIndices = {};
-        const vectorSchemas = {};
-        for (const [collection, entry] of this._vectorRegistry) {
-          vectorIndices[collection] = entry.index.serialize().toString('base64');
-          vectorSchemas[collection] = entry.schema;
-        }
-        base.vectorIndices = vectorIndices;
-        base.vectorSchemas = vectorSchemas;
-      }
-      if (secondaryState) base.secondaryIndexes = secondaryState;
-      if (graphState) base.graphIndices = graphState;
-      return base;
-    },
-
-    /**
-     * Create a snapshot and rotate WAL
-     * @returns {string|null} Snapshot path
-     */
-    async createSnapshot() {
-      const state = await this.getSnapshotState();
-      const snapshotPath = await this.snapshots.create(state);
-
-      if (snapshotPath) {
-        await this.wal.archive();
-      }
-
-      return snapshotPath;
+      this.loadCollectionIdentityDocumentsFromHot();
+      this.logger.info({
+        event: 'storage.inhouse.recovered',
+        message: 'InHouse Store: Recovered'
+      });
     }
   };
 }

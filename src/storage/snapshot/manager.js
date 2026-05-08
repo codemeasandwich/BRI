@@ -12,6 +12,7 @@ import { existsSync } from 'fs';
 import path from 'path';
 import JSS from '../../utils/jss/index.js';
 import * as aesGcm from '../../crypto/aes-gcm.js';
+import { createBriLogger } from '../../observability/logger.js';
 
 /**
  * Manages point-in-time snapshots for fast recovery
@@ -29,6 +30,7 @@ export class SnapshotManager {
     this.snapshotPath = path.join(dataDir, 'snapshot.jss');
     this.intervalMs = options.intervalMs || 30 * 60 * 1000;
     this.encryptionKey = options.encryptionKey || null; // 32-byte key or null
+    this.logger = createBriLogger(options.logger);
 
     this.timer = null;
     this.isCreating = false;
@@ -44,7 +46,10 @@ export class SnapshotManager {
    */
   async create(state) {
     if (this.isCreating) {
-      console.log('Snapshot: Creation already in progress, skipping');
+      this.logger.info({
+        event: 'storage.snapshot.create.skipped',
+        message: 'Snapshot: Creation already in progress, skipping'
+      });
       return null;
     }
 
@@ -76,7 +81,11 @@ export class SnapshotManager {
       await fs.writeFile(tempPath, content, 'utf8');
       await fs.rename(tempPath, this.snapshotPath);
 
-      console.log(`Snapshot: Created at WAL line ${state.walLine}`);
+      this.logger.info({
+        event: 'storage.snapshot.created',
+        message: `Snapshot: Created at WAL line ${state.walLine}`,
+        metadata: { walLine: state.walLine, path: this.snapshotPath }
+      });
 
       return this.snapshotPath;
     } finally {
@@ -90,7 +99,11 @@ export class SnapshotManager {
    */
   async loadLatest() {
     if (!existsSync(this.snapshotPath)) {
-      console.log('Snapshot: No snapshot found');
+      this.logger.info({
+        event: 'storage.snapshot.missing',
+        message: 'Snapshot: No snapshot found',
+        metadata: { path: this.snapshotPath }
+      });
       return null;
     }
 
@@ -105,11 +118,20 @@ export class SnapshotManager {
 
       const snapshot = JSS.parse(content);
 
-      console.log(`Snapshot: Loaded (WAL line ${snapshot.walLine})`);
+      this.logger.info({
+        event: 'storage.snapshot.loaded',
+        message: `Snapshot: Loaded (WAL line ${snapshot.walLine})`,
+        metadata: { walLine: snapshot.walLine, path: this.snapshotPath }
+      });
 
       return snapshot;
     } catch (err) {
-      console.error(`Snapshot: Failed to load:`, err);
+      this.logger.error({
+        event: 'storage.snapshot.load_failed',
+        message: 'Snapshot: Failed to load:',
+        error: err,
+        metadata: { path: this.snapshotPath }
+      });
       return null;
     }
   }
@@ -123,13 +145,21 @@ export class SnapshotManager {
       return;
     }
 
-    console.log(`Snapshot: Scheduler started (every ${this.intervalMs / 1000 / 60} minutes)`);
+    this.logger.info({
+      event: 'storage.snapshot.scheduler.started',
+      message: `Snapshot: Scheduler started (every ${this.intervalMs / 1000 / 60} minutes)`,
+      metadata: { intervalMs: this.intervalMs }
+    });
 
     this.timer = setInterval(async () => {
       try {
         await createSnapshot();
       } catch (err) {
-        console.error('Snapshot: Scheduled creation failed:', err);
+        this.logger.error({
+          event: 'storage.snapshot.scheduler.failed',
+          message: 'Snapshot: Scheduled creation failed:',
+          error: err
+        });
       }
     }, this.intervalMs);
     // Unref the scheduler so it never holds the event loop open. The timer
@@ -145,7 +175,10 @@ export class SnapshotManager {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
-      console.log('Snapshot: Scheduler stopped');
+      this.logger.info({
+        event: 'storage.snapshot.scheduler.stopped',
+        message: 'Snapshot: Scheduler stopped'
+      });
     }
   }
 

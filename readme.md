@@ -67,6 +67,7 @@ const store = await createStore({
     keepSnapshots: 3,            // Keep last 3 snapshots
     fsyncMode: 'batched',        // WAL sync mode: 'always' | 'batched'
     fsyncIntervalMs: 100,        // Batch sync interval when fsyncMode is 'batched'
+    logger: false,               // Optional: false silences Bri runtime logs
     encryption: {                // Optional encryption at rest
       enabled: true,
       keyProvider: 'env',        // 'env', 'file', or 'remote'
@@ -342,6 +343,47 @@ const status = db.txnStatus();
 //
 // When transaction does NOT exist:
 // { exists: false }
+```
+
+### Collection Identity Diagnostics
+
+Bri derives each collection's durable storage identity from the
+collection name. That identity is the `$ID` prefix and the plural
+collection group namespace, so two logical collections cannot share it.
+Collisions throw `COLLECTION_IDENTITY_COLLISION` at schema declaration,
+write, read, or boot before ambiguous data can be served.
+
+```javascript
+db.diag.collectionIdentities();
+db.diag.collectionIdentities(['alpha', 'alpineHa']);
+// → [{ collection, storageIdentity, prefix, unique, conflicts }]
+```
+
+Explicit collection storage identities are not supported; Bri keeps the
+existing derived-prefix contract and rejects collisions.
+
+### Runtime Logging
+
+Default Bri logs storage lifecycle events to the console for standalone
+scripts. Embedded applications can capture structured events or silence
+human stdout:
+
+```javascript
+const events = [];
+const db = await openLocalDatabase({
+  logger: {
+    info: (event) => events.push(event),
+    warn: (event) => events.push(event),
+    error: (event) => events.push(event),
+    debug: (event) => events.push(event)
+  },
+  storeConfig: { dataDir: './data', maxMemoryMB: 256 }
+});
+
+const quiet = await openLocalDatabase({
+  logger: false,
+  storeConfig: { dataDir: './test-data', maxMemoryMB: 64 }
+});
 ```
 
 ### Middleware (Plugins)

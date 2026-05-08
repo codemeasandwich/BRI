@@ -14,6 +14,7 @@ import {
   isVectorRecord,
   isSecondaryIndexRecord
 } from './record-types.js';
+import { createBriLogger } from '../../observability/logger.js';
 
 /**
  * Reads and replays WAL entries for recovery
@@ -28,6 +29,7 @@ export class WALReader {
   constructor(walDir, options = {}) {
     this.walDir = walDir;
     this.encryptionKey = options.encryptionKey || null; // 32-byte key or null
+    this.logger = createBriLogger(options.logger);
   }
 
   /**
@@ -65,7 +67,12 @@ export class WALReader {
             entry._line = lineNumber;
             results.push(entry);
           } catch (err) {
-            console.warn(`WAL: Skipping corrupted entry at line ${lineNumber}: ${err.message}`);
+            this.logger.warn({
+              event: 'storage.wal.entry.corrupt',
+              message: `WAL: Skipping corrupted entry at line ${lineNumber}: ${err.message}`,
+              error: err,
+              metadata: { lineNumber }
+            });
           }
         });
         rl.on('close', () => resolve(results));
@@ -116,7 +123,11 @@ export class WALReader {
           if (isVectorRecord(entry.action) || isSecondaryIndexRecord(entry.action)) {
             break;
           }
-          console.warn(`WAL: Unknown action: ${entry.action}`);
+          this.logger.warn({
+            event: 'storage.wal.action.unknown',
+            message: `WAL: Unknown action: ${entry.action}`,
+            metadata: { action: entry.action }
+          });
       }
 
       lastLine = entry._line;
@@ -124,7 +135,11 @@ export class WALReader {
     }
 
     if (count > 0) {
-      console.log(`WAL: Replayed ${count} entries`);
+      this.logger.info({
+        event: 'storage.wal.replayed',
+        message: `WAL: Replayed ${count} entries`,
+        metadata: { count }
+      });
     }
 
     return lastLine;

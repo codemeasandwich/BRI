@@ -37,6 +37,7 @@ export function createEvictionMethods() {
 
       const candidates = [];
       for (const [key, entry] of this.documents) {
+        if (typeof key === 'string' && key.startsWith('__bri:')) continue;
         // Skip cold references (already evicted)
         if (entry.cold) continue;
         // Skip dirty entries
@@ -74,7 +75,12 @@ export function createEvictionMethods() {
       }
 
       if (evicted > 0) {
-        console.log(`HotTier: Evicted ${evicted} entries to cold, memory: ${Math.round(this.usedMemory / 1024 / 1024)}MB`);
+        const memoryMB = Math.round(this.usedMemory / 1024 / 1024);
+        this.logger?.info({
+          event: 'storage.hot.evicted',
+          message: `HotTier: Evicted ${evicted} entries to cold, memory: ${memoryMB}MB`,
+          metadata: { evicted, memoryMB }
+        });
       }
     }
   };

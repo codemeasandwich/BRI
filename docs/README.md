@@ -8,7 +8,7 @@ Capability-area documentation for Bri features. Implementation reference lives n
 
 | Document | Covers |
 |---|---|
-| [schema-extensions.md](schema-extensions.md) | Schema vocabulary — new field types (`vector`, `ref`, `ref|string`, `predicate`), collection-level options (`$indexes`, `$supersession`, `$confidence`, `$provenance`, `$edge`, `cascadeOn`), reserved-name collision rules |
+| [schema-extensions.md](schema-extensions.md) | Schema vocabulary — new field types (`vector`, `ref`, `ref|string`, `predicate`), collection-level options (`$indexes`, `$supersession`, `$confidence`, `$provenance`, `$edge`, `cascadeOn`), collection storage identity invariant, reserved-name collision rules |
 | [vector.md](vector.md) | Vector search — schema declaration, chainable query builder (`.where().near()`), result metadata, errors, v1 limitations |
 | [indexes.md](indexes.md) | Secondary indexes — `$indexes` schema option, planner behavior, bounded hydration when combined with `.near` |
 | [graph.md](graph.md) | Knowledge graph — `$edge` schema, predicate proxy (`alice.works_at`), reserved-name collision detection, GraphIndex adjacency lookup |
@@ -19,4 +19,4 @@ Capability-area documentation for Bri features. Implementation reference lives n
 | [proxy-conventions.md](proxy-conventions.md) | Entity property-access lookup algorithm (§3.5), reserved-name list, debugging "why did `entity.foo` throw?" |
 | [migration.md](migration.md) | Adopting vector + graph in an existing Bri project — what still works, the four-step path, typed-error contract change |
 | [illustrative-scenarios.md](illustrative-scenarios.md) | §F-style memory + kg walkthroughs as **non-executable** illustrative snippets only (tests are authoritative) |
-| [observability.md](observability.md) | What gets logged, diagnostic accessors, WAL inspection, worker-thread `opCount` |
+| [observability.md](observability.md) | Configurable logger boundary, collection identity diagnostics, WAL inspection, worker-thread `opCount` |

@@ -180,6 +180,7 @@ function createGetProxy(wrapper, registry, middleware, getDb) {
           ctx.args = [undefined, ctx.opts];
         }
         return middleware.run(ctx, (ctx) => {
+          registry.assertCollectionIdentity(collection);
           let finalArgs;
           const w = ctx.args[0];
           if (Object.keys(ctx.opts).length > 0) finalArgs = [w, ctx.opts];
@@ -288,6 +289,7 @@ export function createDBInterface(wrapper, store) {
   // route predicate property access through resolvePredicateAccess.
   // (Lower-layer, per the existing wrapper convention of internal _underscore fields.)
   wrapper._registry = registry;
+  wrapper._logger = store?.logger;
   // Late-bound db accessor for the predicate proxy: writes go through
   // db.add.{collection} so middleware (validation, vector + graph sync)
   // fires the same way it does for direct user calls. The accessor is a
@@ -330,9 +332,9 @@ export function createDBInterface(wrapper, store) {
       }
     }),
     get: createGetProxy(wrapper, registry, middleware, getDb),
-    add: createOperationProxy(wrapper.create, 'add', middleware, getDb),
-    set: createOperationProxy(wrapper.replace, 'set', middleware, getDb),
-    del: createOperationProxy(wrapper.remove, 'del', middleware, getDb),
+    add: createOperationProxy(wrapper.create, 'add', middleware, getDb, registry),
+    set: createOperationProxy(wrapper.replace, 'set', middleware, getDb, registry),
+    del: createOperationProxy(wrapper.remove, 'del', middleware, getDb, registry),
     pin: new Proxy(wrapper.cache, {
       /**
        * Bind cache operations to a specific collection name.
@@ -380,6 +382,19 @@ export function createDBInterface(wrapper, store) {
     schema: (collection, schemaDef) => {
       registry.declare(collection, schemaDef);
       return db;
+    },
+
+    // ==================== Diagnostics API ====================
+    diag: {
+      /**
+       * Inspect durable collection identity mappings. Optional candidate names
+       * are projected without registration so tools can preflight schemas.
+       *
+       * @param {string[]} [collections]
+       * @returns {Array<Object>}
+       */
+      collectionIdentities: (collections = []) =>
+        registry.collectionIdentityDiagnostics(collections)
     },
 
     // ==================== Cascade API (UC-X2) ====================

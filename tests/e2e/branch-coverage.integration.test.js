@@ -349,19 +349,19 @@ describe('Branch coverage completions', () => {
   test('touching seeds may include opaque objects without $ID (filtered from id set)', async () => {
     const dir = `${BASE}-touch-obj`;
     const db = await openLocalDatabase({ storeConfig: { dataDir: dir, maxMemoryMB: 64 } });
-    db.schema('brNodeTO', { name: { type: String } });
-    db.schema('brEdgeTO', {
-      from_id: { type: 'ref', to: 'brNodeTO', required: true },
-      to_id: { type: 'ref', to: 'brNodeTO', required: true },
+    db.schema('brTouchNode', { name: { type: String } });
+    db.schema('brTouchEdge', {
+      from_id: { type: 'ref', to: 'brTouchNode', required: true },
+      to_id: { type: 'ref', to: 'brTouchNode', required: true },
       kind: { type: String, required: true },
-      $edge: { from: 'brNodeTO', to: 'brNodeTO', predicate: 'kind', predicates: '*' }
+      $edge: { from: 'brTouchNode', to: 'brTouchNode', predicate: 'kind', predicates: '*' }
     });
-    const a = await db.add.brNodeTO({ name: 'A' });
-    const b = await db.add.brNodeTO({ name: 'B' });
-    await db.add.brEdgeTO({ from_id: a.$ID, to_id: b.$ID, kind: 'k' });
-    const edges = await db.get.brEdgeTOS.touching([a.$ID, { notAnEntity: true }]).toArray();
+    const a = await db.add.brTouchNode({ name: 'A' });
+    const b = await db.add.brTouchNode({ name: 'B' });
+    await db.add.brTouchEdge({ from_id: a.$ID, to_id: b.$ID, kind: 'k' });
+    const edges = await db.get.brTouchEdgeS.touching([a.$ID, { notAnEntity: true }]).toArray();
     expect(edges.some((e) => e.from_id === a.$ID)).toBe(true);
-    const noSeeds = await db.get.brEdgeTOS.touching(null).toArray();
+    const noSeeds = await db.get.brTouchEdgeS.touching(null).toArray();
     expect(Array.isArray(noSeeds)).toBe(true);
     await db.disconnect();
   });

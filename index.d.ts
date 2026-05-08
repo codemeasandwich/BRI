@@ -30,7 +30,28 @@ export interface StoreConfig {
   snapshotIntervalMs?: number;
   /** Number of snapshots to retain (default: 3) */
   keepSnapshots?: number;
+  /** Optional structured logger boundary for storage lifecycle events. */
+  logger?: BriLoggerConfig;
 }
+
+export interface BriLogEvent {
+  event: string;
+  level: 'debug' | 'info' | 'warn' | 'error';
+  severity: 'debug' | 'info' | 'warn' | 'error';
+  message: string;
+  metadata?: Record<string, any>;
+  error?: unknown;
+}
+
+export interface BriLogger {
+  debug?(event: BriLogEvent): void;
+  info?(event: BriLogEvent): void;
+  warn?(event: BriLogEvent): void;
+  error?(event: BriLogEvent): void;
+  stdout?: boolean;
+}
+
+export type BriLoggerConfig = false | BriLogger;
 
 /** Local-store branch passed to {@link bri.connect} (omit remote `url` / `wsUrl`). */
 export interface LocalConnectOptions {
@@ -38,6 +59,8 @@ export interface LocalConnectOptions {
   storeType?: 'inhouse';
   /** Storage configuration */
   storeConfig?: StoreConfig;
+  /** Structured logger or false to silence Bri runtime lifecycle output. */
+  logger?: BriLoggerConfig;
 }
 
 /**
@@ -353,6 +376,8 @@ export interface Database {
 
   /** Middleware manager */
   readonly middleware: MiddlewareManager;
+  /** Public diagnostics namespace for storage identity and runtime state. */
+  readonly diag: DiagnosticsNamespace;
 
   /**
    * Add middleware (chainable)
@@ -609,6 +634,20 @@ export interface CascadeNamespace {
                     => Promise<CascadeResult>) | any;
 }
 
+// ---- db.diag --------------------------------------------------------------
+
+export interface CollectionIdentityDiagnostic {
+  collection: string;
+  storageIdentity: string;
+  prefix: string;
+  unique: boolean;
+  conflicts: string[];
+}
+
+export interface DiagnosticsNamespace {
+  collectionIdentities(collections?: string[]): CollectionIdentityDiagnostic[];
+}
+
 // ---- db.schema (spec §2.1) ------------------------------------------
 
 export interface SchemaNamespace {
@@ -630,6 +669,7 @@ export type BriErrorCode =
   | 'PREDICATE_NOT_REGISTERED'
   | 'CHAIN_CROSSES_COLLECTION'
   | 'RESERVED_NAME_COLLISION'
+  | 'COLLECTION_IDENTITY_COLLISION'
   | 'CASCADE_SCOPE_UNKNOWN'
   | 'INDEX_FIELD_NOT_DECLARED'
   | 'WAL_INDEX_REPLAY_FAILED'

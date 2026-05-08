@@ -9,6 +9,7 @@ import fs from 'fs/promises';
 import { existsSync, mkdirSync, readFileSync } from 'fs';
 import path from 'path';
 import { serializeEntry, serializeEntryEncrypted, deserializeEntry } from './entry.js';
+import { createBriLogger } from '../../observability/logger.js';
 
 /**
  * Writes WAL entries with pointer chain integrity
@@ -29,6 +30,7 @@ export class WALWriter {
     this.fsyncIntervalMs = options.fsyncIntervalMs || 100;
     this.segmentSize = options.segmentSize || 10 * 1024 * 1024;
     this.encryptionKey = options.encryptionKey || null; // 32-byte key or null
+    this.logger = createBriLogger(options.logger);
 
     this.currentSegment = 0;
     this.currentSize = 0;
@@ -196,7 +198,11 @@ export class WALWriter {
           await handle.sync();
         } catch (err) {
           if (this.isClosing || err?.code === 'EBADF') return;
-          console.error('WAL fsync error:', err);
+          this.logger.error({
+            event: 'storage.wal.fsync.error',
+            message: 'WAL fsync error:',
+            error: err
+          });
         }
       }
     }, this.fsyncIntervalMs);

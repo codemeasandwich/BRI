@@ -66,6 +66,46 @@ declaring an explicit `'predicate'` field.
 
 ## Collection-level options
 
+### Collection storage identity invariant
+
+Bri derives a compact durable storage identity from each logical
+collection name with `type2Short(collection)`: the first two and last two
+characters uppercased. That identity is the `$ID` prefix, the collection
+membership-set namespace, and the plural group-read namespace. Because
+those storage structures are durable, two logical collections must never
+share the same identity.
+
+Examples:
+
+| Collection | Storage identity / prefix |
+|---|---|
+| `alpha` | `ALHA` |
+| `bravo` | `BRVO` |
+| `alpineHa` | `ALHA` |
+
+Declaring or writing both `alpha` and `alpineHa` fails with
+`BriSchemaError` code `COLLECTION_IDENTITY_COLLISION` before ambiguous
+rows can be persisted. The error details include
+`{ collections, storageIdentity, prefix }`.
+
+Use the public diagnostic surface to inspect known mappings or preflight
+candidate names:
+
+```js
+db.diag.collectionIdentities();
+db.diag.collectionIdentities(['alpha', 'alpineHa']);
+```
+
+Rows have `{ collection, storageIdentity, prefix, unique, conflicts }`.
+The optional candidate list is a projection only; it does not register a
+schema or reserve the identity.
+
+Bri does not currently support explicit user-supplied collection storage
+identities. The supported contract is derived identities plus fail-fast
+collision rejection. Keeping the identity derived from the collection
+name preserves the existing `$ID`, set, WAL, and snapshot layout for
+non-colliding stores while preventing silent namespace overlap.
+
 ```js
 const KGTripleSchema = {
   // ...field definitions...

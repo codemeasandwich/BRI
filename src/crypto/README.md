@@ -35,7 +35,8 @@ import { KeyManager } from './crypto/index.js';
 const keyManager = new KeyManager({
   keyProvider: 'env',           // 'env' | 'file' | 'remote'
   keyProviderConfig: {},        // Provider-specific config
-  keyRefreshIntervalMs: 0       // 0 = disabled
+  keyRefreshIntervalMs: 0,      // 0 = disabled
+  logger: false                 // Optional: silence Bri key lifecycle logs
 });
 
 await keyManager.initialize();  // Fails fast if key unavailable
@@ -89,4 +90,7 @@ See [providers/README.md](providers/README.md) for detailed provider configurati
 - Additional Authenticated Data (AAD) binds encryption to metadata
 - Pluggable key providers (environment, file, remote HTTPS)
 - Optional key rotation with background refresh
+- Key-provider retry and refresh failures route through Bri's structured
+  logger boundary (`crypto.key_provider.fetch_failed`,
+  `crypto.key_manager.refresh_failed`)
 - Secure memory clearing on close

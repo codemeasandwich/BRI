@@ -152,10 +152,17 @@ When `BRI_ENCRYPTION_KEY` is set, the snapshot is AES-256-GCM-encrypted as a who
 
 | Snapshot version | Reader | Writer |
 |---|---|---|
-| v1 / v2 (no vectors) | Loads cleanly; vector path is skipped | Continues to write v2 if no vector schema is registered |
-| v3 (with vectors) | Loads vector indices and schemas | Written automatically when any vector schema exists |
+| v1 / v2 (no vectors) | Loads cleanly; vector path is skipped | Legacy only; new writes with collection identities use v5 |
+| v3 (with vectors) | Loads vector indices and schemas | Legacy vector snapshots load and upgrade on next snapshot |
+| v4 (with graph adjacency) | Loads graph state directly | Legacy graph snapshots load and upgrade on next snapshot |
+| v5 (collection identities) | Loads collection identity catalog, vector, secondary, and graph state | Written automatically once any collection identity is known |
 
-A v2 snapshot does not need migration; the next snapshot that has a vector schema is written as v3.
+A v2/v3/v4 snapshot does not need migration. The next snapshot written
+after a collection is declared or written includes the collection
+identity catalog and uses v5. If a persisted identity catalog contains
+two names with the same durable prefix, boot throws
+`COLLECTION_IDENTITY_COLLISION` rather than serving ambiguous group
+reads.
 
 Vector index buffers carry their own internal version (independent of the snapshot version). The Bri v2 release introduced index format **v2** — same payload as v1 plus an HNSW topology section appended at the end. Old index buffers (v1, brute-force linear scan, no graph) deserialize cleanly: the wrapper reads slot storage as before, then runs a one-shot `rebuildTopology` pass to construct the HNSW graph from the populated vectors. The rebuild is logged at INFO so operators see the upgrade event:
 

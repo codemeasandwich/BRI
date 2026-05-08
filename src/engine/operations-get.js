@@ -51,7 +51,11 @@ export function createGetOperation(store, wrapper) {
       && !type.endsWith('S')
       && !where) {
       const errMessage = `You are missing your selector argument for ${type}`;
-      console.error(new Error(errMessage).stack);
+      wrapper._logger?.error({
+        event: 'engine.get.selector_missing',
+        message: new Error(errMessage).stack,
+        metadata: { collection: type }
+      });
       throw new Error(errMessage);
     }
 

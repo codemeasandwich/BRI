@@ -44,6 +44,7 @@ import {
   BriValidationError, BriQueryError, BriSchemaError,
   VECTOR_DIMS_MISMATCH, VECTOR_QUERY_DIMS_MISMATCH
 } from './errors.js';
+import { createBriLogger } from '../observability/logger.js';
 
 // HNSW parameter defaults — chosen per spec §3.1 / §6.2 to match the
 // canonical Malkov & Yashunin recommendations and the v2 latency budgets.
@@ -315,7 +316,8 @@ export class VectorIndex {
    * @returns {VectorIndex}
    * @throws {Error} on magic / unsupported-version mismatch
    */
-  static deserialize(buf) {
+  static deserialize(buf, options = {}) {
+    const logger = createBriLogger(options.logger);
     const state = unpackIndex(buf);
     const opts = { dims: state.dims, metric: state.metric,
       initialCapacity: Math.max(8, state.capacity) };
@@ -345,11 +347,14 @@ export class VectorIndex {
       idx._entryPoint = state.hnsw.entryPoint;
       idx._entryLevel = state.hnsw.entryLevel;
     } else {
-      console.log(
-        `VectorIndex: rebuilding HNSW topology from v1 snapshot ` +
-        `(${idx._size} vectors)`
-      );
-      rebuildTopology(idx);
+      logger.info({
+        event: 'engine.vector_index.hnsw_rebuild.started',
+        message:
+          `VectorIndex: rebuilding HNSW topology from v1 snapshot ` +
+          `(${idx._size} vectors)`,
+        metadata: { count: idx._size }
+      });
+      rebuildTopology(idx, logger);
     }
     return idx;
   }

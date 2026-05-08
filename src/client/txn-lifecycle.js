@@ -76,8 +76,7 @@ export function createTxnLifecycle(store, registry, getDb) {
         // Drop the secondary-index rollback log — forward writes are
         // already in the live index; the log was the safety net for
         // undoing them and is no longer needed (UC-G3 AC#4).
-        const sIdx = registry.secondaryIndexManager?.();
-        if (sIdx) commitSecondaryTxn(sIdx, txnId);
+        commitSecondaryTxn(registry.secondaryIndexManager(), txnId);
         if (db._activeTxnId === txnId) {
           db._activeTxnId = null;
           db._activeTxnSessionId = null;
@@ -109,8 +108,7 @@ export function createTxnLifecycle(store, registry, getDb) {
         // inverse ops — required so a cancelled txn leaves the index
         // bit-identical to its pre-rec() state (UC-V4 AC#2 cited by
         // UC-G3 AC#4 for the canonical-pair uniqueness invariant).
-        const sIdx = registry.secondaryIndexManager?.();
-        if (sIdx) rollbackSecondaryTxn(sIdx, txnId);
+        rollbackSecondaryTxn(registry.secondaryIndexManager(), txnId);
         if (db._activeTxnId === txnId) {
           db._activeTxnId = null;
           db._activeTxnSessionId = null;
@@ -151,8 +149,7 @@ export function createTxnLifecycle(store, registry, getDb) {
           // canonical-pair / $indexes entries stay in lock-step with
           // storage. No-op when the popped target had no logged op
           // (e.g. SADD-only popped before its paired SET).
-          const sIdx = registry.secondaryIndexManager?.();
-          if (sIdx) popSecondaryStagedOp(sIdx, txnId, action.target);
+          popSecondaryStagedOp(registry.secondaryIndexManager(), txnId, action.target);
         }
         return action;
       });

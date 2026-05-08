@@ -27,13 +27,9 @@ import { VectorIndex } from './vector-index.js';
 import SecondaryIndexManager from './secondary-index.js';
 import { GraphIndex } from './graph-index.js';
 import { type2Short } from './types.js';
-import {
-  buildEdgeSpec,
-  registerPredicateRouting,
-  registerInversePredicateRouting,
-  collectLifecycleFields,
-  collectCascadeEntries
-} from './schema-edge-declare.js';
+import { createSchemaRegistryIdentity } from './schema-registry-identity.js';
+import { findVectorField } from './schema-registry-vector.js';
+import { buildEdgeSpec, registerPredicateRouting, registerInversePredicateRouting, collectLifecycleFields, collectCascadeEntries } from './schema-edge-declare.js';
 import { canonicalPairKeyFor, bindGraphIndexToStore, rebuildAdjacencyFromHot } from './canonical-pair.js';
 
 /**
@@ -78,6 +74,7 @@ export function createSchemaRegistry(store) {
   const predicatesByObject = new Map();
   const cascadeByScope = new Map();
   const lifecycleFields = new Map();
+  const identity = createSchemaRegistryIdentity(store);
   /* UC-G3 — collections whose schema declared `$edge.unique &&
    * $edge.symmetric` (validated together in schema-edge-declare.js).
    * Membership here drives the synthetic `__edgePair` secondary index,
@@ -106,31 +103,6 @@ export function createSchemaRegistry(store) {
 
   bindGraphIndexToStore(store, graphIndex); // UC-G7; see engine/canonical-pair.js
 
-  /**
-   * Walk a schema definition and pick out the vector field, if any.
-   * v1 supports at most ONE vector field per collection. Multiple vector
-   * fields are not part of any UC and would require disambiguating which
-   * field .near() targets.
-   *
-   * @param {Object} schemaDef
-   * @returns {{name:string, dims:number, metric:string}|null}
-   */
-  function findVectorField(schemaDef) {
-    let found = null;
-    for (const [name, decl] of Object.entries(schemaDef)) {
-      if (decl && decl.type === 'vector') {
-        if (found) {
-          throw new Error(
-            `Schema declares more than one vector field ` +
-            `('${found.name}' and '${name}'). v1 supports at most one.`
-          );
-        }
-        found = { name, dims: decl.dims, metric: decl.metric || 'cosine' };
-      }
-    }
-    return found;
-  }
-
   return {
     /**
      * Register a schema for a collection.
@@ -151,13 +123,14 @@ export function createSchemaRegistry(store) {
      * @throws {Error} on multiple vector fields or drift against persisted index
      */
     declare(collection, schemaDef) {
+      const storageIdentity = identity.declare(collection);
       schemas.set(collection, schemaDef);
 
       // Build the prefix → collection lookup for this collection so the
       // predicate proxy can resolve an entity's collection from its $ID.
       // Done lazily here (not at first read) so reading happens off the
       // hot path.
-      const prefix = type2Short(collection);
+      const prefix = storageIdentity;
       collectionByPrefix.set(prefix, collection);
 
       // Process $edge first — collisions and reserved-name checks must
@@ -364,6 +337,34 @@ export function createSchemaRegistry(store) {
      */
     collectionForPrefix(prefix) {
       return collectionByPrefix.get(prefix);
+    },
+
+    /**
+     * Persist a collection identity before a write reaches WAL/doc storage.
+     *
+     * @param {string} collection
+     */
+    async ensureCollectionIdentity(collection) {
+      await identity.ensure(collection);
+    },
+
+    /**
+     * Check a read-side collection identity without reserving empty names.
+     *
+     * @param {string} collection
+     */
+    assertCollectionIdentity(collection) {
+      identity.assert(collection);
+    },
+
+    /**
+     * Public diagnostic rows for known and optionally projected collections.
+     *
+     * @param {string[]} [collections=[]]
+     * @returns {Array<Object>}
+     */
+    collectionIdentityDiagnostics(collections = []) {
+      return identity.diagnostics(collections);
     },
 
     /**

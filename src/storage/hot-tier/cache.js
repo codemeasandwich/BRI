@@ -4,6 +4,7 @@
 
 import { createSnapshotMethods } from './cache-snapshot.js';
 import { createEvictionMethods } from './cache-eviction.js';
+import { createBriLogger } from '../../observability/logger.js';
 
 /**
  * In-memory LRU cache with hot/cold tier management
@@ -26,6 +27,7 @@ export class HotTierCache {
     this.evictionThreshold = options.evictionThreshold || 0.8;
     this.onEvict = options.onEvict || (() => {});
     this.coldLoader = options.coldLoader || (() => Promise.resolve(null));
+    this.logger = createBriLogger(options.logger);
 
     this.documents = new Map();
     this.collections = new Map();
@@ -100,7 +102,11 @@ export class HotTierCache {
       });
       this.usedMemory += size;
 
-      console.log(`HotTier: Loaded ${key} from cold storage`);
+      this.logger.debug({
+        event: 'storage.hot.loaded_from_cold',
+        message: `HotTier: Loaded ${key} from cold storage`,
+        metadata: { key }
+      });
       return value;
     }
 

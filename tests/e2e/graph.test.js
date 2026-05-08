@@ -2121,8 +2121,8 @@ describe('Persistent GraphIndex', () => {
     expect(knows.map(e => e.name).sort()).toEqual(['Bob', 'Carol']);
   });
 
-  test('snapshot v4 round-trip: serialize → load preserves adjacency directly', async () => {
-    // Snapshot v4 should contain graphIndices in its payload.
+  test('snapshot v5 round-trip: serialize → load preserves adjacency and identities directly', async () => {
+    // Snapshot v5 should contain graphIndices plus collection identity state.
     db = await freshDB();
     declareKgSchema(db);
     const a = await db.add.kgEntity({ name: 'A' });
@@ -2130,8 +2130,12 @@ describe('Persistent GraphIndex', () => {
     await a.knows(b);
     await db._store.createSnapshot();
     const snapshotState = await db._store.getSnapshotState();
-    expect(snapshotState.version).toBe(4);
+    expect(snapshotState.version).toBe(5);
     expect(snapshotState.graphIndices).toBeDefined();
+    expect(snapshotState.collectionIdentities).toMatchObject({
+      kgEntity: 'KGTY',
+      kgTriple: 'KGLE'
+    });
     expect(snapshotState.graphIndices.specs).toHaveProperty('kgTriple');
     expect(Object.keys(snapshotState.graphIndices.outgoing.kgTriple)).toContain(a.$ID);
   });

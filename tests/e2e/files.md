@@ -9,6 +9,7 @@ e2e/
 ├── coverage-branches-100.integration.test.js
 ├── coverage-gaps.test.js
 ├── coverage-line-sweep.test.js
+├── collection-identity-wal-child.mjs
 ├── crud.test.js
 ├── diff.test.js
 ├── edge-cases.test.js
@@ -151,6 +152,9 @@ Public `createStore` / `createDB` / `getDB` branching: env-driven `storeConfig`,
 
 ### `coverage-line-sweep.test.js`
 Targeted clauses for instrumentation gaps: validator throws on query chains, cascade `byField` / `opts.atomic`, graph expand budgets and `direction: 'both'`, `loadVectorState` orphan schema, adapter `vectorEntries()`, `isPartialMatch` nesting, bounded index + residual + `.match`, and misc public surfaces.
+
+### `collection-identity-wal-child.mjs`
+Child-process helper for collection identity recovery tests. Boots a real local database, declares colliding or non-colliding schemas, and exits with observable process status so WAL/recovery collision behavior is validated through a public runtime boundary.
 
 ### `branch-coverage.integration.test.js`
 Integration flows targeting Istanbul branch arms via real `createDB` / storage paths (composite schemas, query-builder residuals, vector WAL routing).

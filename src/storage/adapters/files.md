@@ -5,6 +5,10 @@ src/storage/adapters/
 ├── inhouse.js
 ├── inhouse-crud.js
 ├── inhouse-txn.js
+├── inhouse-identity.js
+├── inhouse-snapshot.js
+├── inhouse-snapshot-version.js
+├── inhouse-graph-state.js
 ├── inhouse-vector-wal-route.js
 ├── inhouse-graph-wal-route.js
 └── inhouse-recovery.js
@@ -33,6 +37,35 @@ Main InHouseAdapter class coordinating all storage components.
 - `getPendingGraphState()` - Return pre-loaded GraphIndex state (snapshot v4 payload) for the registry
 - `setPendingGraphState(state)` - Capture GraphIndex state during recovery (called by inhouse-recovery on v4 load)
 - `iterateHotDocsByPrefix(prefix)` - Sync enumeration of hot-tier doc bodies by $ID prefix; consumed by the schema registry's auto-rebuild path on edge-collection declare for v3→v4 migration
+
+### `inhouse-identity.js`
+
+Collection identity catalog mixin for `InHouseAdapter`. Owns the persisted logical collection → durable storage identity map, rejects duplicate identities, loads legacy identity documents from hot tier, and exposes boot/read/write assertion helpers used by schema declaration and public operations.
+
+**Exports:**
+- `createIdentityMethods()` - Returns store identity methods mixed into `InHouseAdapter`.
+
+### `inhouse-snapshot.js`
+
+Snapshot serialization and load mixin for `InHouseAdapter`. Builds versioned snapshot payloads, writes v5 identity-aware snapshots, reloads v2 document/collection payloads, and restores vector state into the store-owned vector registry.
+
+**Exports:**
+- `createSnapshotMethods()` - Returns snapshot load/write methods mixed into `InHouseAdapter`.
+
+### `inhouse-snapshot-version.js`
+
+Small helpers for choosing snapshot wire versions and extracting collection identity state. Keeps version decisions isolated from the adapter coordinator.
+
+**Exports:**
+- `chooseSnapshotVersion(flags)` - Select v2/v3/v4/v5 based on identity, graph, vector, and secondary-index payload presence.
+- `collectionIdentitySnapshotState(identities)` - Convert the identity map into snapshot state plus a presence flag.
+
+### `inhouse-graph-state.js`
+
+GraphIndex bind/recovery and prefix-enumeration mixin for `InHouseAdapter`. Drains deferred graph WAL operations after registry bind and provides hot/cold document enumeration by durable collection prefix for graph rebuild and PPR workflows.
+
+**Exports:**
+- `createGraphStateMethods()` - Returns graph-state methods mixed into `InHouseAdapter`.
 
 ### `inhouse-crud.js`
 
