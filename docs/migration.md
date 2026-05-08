@@ -58,6 +58,21 @@ preflight, or boot when persisted identity state is already ambiguous.
 Rename one collection and migrate its rows before continuing; Bri does
 not support explicit user-defined storage identities.
 
+Identity reservation is atomic with respect to public schema and write
+preconditions. A failed `db.schema(...)` leaves no registry or identity
+state behind, reads never create identities, and failed add/set/delete
+calls do not reserve a new collection identity. A successful first write
+for a schema-less collection still persists the identity before the user
+row is written so recovery can reject future collisions deterministically.
+
+Known downstream impact: schemas that currently pair
+`workspaceEvent`/`workspaceCheckpoint` or any combination of
+`ontologyObservation`, `ontologyContradiction`, and `ontologyProjection`
+derive the same durable identity within each group. Those projects must
+rename/migrate their Bri schema before adopting this version. Bri keeps
+the derived-identity contract rather than adding custom storage aliases,
+so existing non-colliding stores remain layout-compatible.
+
 ## Step 1 — declare schemas for the collections you want to upgrade
 
 Vector + graph features are schema-driven. Declare schemas for

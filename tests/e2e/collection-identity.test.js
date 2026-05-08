@@ -21,6 +21,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = './test-data-collection-identity';
 const WAL_DIR = path.join(HERE, '..', '..', 'test-data-collection-identity-wal');
 const WAL_CHILD = path.join(HERE, 'collection-identity-wal-child.mjs');
+const LEGACY_IDENTITY_DIR = './test-data-collection-identity-legacy';
 
 /**
  * Capture a thrown/rejected Bri error so assertions can inspect stable codes
@@ -55,15 +56,38 @@ async function openQuietDb(dir) {
   });
 }
 
+/**
+ * Seed a pre-identity snapshot that mimics stores created before collection
+ * identity catalogs existed. These migration scenarios prove failed writes do
+ * not leave a newly inferred identity behind.
+ *
+ * @param {string} dir - Data directory for the synthetic snapshot.
+ * @param {string} id - Durable row ID to place in the snapshot.
+ * @param {Object} body - Document body.
+ * @returns {Promise<void>}
+ */
+async function writeLegacySnapshot(dir, id, body) {
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, 'snapshot.jss'), JSS.stringify({
+    version: 2,
+    timestamp: new Date(),
+    walLine: 0,
+    documents: { [id]: body },
+    collections: { [`${id.split('_')[0]}?`]: [id.split('_')[1]] }
+  }), 'utf8');
+}
+
 describe('Collection identity safety', () => {
   beforeEach(async () => {
     await fs.rm(DATA_DIR, { recursive: true, force: true }).catch(() => {});
     await fs.rm(WAL_DIR, { recursive: true, force: true }).catch(() => {});
+    await fs.rm(LEGACY_IDENTITY_DIR, { recursive: true, force: true }).catch(() => {});
   });
 
   afterEach(async () => {
     await fs.rm(DATA_DIR, { recursive: true, force: true }).catch(() => {});
     await fs.rm(WAL_DIR, { recursive: true, force: true }).catch(() => {});
+    await fs.rm(LEGACY_IDENTITY_DIR, { recursive: true, force: true }).catch(() => {});
   });
 
   test('distinct storage identities support schema, writes, ID reads, and plural reads', async () => {
@@ -160,6 +184,222 @@ describe('Collection identity safety', () => {
       expect(err.details.collections.sort()).toEqual(['alpha', 'alpineHa']);
       expect(err.details.storageIdentity).toBe('ALHA');
     } finally {
+      await db.disconnect();
+    }
+  });
+
+  test('malformed schema declaration leaves identity state clean for later colliding names', async () => {
+    const db = await openQuietDb(DATA_DIR);
+    try {
+      const err = await captureError(() =>
+        db.schema('alpha', { name: { type: String }, $indexes: ['name'] })
+      );
+      expect(err).toBeInstanceOf(Error);
+      expect(db.diag.collectionIdentities()).toEqual([]);
+
+      db.schema('alpineHa', { name: { type: String, required: true } });
+      const row = await db.add.alpineHa({ name: 'valid-after-failed-schema' });
+
+      expect(row.$ID).toMatch(/^ALHA_/);
+      expect(db.diag.collectionIdentities()).toContainEqual(expect.objectContaining({
+        collection: 'alpineHa',
+        storageIdentity: 'ALHA',
+        unique: true
+      }));
+    } finally {
+      await db.disconnect();
+    }
+  });
+
+  test('failed add does not reserve identity before operation preconditions pass', async () => {
+    const db = await openQuietDb(DATA_DIR);
+    try {
+      await expect(db.add.alpha({ $ID: 'ALHA_manual', name: 'invalid' }))
+        .rejects.toThrow('Trying to "add" an Object with ALHA_manual to BRI');
+      expect(db.diag.collectionIdentities()).toEqual([]);
+
+      const row = await db.add.alpineHa({ name: 'valid-after-failed-add' });
+      expect(row.$ID).toMatch(/^ALHA_/);
+      expect((await db.get.alpineHa(row.$ID)).name).toBe('valid-after-failed-add');
+    } finally {
+      await db.disconnect();
+    }
+  });
+
+  test('failed first add after identity persistence rolls back the inferred identity', async () => {
+    const db = await openQuietDb(DATA_DIR);
+    try {
+      const circular = { name: 'cannot-persist' };
+      circular.self = circular;
+
+      await expect(db.add.alpha(circular)).rejects.toThrow();
+      expect(db.diag.collectionIdentities()).toEqual([]);
+
+      const row = await db.add.alpineHa({ name: 'valid-after-rollback' });
+      expect(row.$ID).toMatch(/^ALHA_/);
+      expect((await db.get.alpineHa(row.$ID)).name).toBe('valid-after-rollback');
+    } finally {
+      await db.disconnect();
+    }
+  });
+
+  test('failed delete of a missing row does not reserve identity', async () => {
+    const db = await openQuietDb(DATA_DIR);
+    try {
+      await expect(db.del.alpha('ALHA_missing', 'USER_actor'))
+        .rejects.toThrow('"ALHA_missing" was not found');
+      expect(db.diag.collectionIdentities()).toEqual([]);
+
+      const row = await db.add.alpineHa({ name: 'valid-after-failed-delete' });
+      expect(row.$ID).toMatch(/^ALHA_/);
+      expect((await db.get.alpineHa(row.$ID)).name).toBe('valid-after-failed-delete');
+    } finally {
+      await db.disconnect();
+    }
+  });
+
+  test('failed legacy set rolls back identity inferred during migration', async () => {
+    await writeLegacySnapshot(LEGACY_IDENTITY_DIR, 'ALHA_legacy', {
+      $ID: 'ALHA_legacy',
+      name: 'legacy',
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+    const db = await openQuietDb(LEGACY_IDENTITY_DIR);
+    const originalSet = db._store.set;
+    try {
+      db._store.set = async () => {
+        throw new Error('forced legacy set failure');
+      };
+      const replacement = {
+        $ID: 'ALHA_legacy',
+        name: 'cannot-replace'
+      };
+
+      await expect(db.set.alpha(replacement)).rejects.toThrow('forced legacy set failure');
+      expect(db.diag.collectionIdentities()).toEqual([]);
+
+      db._store.set = originalSet;
+      const row = await db.add.alpineHa({ name: 'valid-after-failed-set' });
+      expect(row.$ID).toMatch(/^ALHA_/);
+    } finally {
+      db._store.set = originalSet;
+      await db.disconnect();
+    }
+  });
+
+  test('failed legacy delete rolls back identity inferred during migration', async () => {
+    await writeLegacySnapshot(LEGACY_IDENTITY_DIR, 'ALHA_legacy', {
+      $ID: 'ALHA_legacy',
+      name: 'legacy',
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+    const db = await openQuietDb(LEGACY_IDENTITY_DIR);
+    const originalRename = db._store.rename;
+    try {
+      db._store.rename = async () => {
+        throw new Error('forced legacy delete failure');
+      };
+
+      await expect(db.del.alpha('ALHA_legacy', 'USER_actor'))
+        .rejects.toThrow('forced legacy delete failure');
+      expect(db.diag.collectionIdentities()).toEqual([]);
+
+      db._store.rename = originalRename;
+      const row = await db.add.alpineHa({ name: 'valid-after-failed-delete' });
+      expect(row.$ID).toMatch(/^ALHA_/);
+    } finally {
+      db._store.rename = originalRename;
+      await db.disconnect();
+    }
+  });
+
+  test('identity persistence failure leaves no inferred runtime identity behind', async () => {
+    const db = await openQuietDb(DATA_DIR);
+    const originalDebug = db._store.logger.debug;
+    try {
+      db._store.logger.debug = () => {
+        throw new Error('forced identity logger failure');
+      };
+
+      await expect(db.add.alpha({ name: 'cannot-register' }))
+        .rejects.toThrow('forced identity logger failure');
+      expect(db.diag.collectionIdentities()).toEqual([]);
+
+      db._store.logger.debug = originalDebug;
+      const row = await db.add.alpineHa({ name: 'valid-after-ensure-failure' });
+      expect(row.$ID).toMatch(/^ALHA_/);
+    } finally {
+      db._store.logger.debug = originalDebug;
+      await db.disconnect();
+    }
+  });
+
+  test('identity WAL failure leaves no inferred runtime identity behind', async () => {
+    const db = await openQuietDb(DATA_DIR);
+    const originalAppend = db._store.wal.append;
+    try {
+      db._store.wal.append = async () => {
+        throw new Error('forced identity wal failure');
+      };
+
+      await expect(db.add.alpha({ name: 'cannot-register' }))
+        .rejects.toThrow('forced identity wal failure');
+      expect(db.diag.collectionIdentities()).toEqual([]);
+
+      db._store.wal.append = originalAppend;
+      const row = await db.add.alpineHa({ name: 'valid-after-wal-failure' });
+      expect(row.$ID).toMatch(/^ALHA_/);
+    } finally {
+      db._store.wal.append = originalAppend;
+      await db.disconnect();
+    }
+  });
+
+  test('identity persistence failure preserves an already-declared schema reservation', async () => {
+    const db = await openQuietDb(DATA_DIR);
+    const originalDebug = db._store.logger.debug;
+    try {
+      db.schema('alpha', { name: { type: String, required: true } });
+      db._store.logger.debug = () => {
+        throw new Error('forced declared identity logger failure');
+      };
+
+      await expect(db.add.alpha({ name: 'cannot-register' }))
+        .rejects.toThrow('forced declared identity logger failure');
+      expect(db.diag.collectionIdentities()).toContainEqual(expect.objectContaining({
+        collection: 'alpha',
+        storageIdentity: 'ALHA'
+      }));
+      await expect(db.add.alpineHa({ name: 'blocked-by-declared-schema' }))
+        .rejects.toMatchObject({ code: 'COLLECTION_IDENTITY_COLLISION' });
+    } finally {
+      db._store.logger.debug = originalDebug;
+      await db.disconnect();
+    }
+  });
+
+  test('failed declared set keeps the existing schema identity reservation', async () => {
+    const db = await openQuietDb(DATA_DIR);
+    const originalSet = db._store.set;
+    try {
+      db.schema('alpha', { name: { type: String, required: true } });
+      const row = await db.add.alpha({ name: 'before-failure' });
+      db._store.set = async () => {
+        throw new Error('forced declared set failure');
+      };
+
+      await expect(db.set.alpha({ ...row.toObject(), name: 'after-failure' }))
+        .rejects.toThrow('forced declared set failure');
+      expect(db.diag.collectionIdentities()).toContainEqual(expect.objectContaining({
+        collection: 'alpha',
+        storageIdentity: 'ALHA'
+      }));
+      await expect(db.add.alpineHa({ name: 'still-blocked' }))
+        .rejects.toMatchObject({ code: 'COLLECTION_IDENTITY_COLLISION' });
+    } finally {
+      db._store.set = originalSet;
       await db.disconnect();
     }
   });

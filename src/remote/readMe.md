@@ -18,6 +18,22 @@ await user.save();
 
 Equivalent `db` façade as local BRI; WebSocket CONNECT is asynchronous — **`bri.connect`** queues pre-READY work. For READY-before-use (tests, sync throws), **`await createRemoteDatabasePromise`** from **`bri-db/remote`** matches the same backend.
 
+Remote clients accept the same logger boundary as local Bri:
+
+```javascript
+const db = bri.connect({
+  url: 'ws://localhost:3000',
+  logger: false
+});
+```
+
+Passing `logger: false` silences remote client lifecycle output; passing
+`{ info, warn, error, debug }` captures structured `client.remote.*`
+events for connection, parse, and subscription-listener diagnostics.
+In browser-like runtimes Bri uses the global `WebSocket`. In Node, Bri
+falls back to the packaged `ws` implementation; tests and embeddings can
+also pass `{ WebSocket }` explicitly.
+
 ## API Reference
 
 ### CRUD Operations

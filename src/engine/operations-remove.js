@@ -5,6 +5,14 @@
 
 import { type2Short } from './types.js';
 
+// Delete operations normally receive identity hooks from the public proxy.
+// The default keeps direct engine callers compatible without creating a new
+// identity reservation path when no registry boundary is available.
+const defaultRemoveInternal = {
+  beforeDurableWrite: Boolean,
+  rollbackCollectionIdentity: Boolean
+};
+
 /**
  * Creates the remove operation function bound to store, wrapper, and publish
  * @param {Object} store - Storage adapter instance
@@ -19,16 +27,18 @@ export function createRemoveOperation(store, wrapper, publish) {
    * @param {string} type - The entity type (e.g., 'user')
    * @param {string|Object} $ID - The entity ID or object with $ID property
    * @param {string} deletedBy - ID of the entity performing the deletion
+   * @param {Object} opts - Middleware-visible options; delete storage remains immediately durable.
    * @returns {Promise} Promise resolving to the deleted item (without deletion metadata)
    */
-  return function remove(type, $ID, deletedBy) {
+  return function remove(type, $ID, deletedBy, opts, internal) {
     $ID = $ID && $ID.$ID || $ID;
+    const hooks = Object.assign({}, defaultRemoveInternal, internal);
 
     if ("string" != typeof $ID || !$ID.includes('_')) {
       throw new Error(`"${$ID}" is not a valid ID`);
     }
 
-    if (!deletedBy || !deletedBy.includes('_')) {
+    if (!deletedBy || typeof deletedBy !== 'string' || !deletedBy.includes('_')) {
       wrapper._logger?.warn({
         event: 'engine.remove.deleted_by_missing',
         message: 'Who is deleting this?',
@@ -42,13 +52,19 @@ export function createRemoveOperation(store, wrapper, publish) {
       throw new Error(`${$ID} is not a type of "${type}"`);
     }
 
+    let identityAdded = false;
     return wrapper.get(type, $ID)
       .then(item => {
         if (!item) {
           throw new Error(`"${$ID}" was not found`);
         }
 
-        return publish(item, {}, 'DELETE', deletedBy)
+        return Promise.resolve()
+          .then(() => hooks.beforeDurableWrite())
+          .then((added) => {
+            identityAdded = !!added;
+          })
+          .then(() => publish(item, {}, 'DELETE', deletedBy))
           .then(() => {
             item.deletedAt = new Date();
             item.deletedBy = deletedBy;
@@ -64,6 +80,11 @@ export function createRemoveOperation(store, wrapper, publish) {
             delete output.deletedBy;
             return output;
           });
+      }).catch(async (err) => {
+        if (identityAdded) {
+          try { await hooks.rollbackCollectionIdentity(); } catch {}
+        }
+        throw err;
       });
   };
 }

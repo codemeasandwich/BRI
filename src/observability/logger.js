@@ -67,7 +67,13 @@ function buildEvent(init) {
 function deliverCustom(custom, level, event) {
   const fn = custom && typeof custom[level] === 'function' ? custom[level] : null;
   if (!fn) return;
-  fn.call(custom, event);
+  try {
+    fn.call(custom, event);
+  } catch (_) {
+    // Logger delivery is intentionally best-effort: Bri must not make
+    // storage, recovery, or remote transport correctness depend on an
+    // embedding application's logging sink.
+  }
 }
 
 /**

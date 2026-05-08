@@ -72,8 +72,12 @@ export interface RemoteConnectOptions {
   url?: string;
   /** Synonym for `url` (normalized the same way). */
   wsUrl?: string;
+  /** Optional WebSocket constructor for Node tests or custom runtimes. */
+  WebSocket?: any;
   /** RPC timeout milliseconds (default 30000). */
   timeout?: number;
+  /** Structured logger or false to silence remote client lifecycle output. */
+  logger?: BriLoggerConfig;
 }
 
 /**
@@ -400,7 +404,7 @@ export function normalizedWsUrl(url: string): string;
  * Resolve the remote façade after `/api/ape` WebSocket OPEN — used internally by {@link bri.connect}
  * and by tests/helpers that need OPEN before synchronous access.
  */
-export function createRemoteDatabasePromise(wsUrl: string, options?: { timeout?: number }): Promise<Database>;
+export function createRemoteDatabasePromise(wsUrl: string, options?: RemoteConnectOptions): Promise<Database>;
 
 /**
  * Builds READY local backing (also used by `bri.connect`); returns the real Database, not a `deferDatabase` façade.
@@ -415,7 +419,7 @@ export function openLocalDatabase(options?: LocalConnectOptions): Promise<Databa
  */
 export function openRemoteDatabase(
   url: string,
-  options?: { timeout?: number }
+  options?: Omit<RemoteConnectOptions, 'url' | 'wsUrl'>
 ): Promise<Database>;
 // Vector + Graph v1 surface (spec §2)
 // =====================================================================

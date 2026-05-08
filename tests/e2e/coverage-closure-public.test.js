@@ -338,11 +338,14 @@ describe('Public coverage closure scenarios', () => {
     ]);
 
     const localIdentity = createSchemaRegistryIdentity();
-    await expect(localIdentity.ensure('alpha')).resolves.toBeUndefined();
+    await expect(localIdentity.ensure('alpha')).resolves.toBe(true);
+    await expect(localIdentity.ensure('alpha')).resolves.toBe(false);
     expect(() => localIdentity.assert('alpha')).not.toThrow();
     expect(localIdentity.diagnostics()).toEqual([
       expect.objectContaining({ collection: 'alpha' })
     ]);
+    await localIdentity.forget('alpha');
+    await localIdentity.forget('alpha');
 
     expect(createSchemaRegistry().collectionIdentityDiagnostics()).toEqual([]);
   });
@@ -534,6 +537,12 @@ describe('Public coverage closure scenarios', () => {
         .toThrow(/storage identity collision/i);
       expect(() => store.assertCollectionIdentity('alpha', 'DIFF'))
         .toThrow(/storage identity collision/i);
+      store.registerCollectionIdentity('bravo', 'BRVO');
+      expect(() => store.registerCollectionIdentity('bravissimo', 'BRVO'))
+        .toThrow(/storage identity collision/i);
+      expect(() => store.assertCollectionIdentity('alpineHa', 'ALHA'))
+        .toThrow(/storage identity collision/i);
+      await store.removeCollectionIdentity('missing', 'MISS');
       store.loadCollectionIdentityState(null);
       store.loadCollectionIdentityState();
       store.hotTier.documents.set('__bri:collectionIdentity:legacy', {

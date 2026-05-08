@@ -31,7 +31,9 @@
     "prepare": "git config core.hooksPath .hooks"
   },
   "devDependencies": {
-    "jest": "^29.7.0",
+    "jest": "^29.7.0"
+  },
+  "dependencies": {
     "ws": "^8.20.0"
   }
 }

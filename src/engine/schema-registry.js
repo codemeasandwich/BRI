@@ -23,7 +23,6 @@
  */
 
 import validate from '../utils/schema/index.js';
-import { VectorIndex } from './vector-index.js';
 import SecondaryIndexManager from './secondary-index.js';
 import { GraphIndex } from './graph-index.js';
 import { type2Short } from './types.js';
@@ -31,6 +30,7 @@ import { createSchemaRegistryIdentity } from './schema-registry-identity.js';
 import { findVectorField } from './schema-registry-vector.js';
 import { buildEdgeSpec, registerPredicateRouting, registerInversePredicateRouting, collectLifecycleFields, collectCascadeEntries } from './schema-edge-declare.js';
 import { canonicalPairKeyFor, bindGraphIndexToStore, rebuildAdjacencyFromHot } from './canonical-pair.js';
+import { applyCascadeEntries, cloneRoutingMap, commitVectorPlan, planVectorIndex, replaceMapContents, replaceSetContents } from './schema-registry-stage.js';
 
 /**
  * Create a schema registry instance.
@@ -123,15 +123,19 @@ export function createSchemaRegistry(store) {
      * @throws {Error} on multiple vector fields or drift against persisted index
      */
     declare(collection, schemaDef) {
-      const storageIdentity = identity.declare(collection);
-      schemas.set(collection, schemaDef);
-
-      // Build the prefix → collection lookup for this collection so the
-      // predicate proxy can resolve an entity's collection from its $ID.
-      // Done lazily here (not at first read) so reading happens off the
-      // hot path.
-      const prefix = storageIdentity;
-      collectionByPrefix.set(prefix, collection);
+      const storageIdentity = type2Short(collection);
+      identity.assert(collection);
+      const stagedPredicatesBySubject = cloneRoutingMap(predicatesBySubject);
+      const stagedPredicatesByObject = cloneRoutingMap(predicatesByObject);
+      const stagedGraphIndex = new GraphIndex();
+      stagedGraphIndex.load(graphIndex.serialize());
+      const stagedSecondaryIndexes = new SecondaryIndexManager();
+      stagedSecondaryIndexes.load(secondaryIndexes.serialize());
+      const stagedCanonicalPairCollections = new Set(canonicalPairCollections);
+      let edgePlan = null;
+      let cascadePlan = [];
+      let lifecyclePlan = null;
+      let vectorPlan = null;
 
       // Process $edge first — collisions and reserved-name checks must
       // throw before any other state mutation. $edge declares the
@@ -143,12 +147,14 @@ export function createSchemaRegistry(store) {
         // Resolve concrete field names + reserved-name check, then register
         // routing. See engine/schema-edge-declare.js for the rules.
         const { enrichedSpec, predicates } = buildEdgeSpec(collection, schemaDef);
-        edgeCollections.set(collection, enrichedSpec);
-        const hadLoadedAdjacency = graphIndex.hasAdjacencyFor(collection); // UC-G7 v3→v4 migration probe
-        graphIndex.declareEdge(collection, enrichedSpec);
-        registerPredicateRouting(predicatesBySubject, edge, collection, predicates);
-        registerInversePredicateRouting(predicatesByObject, edge, collection, predicates);
-        if (!hadLoadedAdjacency) rebuildAdjacencyFromHot(store, graphIndex, collection, type2Short(collection));
+        edgePlan = { enrichedSpec, predicates };
+        const hadLoadedAdjacency = stagedGraphIndex.hasAdjacencyFor(collection); // UC-G7 v3→v4 migration probe
+        stagedGraphIndex.declareEdge(collection, enrichedSpec);
+        registerPredicateRouting(stagedPredicatesBySubject, edge, collection, predicates);
+        registerInversePredicateRouting(stagedPredicatesByObject, edge, collection, predicates);
+        if (!hadLoadedAdjacency) {
+          rebuildAdjacencyFromHot(store, stagedGraphIndex, collection, type2Short(collection));
+        }
 
         /* UC-G3 — when the edge declared both `unique` and `symmetric`,
          * back the uniqueness invariant with a SortedIndex on the
@@ -162,22 +168,18 @@ export function createSchemaRegistry(store) {
          * compoundKey(JSON.stringify). A parallel structure would
          * duplicate three subsystems for no gain. */
         if (enrichedSpec.unique && enrichedSpec.symmetric) {
-          secondaryIndexes.declare(collection, ['__edgePair']);
-          canonicalPairCollections.add(collection);
+          stagedSecondaryIndexes.declare(collection, ['__edgePair']);
+          stagedCanonicalPairCollections.add(collection);
         }
       }
 
       // cascadeOn flagged fields: helper validates + emits; we just file.
-      for (const { scope, ...entry } of collectCascadeEntries(collection, schemaDef)) {
-        if (!cascadeByScope.has(scope)) cascadeByScope.set(scope, []);
-        cascadeByScope.get(scope).push(entry);
-      }
+      cascadePlan = collectCascadeEntries(collection, schemaDef);
 
       // Capture lifecycle-field flags ($supersession / $confidence /
       // $provenance). Validation lives in collectLifecycleFields so a
       // typo in the schema fails at db.schema time, not silently at read.
-      const lifecycle = collectLifecycleFields(collection, schemaDef);
-      if (lifecycle) lifecycleFields.set(collection, lifecycle);
+      lifecyclePlan = collectLifecycleFields(collection, schemaDef);
 
       // Process $indexes — a malformed $indexes spec must throw BEFORE we
       // touch the vector index. Each entry is an array of field names;
@@ -200,50 +202,28 @@ export function createSchemaRegistry(store) {
               );
             }
           }
-          secondaryIndexes.declare(collection, spec);
+          stagedSecondaryIndexes.declare(collection, spec);
         }
       }
 
       const vec = findVectorField(schemaDef);
-      if (!vec) return;
-      vectorFields.set(collection, vec.name);
+      if (vec) {
+        vectorPlan = planVectorIndex(store, collection, vec);
+      }
 
-      const persisted = store && typeof store.getVectorEntry === 'function'
-        ? store.getVectorEntry(collection)
-        : undefined;
-
-      if (persisted) {
-        // Drift detection. Renaming the field is a structural change we
-        // cannot transparently reconcile because the persisted index is
-        // keyed off the old field; refuse and require explicit action.
-        const ps = persisted.schema;
-        if (ps.dims !== vec.dims || (ps.metric || 'cosine') !== vec.metric) {
-          throw new Error(
-            `Vector index drift on '${collection}': persisted index has ` +
-            `dims=${ps.dims}/metric=${ps.metric || 'cosine'}, ` +
-            `but new schema declares dims=${vec.dims}/metric=${vec.metric}. ` +
-            `Revert the schema change or delete the data directory to rebuild.`
-          );
-        }
-        if (ps.field !== vec.name) {
-          throw new Error(
-            `Vector field rename on '${collection}': persisted index targets ` +
-            `field '${ps.field}', but new schema declares field '${vec.name}'. ` +
-            `Rename in the schema is not auto-migrated; either keep the old ` +
-            `field name or delete the data directory to rebuild.`
-          );
-        }
-        vectorIndices.set(collection, persisted.index);
-      } else {
-        const fresh = new VectorIndex({ dims: vec.dims, metric: vec.metric });
-        vectorIndices.set(collection, fresh);
-        if (store && typeof store.registerVectorIndex === 'function') {
-          store.registerVectorIndex(
-            collection,
-            { field: vec.name, dims: vec.dims, metric: vec.metric },
-            fresh
-          );
-        }
+      identity.declare(collection);
+      schemas.set(collection, schemaDef);
+      collectionByPrefix.set(storageIdentity, collection);
+      if (edgePlan) edgeCollections.set(collection, edgePlan.enrichedSpec);
+      graphIndex.load(stagedGraphIndex.serialize());
+      replaceMapContents(predicatesBySubject, stagedPredicatesBySubject);
+      replaceMapContents(predicatesByObject, stagedPredicatesByObject);
+      secondaryIndexes.load(stagedSecondaryIndexes.serialize());
+      replaceSetContents(canonicalPairCollections, stagedCanonicalPairCollections);
+      applyCascadeEntries(cascadeByScope, cascadePlan);
+      if (lifecyclePlan) lifecycleFields.set(collection, lifecyclePlan);
+      if (vectorPlan) {
+        commitVectorPlan({ store, collection, vectorPlan, vectorFields, vectorIndices });
       }
     },
 
@@ -252,9 +232,7 @@ export function createSchemaRegistry(store) {
      * @param {string} collection
      * @returns {Object|undefined}
      */
-    get(collection) {
-      return schemas.get(collection);
-    },
+    get(collection) { return schemas.get(collection); },
 
     /**
      * Look up the VectorIndex for a collection, or undefined if the
@@ -262,9 +240,7 @@ export function createSchemaRegistry(store) {
      * @param {string} collection
      * @returns {VectorIndex|undefined}
      */
-    vectorIndex(collection) {
-      return vectorIndices.get(collection);
-    },
+    vectorIndex(collection) { return vectorIndices.get(collection); },
 
     /**
      * Look up the name of the vector field on a collection (e.g. 'embedding').
@@ -272,9 +248,7 @@ export function createSchemaRegistry(store) {
      * @param {string} collection
      * @returns {string|undefined}
      */
-    vectorFieldOf(collection) {
-      return vectorFields.get(collection);
-    },
+    vectorFieldOf(collection) { return vectorFields.get(collection); },
 
     /**
      * Validate a document against its registered schema. No-op (returns null)
@@ -298,9 +272,7 @@ export function createSchemaRegistry(store) {
      * Used by the query planner and the index-sync middleware.
      * @returns {SecondaryIndexManager}
      */
-    secondaryIndexManager() {
-      return secondaryIndexes;
-    },
+    secondaryIndexManager() { return secondaryIndexes; },
 
     /**
      * Iterate all registered vector indices. Used by transaction lifecycle
@@ -308,26 +280,20 @@ export function createSchemaRegistry(store) {
      * vector ops across every collection that has a vector field.
      * @returns {Iterable<[string, Object]>} yields [collection, VectorIndex]
      */
-    vectorIndices() {
-      return vectorIndices.entries();
-    },
+    vectorIndices() { return vectorIndices.entries(); },
 
     /**
      * Access the shared GraphIndex instance.
      * @returns {GraphIndex}
      */
-    graphIndex() {
-      return graphIndex;
-    },
+    graphIndex() { return graphIndex; },
 
     /**
      * Look up the edge spec for a collection, or undefined if not an edge.
      * @param {string} collection
      * @returns {Object|undefined}
      */
-    edgeSpec(collection) {
-      return edgeCollections.get(collection);
-    },
+    edgeSpec(collection) { return edgeCollections.get(collection); },
 
     /**
      * Resolve the collection name for an entity given its $ID prefix.
@@ -335,17 +301,25 @@ export function createSchemaRegistry(store) {
      * @param {string} prefix - Four-letter $ID prefix (uppercase)
      * @returns {string|undefined}
      */
-    collectionForPrefix(prefix) {
-      return collectionByPrefix.get(prefix);
-    },
+    collectionForPrefix(prefix) { return collectionByPrefix.get(prefix); },
 
     /**
      * Persist a collection identity before a write reaches WAL/doc storage.
      *
      * @param {string} collection
+     * @returns {Promise<boolean>} True when a new durable identity was reserved.
      */
     async ensureCollectionIdentity(collection) {
-      await identity.ensure(collection);
+      return identity.ensure(collection);
+    },
+
+    /**
+     * Remove a newly-created collection identity after a failed write.
+     *
+     * @param {string} collection
+     */
+    async forgetCollectionIdentity(collection) {
+      await identity.forget(collection);
     },
 
     /**

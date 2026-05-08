@@ -28,12 +28,12 @@ export function createSchemaRegistryIdentity(store) {
     : new Map();
 
   /**
-   * Reserve a collection identity in local memory when no store is attached.
+   * Validate a derived identity against the local registry copy.
    *
    * @param {string} collection - Logical collection name.
    * @param {string} storageIdentity - Derived storage identity.
    */
-  function registerLocal(collection, storageIdentity) {
+  function assertLocal(collection, storageIdentity) {
     for (const [otherCollection, otherIdentity] of local) {
       if (otherCollection !== collection && otherIdentity === storageIdentity) {
         throw createCollectionIdentityCollisionError(
@@ -43,6 +43,16 @@ export function createSchemaRegistryIdentity(store) {
         );
       }
     }
+  }
+
+  /**
+   * Reserve a collection identity in local memory when no store is attached.
+   *
+   * @param {string} collection - Logical collection name.
+   * @param {string} storageIdentity - Derived storage identity.
+   */
+  function registerLocal(collection, storageIdentity) {
+    assertLocal(collection, storageIdentity);
     local.set(collection, storageIdentity);
   }
 
@@ -82,10 +92,15 @@ export function createSchemaRegistryIdentity(store) {
      */
     async ensure(collection) {
       const storageIdentity = type2Short(collection);
+      assertLocal(collection, storageIdentity);
+      let added = false;
       if (store && typeof store.ensureCollectionIdentity === 'function') {
-        await store.ensureCollectionIdentity(collection, storageIdentity);
+        added = await store.ensureCollectionIdentity(collection, storageIdentity);
+      } else if (!local.has(collection)) {
+        added = true;
       }
       local.set(collection, storageIdentity);
+      return added;
     },
 
     /**
@@ -96,9 +111,24 @@ export function createSchemaRegistryIdentity(store) {
      */
     assert(collection) {
       const storageIdentity = type2Short(collection);
+      assertLocal(collection, storageIdentity);
       if (store && typeof store.assertCollectionIdentity === 'function') {
         store.assertCollectionIdentity(collection, storageIdentity);
       }
+    },
+
+    /**
+     * Roll back a newly-created identity reservation after a failed write.
+     *
+     * @param {string} collection - Logical collection name.
+     * @returns {Promise<void>}
+     */
+    async forget(collection) {
+      const storageIdentity = type2Short(collection);
+      if (store && typeof store.removeCollectionIdentity === 'function') {
+        await store.removeCollectionIdentity(collection, storageIdentity);
+      }
+      if (local.get(collection) === storageIdentity) local.delete(collection);
     },
 
     /**

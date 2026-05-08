@@ -4,6 +4,7 @@
 src/remote/
 ├── index.js
 ├── connection.js
+├── websocket-runtime.js
 ├── proxy.js
 ├── entity.js
 └── readMe.md
@@ -20,19 +21,41 @@ Remote database client entry point. Provides BRI API over WebSocket via api-ape.
 
 **Options:**
 - `timeout` - RPC timeout in milliseconds (default: 30000)
+- `logger` - Same structured Bri logger config as local storage; use
+  `false` to silence remote client lifecycle output.
+- `WebSocket` - Optional constructor override. When omitted, Bri uses a
+  runtime global WebSocket or its Node `ws` dependency.
 
 ### `connection.js`
 
 WebSocket connection wrapper with promise-based RPC.
 
 **Exports:**
-- `createConnection(url)` - Establish WebSocket connection
+- `createConnection(url, options?)` - Establish WebSocket connection
+
+`createConnection` follows the same WebSocket runtime policy as
+`createRemoteDatabasePromise`: explicit `options.WebSocket`, then a
+global constructor, then Node `ws`.
 
 **Returns Interface:**
 - `send(type, payload)` - Send RPC request, returns promise
 - `on(type, callback)` - Subscribe to broadcast events
 - `close()` - Close connection
 - `isConnected()` - Check connection status
+
+### `websocket-runtime.js`
+
+Remote runtime boundary for WebSocket constructors.
+
+**Exports:**
+- `resolveWebSocketConstructor(options?)` - Resolve `options.WebSocket`,
+  `globalThis.WebSocket`, or Bri's Node `ws` dependency.
+
+**Purpose:**
+- Keeps browser, Bun, custom-embedder, and Node/Jest WebSocket selection out of
+  remote client business logic.
+- Provides a single actionable failure path when no WebSocket implementation is
+  available.
 
 ### `proxy.js`
 

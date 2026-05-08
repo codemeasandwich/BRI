@@ -15,6 +15,7 @@ src/engine/
 ├── collection-identity.js
 ├── schema-registry.js
 ├── schema-registry-identity.js
+├── schema-registry-stage.js
 ├── schema-registry-vector.js
 ├── secondary-index.js
 ├── secondary-index-txn.js
@@ -152,6 +153,16 @@ Storage-backed identity facade used by `schema-registry.js`. Reserves derived co
 
 **Exports:**
 - `createSchemaRegistryIdentity(store)` - Returns `declare`, `register`, `ensure`, `assert`, and `diagnostics` methods.
+
+### `schema-registry-stage.js`
+
+Atomic declaration staging helpers used by `schema-registry.js`. Clones predicate-routing maps and applies staged map/set/cascade commits in place so failed schema declarations leave the live registry untouched while successful declarations keep existing references stable.
+
+**Exports:**
+- `cloneRoutingMap(source)` - Deep-clones a routing map of nested maps.
+- `replaceMapContents(target, source)` - Replaces map entries without swapping the map object.
+- `replaceSetContents(target, source)` - Replaces set entries without swapping the set object.
+- `applyCascadeEntries(cascadeByScope, entries)` - Appends validated cascade entries by scope.
 
 ### `schema-registry-vector.js`
 

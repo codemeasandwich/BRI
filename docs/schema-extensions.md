@@ -88,6 +88,14 @@ Declaring or writing both `alpha` and `alpineHa` fails with
 rows can be persisted. The error details include
 `{ collections, storageIdentity, prefix }`.
 
+Failed declarations and failed public writes do not reserve identities.
+Schema registration stages vector, graph, secondary-index, cascade,
+lifecycle, predicate-routing, and prefix state first, then commits the
+identity and runtime maps only after all declaration checks pass. Public
+write paths persist a first identity only after operation preconditions
+pass and before the user row is durable. Reads and failed deletes never
+create identities.
+
 Use the public diagnostic surface to inspect known mappings or preflight
 candidate names:
 

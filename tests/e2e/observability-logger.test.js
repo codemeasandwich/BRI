@@ -9,7 +9,8 @@
 import { jest } from '@jest/globals';
 import fs from 'fs/promises';
 import http from 'http';
-import { openLocalDatabase } from '../helpers/open-database.js';
+import { WebSocketServer } from 'ws';
+import { openLocalDatabase, openRemoteDatabase } from '../helpers/open-database.js';
 
 const DATA_DIR = './test-data-observability-logger';
 
@@ -63,6 +64,46 @@ async function startKeyService({ failAfterFirst = false } = {}) {
     endpoint: `http://127.0.0.1:${port}`,
     requests,
     close: () => new Promise((resolve) => server.close(resolve))
+  };
+}
+
+/**
+ * Start a WebSocket RPC fixture that can emit malformed frames and
+ * subscription broadcasts so remote-client observability is tested through the
+ * same public `openRemoteDatabase` surface that embeddings use.
+ *
+ * @returns {Promise<{endpoint:string, close:Function}>}
+ */
+async function startRemoteDiagnosticsServer() {
+  const wss = new WebSocketServer({ port: 0 });
+  await new Promise((resolve, reject) => {
+    wss.on('listening', resolve);
+    wss.on('error', reject);
+  });
+  wss.on('connection', (ws) => {
+    ws.send('not-json');
+    ws.on('message', (raw) => {
+      const msg = JSON.parse(String(raw));
+      ws.send(JSON.stringify({
+        queryId: msg.queryId,
+        result: { type: msg.type, payload: msg.payload },
+        error: null
+      }));
+      if (msg.type === 'db/sub/user') {
+        ws.send(JSON.stringify({
+          type: 'db:sub:user',
+          data: { $ID: 'USER_remote', name: 'Remote' }
+        }));
+      }
+    });
+  });
+  const addr = wss.address();
+  const port = typeof addr === 'object' && addr ? addr.port : 0;
+  return {
+    endpoint: `ws://127.0.0.1:${port}`,
+    close: () => new Promise((resolve, reject) =>
+      wss.close((err) => (err ? reject(err) : resolve()))
+    )
   };
 }
 
@@ -218,6 +259,63 @@ describe('Configurable database observability logger', () => {
     expect(events.find((event) =>
       event.event === 'storage.inhouse.snapshot.final_failed'
     ).error.cause.message).toBe('root cause');
+  });
+
+  test('throwing custom logger cannot break storage boot or shutdown', async () => {
+    const throwingLogger = {
+      info() { throw new Error('logger info failed'); },
+      warn() { throw new Error('logger warn failed'); },
+      error() { throw new Error('logger error failed'); },
+      debug() { throw new Error('logger debug failed'); }
+    };
+
+    const db = await openLocalDatabase({
+      logger: throwingLogger,
+      storeConfig: {
+        dataDir: DATA_DIR,
+        maxMemoryMB: 64,
+        snapshotIntervalMs: 999999
+      }
+    });
+
+    db.schema('alpha', { name: { type: String, required: true } });
+    await db.add.alpha({ name: 'still-boots' });
+    await expect(db.disconnect()).resolves.toBeUndefined();
+  });
+
+  test('remote client lifecycle and listener failures route through logger boundary', async () => {
+    const server = await startRemoteDiagnosticsServer();
+    const { logger, events } = captureLogger();
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const listenerFailure = new Error('subscriber failed');
+
+    try {
+      const db = await openRemoteDatabase(server.endpoint, { logger, timeout: 250 });
+      const ping = await db._rpc('ping', { seq: 1 });
+      expect(ping.payload.seq).toBe(1);
+      await db.sub.user(() => {
+        throw listenerFailure;
+      });
+      const parseEvent = await waitForEvent(events, 'client.remote.message.parse_error');
+      const listenerEvent = await waitForEvent(events, 'client.remote.listener_error');
+      expect(events).toContainEqual(expect.objectContaining({
+        event: 'client.remote.connected',
+        level: 'info'
+      }));
+      expect(parseEvent.error).toBeInstanceOf(Error);
+      expect(listenerEvent.error).toBe(listenerFailure);
+      await db.disconnect();
+      expect(logSpy).not.toHaveBeenCalled();
+      expect(warnSpy).not.toHaveBeenCalled();
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+      logSpy.mockRestore();
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
   });
 
   test('encrypted remote key failures route through the custom logger', async () => {

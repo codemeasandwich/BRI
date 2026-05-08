@@ -48,30 +48,41 @@ export function createOperationProxy(operation, opName, middleware, getDb, regis
 
         if (opName === 'add' || opName === 'set') {
           const optsArg = args[1];
-
+          if (optsArg && typeof optsArg === 'object') {
+            ctx.opts = { ...optsArg };
+          }
+        }
+        if (opName === 'del') {
+          const optsArg = args[2];
           if (optsArg && typeof optsArg === 'object') {
             ctx.opts = { ...optsArg };
           }
         }
 
         return middleware.run(ctx, async (ctx) => {
-          if (registry && typeof registry.ensureCollectionIdentity === 'function') {
-            await registry.ensureCollectionIdentity(prop);
-          }
           let finalArgs;
+          const internal = {};
+          if (registry && typeof registry.ensureCollectionIdentity === 'function') {
+            internal.beforeDurableWrite = () => registry.ensureCollectionIdentity(prop);
+            internal.rollbackCollectionIdentity = () => registry.forgetCollectionIdentity(prop);
+          }
 
           if (opName === 'add' || opName === 'set') {
             const data = ctx.args[0];
             if (Object.keys(ctx.opts).length > 0) {
               finalArgs = [data, ctx.opts];
             } else {
-              finalArgs = [data];
+              finalArgs = [data, undefined];
             }
           } else {
-            finalArgs = ctx.args;
+            finalArgs = [
+              ctx.args[0],
+              ctx.args[1],
+              Object.keys(ctx.opts).length > 0 ? ctx.opts : undefined
+            ];
           }
 
-          return operation.call(operation, prop, ...finalArgs);
+          return operation.call(operation, prop, ...finalArgs, internal);
         });
       };
     }

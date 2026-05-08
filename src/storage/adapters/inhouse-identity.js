@@ -13,7 +13,7 @@
  */
 
 import JSS from '../../utils/jss/index.js';
-import { createSetEntry } from '../wal/entry.js';
+import { createDeleteEntry, createSetEntry } from '../wal/entry.js';
 import {
   createCollectionIdentityCollisionError,
   createCollectionIdentityRecoveryError
@@ -107,10 +107,11 @@ export function createIdentityMethods() {
      *
      * @param {string} collection - Logical collection name.
      * @param {string} storageIdentity - Derived durable identity/prefix.
+     * @returns {Promise<boolean>} True when the call introduced a new mapping.
      */
     async ensureCollectionIdentity(collection, storageIdentity) {
-      this.registerCollectionIdentity(collection, storageIdentity);
-      if (this._persistedCollectionIdentities.has(collection)) return;
+      const added = this.registerCollectionIdentity(collection, storageIdentity);
+      if (this._persistedCollectionIdentities.has(collection)) return false;
 
       const payload = JSS.stringify({
         collection,
@@ -118,14 +119,48 @@ export function createIdentityMethods() {
         prefix: storageIdentity
       });
       const key = collectionIdentityKey(collection);
-      await this.wal.append(createSetEntry(key, payload));
-      await this.hotTier.set(key, payload, false);
-      this._persistedCollectionIdentities.add(collection);
-      this.logger?.debug({
-        event: 'collection.identity.registered',
-        message: `Collection identity registered: ${collection} -> ${storageIdentity}`,
-        metadata: { collection, storageIdentity, prefix: storageIdentity }
-      });
+      let walSetWritten = false;
+      let hotSetWritten = false;
+      try {
+        await this.wal.append(createSetEntry(key, payload));
+        walSetWritten = true;
+        await this.hotTier.set(key, payload, false);
+        hotSetWritten = true;
+        this._persistedCollectionIdentities.add(collection);
+        this.logger?.debug({
+          event: 'collection.identity.registered',
+          message: `Collection identity registered: ${collection} -> ${storageIdentity}`,
+          metadata: { collection, storageIdentity, prefix: storageIdentity }
+        });
+        return added;
+      } catch (err) {
+        if (hotSetWritten) {
+          try { await Promise.resolve(this.hotTier.delete(key)); } catch {}
+        }
+        if (walSetWritten) {
+          try { await this.wal.append(createDeleteEntry(key)); } catch {}
+        }
+        if (added) this._collectionIdentities.delete(collection);
+        this._persistedCollectionIdentities.delete(collection);
+        throw err;
+      }
+    },
+
+    /**
+     * Remove a newly-created identity mapping after a write failed before it
+     * could complete. The delete is WAL-backed so recovery does not resurrect
+     * a reservation for a collection with no successful durable operation.
+     *
+     * @param {string} collection - Logical collection name.
+     * @param {string} storageIdentity - Derived durable identity/prefix.
+     */
+    async removeCollectionIdentity(collection, storageIdentity) {
+      if (this._collectionIdentities.get(collection) !== storageIdentity) return;
+      const key = collectionIdentityKey(collection);
+      await this.wal.append(createDeleteEntry(key));
+      await this.hotTier.delete(key);
+      this._collectionIdentities.delete(collection);
+      this._persistedCollectionIdentities.delete(collection);
     },
 
     /**

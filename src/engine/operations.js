@@ -45,7 +45,7 @@ export function createOperations(store, { genid, publish }) {
      * @param {Object} opts - Options including tag, saveBy, txnId
      * @returns {Promise<Object>} Promise resolving to the created entity
      */
-    create: (type, data, opts) => {
+    create: (type, data, opts, internal = {}) => {
       let tag, saveBy, txnId;
       if (data.$ID) {
         throw new Error(`Trying to "add" an Object with ${data.$ID} to BRI`);
@@ -61,7 +61,13 @@ export function createOperations(store, { genid, publish }) {
         txnId = opts.txnId;
       }
       const shortType = type2Short(type);
-      return genid(shortType)
+      let identityAdded = false;
+      return Promise.resolve()
+        .then(() => internal.beforeDurableWrite ? internal.beforeDurableWrite() : false)
+        .then((added) => {
+          identityAdded = !!added;
+          return genid(shortType);
+        })
         .then(($ID) => {
           const percent = Object.assign({}, stripDown$ID(data));
           percent.$ID = $ID;
@@ -79,6 +85,11 @@ export function createOperations(store, { genid, publish }) {
             saving.then(() => publish({}, percent, 'CREATE', saveBy, tag));
           }
           return saving.then(() => wrapper.get(type, $ID, { txnId }));
+        }).catch(async (err) => {
+          if (identityAdded && internal.rollbackCollectionIdentity) {
+            try { await internal.rollbackCollectionIdentity(); } catch {}
+          }
+          throw err;
         });
     },
 
@@ -140,7 +151,7 @@ export function createOperations(store, { genid, publish }) {
      * @param {Object|string} optsORtag - Options object or tag string
      * @returns {Promise<Object>} Promise resolving to the replaced entity
      */
-    replace: function (type, replaceWith, optsORtag) {
+    replace: function (type, replaceWith, optsORtag, internal = {}) {
       if (!replaceWith.$ID.startsWith(type2Short(type))) {
         throw new Error(`${replaceWith.$ID} is not a type of ${type} `);
       }
@@ -154,13 +165,27 @@ export function createOperations(store, { genid, publish }) {
       } else if ('string' === typeof optsORtag) {
         tag = optsORtag;
       }
+      let identityAdded = false;
       return wrapper.get(type, replaceWith.$ID)
         .then((target) => {
           replaceWith.createdAt = target.createdAt;
+          return Promise.resolve()
+            .then(() => internal.beforeDurableWrite ? internal.beforeDurableWrite() : false)
+            .then((added) => {
+              identityAdded = !!added;
+            })
+            .then(() => target);
+        })
+        .then((target) => {
           return store.set(replaceWith.$ID, JSS.stringify(replaceWith)).then(() => {
             publish(target, replaceWith, 'UPDATE', saveBy, tag);
             return replaceWith;
           });
+        }).catch(async (err) => {
+          if (identityAdded) {
+            try { await internal.rollbackCollectionIdentity(); } catch {}
+          }
+          throw err;
         });
     }
   };

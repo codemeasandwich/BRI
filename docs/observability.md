@@ -51,7 +51,22 @@ Each event has this stable shape:
 Passing `logger: false` silences Bri's human stdout/stderr output for
 tests and embedded production runtimes. Passing a custom logger also
 disables raw console output by default; the application owns event
-routing from there.
+routing from there. Custom logger delivery is best-effort: if a logger
+method throws, Bri swallows that logger failure so database boot,
+shutdown, storage recovery, WAL replay, and remote transport handling can
+continue.
+
+The same logger option applies to remote Bri clients created through
+`bri.connect({ url, logger })`, `bri.connect({ wsUrl, logger })`,
+`openRemoteDatabase(url, { logger })`, or
+`createRemoteDatabasePromise(wsUrl, { logger })`. Remote lifecycle,
+message-parse, connection, and subscription-listener failures use
+`client.remote.*` event names and follow the same default-console,
+custom-logger, and `logger: false` rules as local storage logs.
+Remote clients use `options.WebSocket` when supplied, then a runtime
+global `WebSocket` when available, then Bri's Node `ws` dependency. That
+keeps browser/Bun/global-WebSocket runtimes working while making Node and
+Jest remote tests use the same public API.
 
 Nothing is logged per-write or per-search by default. To inspect query
 behaviour, register the built-in `loggingMiddleware` exported from **`bri-db/engine`**

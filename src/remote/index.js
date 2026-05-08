@@ -6,6 +6,8 @@
 
 import { createOperationProxy } from './proxy.js';
 import { wrapEntity } from './entity.js';
+import { createBriLogger } from '../observability/logger.js';
+import { resolveWebSocketConstructor } from './websocket-runtime.js';
 
 /**
  * Build the remote database facade after the WebSocket is OPEN and `rpc` is usable.
@@ -95,6 +97,7 @@ function buildRemoteDb(socket, rpc, addEventListener, removeEventListener) {
  * @returns {Promise<Object>}
  */
 export function createRemoteDatabasePromise(wsUrl, options = {}) {
+  const logger = createBriLogger(options.logger);
   let socket = null;
   let connected = false;
   let queryCounter = 0;
@@ -117,15 +120,15 @@ export function createRemoteDatabasePromise(wsUrl, options = {}) {
 
       const queryId = `q_${++queryCounter}_${Date.now()}`;
 
-      pendingQueries.set(queryId, { resolve, reject });
-
       const timeout = options.timeout || 30000;
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         if (pendingQueries.has(queryId)) {
           pendingQueries.delete(queryId);
           reject(new Error(`RPC timeout: ${type}`));
         }
       }, timeout);
+
+      pendingQueries.set(queryId, { resolve, reject, timer });
 
       socket.send(JSON.stringify({ type, payload, queryId }));
     });
@@ -158,27 +161,48 @@ export function createRemoteDatabasePromise(wsUrl, options = {}) {
     }
   }
 
-  return new Promise((resolve, reject) => {
+  return resolveWebSocketConstructor(options).then((WebSocketCtor) => new Promise((resolve, reject) => {
     let settled = false;
 
-    socket = new WebSocket(wsUrl);
+    socket = new WebSocketCtor(wsUrl);
 
     socket.onopen = () => {
       settled = true;
       connected = true;
+      logger.info({
+        event: 'client.remote.connected',
+        message: `[BRI Remote] Connected to ${wsUrl}`,
+        metadata: { url: wsUrl }
+      });
       resolve(
         buildRemoteDb(socket, rpc, addEventListener, removeEventListener)
       );
     };
 
     socket.onerror = (error) => {
+      logger.error({
+        event: 'client.remote.connection_error',
+        message: '[BRI Remote] Connection error',
+        metadata: { url: wsUrl },
+        error
+      });
       if (!settled) {
         reject(new Error(`WebSocket error: ${error.message || 'Connection failed'}`));
       }
     };
 
-    socket.onclose = () => {
+    socket.onclose = (event) => {
       connected = false;
+      logger.info({
+        event: 'client.remote.closed',
+        message: `[BRI Remote] Connection closed: ${event.code} ${event.reason || ''}`.trim(),
+        metadata: { url: wsUrl, code: event.code, reason: event.reason }
+      });
+      for (const [, pending] of pendingQueries) {
+        clearTimeout(pending.timer);
+        pending.reject(new Error('Connection closed'));
+      }
+      pendingQueries.clear();
     };
 
     socket.onmessage = (event) => {
@@ -186,7 +210,8 @@ export function createRemoteDatabasePromise(wsUrl, options = {}) {
         const data = JSON.parse(event.data);
 
         if (data.queryId && pendingQueries.has(data.queryId)) {
-          const { resolve: res, reject: rej } = pendingQueries.get(data.queryId);
+          const { resolve: res, reject: rej, timer } = pendingQueries.get(data.queryId);
+          clearTimeout(timer);
           pendingQueries.delete(data.queryId);
           if (data.error) {
             rej(new Error(data.error.message || 'Unknown error'));
@@ -202,13 +227,23 @@ export function createRemoteDatabasePromise(wsUrl, options = {}) {
             try {
               listener(data.data);
             } catch (e) {
-              console.error(`Error in subscription listener for ${subType}:`, e);
+              logger.error({
+                event: 'client.remote.listener_error',
+                message: `Error in subscription listener for ${subType}`,
+                metadata: { type: subType },
+                error: e
+              });
             }
           }
         }
       } catch (e) {
-        console.error('Error parsing WebSocket message:', e);
+        logger.warn({
+          event: 'client.remote.message.parse_error',
+          message: 'Error parsing WebSocket message',
+          metadata: { data: event.data },
+          error: e
+        });
       }
     };
-  });
+  }));
 }

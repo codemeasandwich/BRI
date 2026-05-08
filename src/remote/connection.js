@@ -5,12 +5,19 @@
  * event subscription for broadcasts, and connection management.
  */
 
+import { createBriLogger } from '../observability/logger.js';
+import { resolveWebSocketConstructor } from './websocket-runtime.js';
+
 /**
  * Create a WebSocket connection to the BRI server
  * @param {string} url - WebSocket URL (e.g., 'ws://localhost:3000/api/ape')
+ * @param {Object} [options] - Remote client options.
+ * @param {false|Object} [options.logger] - Bri logger config.
  * @returns {Promise<Object>} Connection interface with send, on, close methods
  */
-export async function createConnection(url) {
+export async function createConnection(url, options = {}) {
+  const logger = createBriLogger(options.logger);
+  const WebSocketCtor = await resolveWebSocketConstructor(options);
   let ws;
   let queryCounter = 0;
   const pending = new Map();    // queryId → { resolve, reject, timer }
@@ -25,22 +32,35 @@ export async function createConnection(url) {
    */
   function connect() {
     return new Promise((resolve, reject) => {
-      ws = new WebSocket(url);
+      ws = new WebSocketCtor(url);
 
       ws.onopen = () => {
-        console.log('[BRI Remote] Connected to', url);
+        logger.info({
+          event: 'client.remote.connected',
+          message: `[BRI Remote] Connected to ${url}`,
+          metadata: { url }
+        });
         resolve();
       };
 
       ws.onerror = (err) => {
-        console.error('[BRI Remote] Connection error:', err);
+        logger.error({
+          event: 'client.remote.connection_error',
+          message: '[BRI Remote] Connection error',
+          metadata: { url },
+          error: err
+        });
         reject(new Error('WebSocket connection failed'));
       };
 
       ws.onmessage = handleMessage;
 
       ws.onclose = (event) => {
-        console.log('[BRI Remote] Connection closed:', event.code, event.reason);
+        logger.info({
+          event: 'client.remote.closed',
+          message: `[BRI Remote] Connection closed: ${event.code} ${event.reason || ''}`.trim(),
+          metadata: { url, code: event.code, reason: event.reason }
+        });
         // Reject all pending requests
         for (const [queryId, { reject, timer }] of pending) {
           clearTimeout(timer);
@@ -60,7 +80,12 @@ export async function createConnection(url) {
     try {
       msg = JSON.parse(event.data);
     } catch (e) {
-      console.error('[BRI Remote] Invalid JSON:', event.data);
+      logger.warn({
+        event: 'client.remote.message.invalid_json',
+        message: '[BRI Remote] Invalid JSON',
+        metadata: { data: event.data },
+        error: e
+      });
       return;
     }
 
@@ -85,7 +110,12 @@ export async function createConnection(url) {
         try {
           cb(msg.data);
         } catch (e) {
-          console.error('[BRI Remote] Listener error:', e);
+          logger.error({
+            event: 'client.remote.listener_error',
+            message: '[BRI Remote] Listener error',
+            metadata: { type: msg.type },
+            error: e
+          });
         }
       }
     }
@@ -99,7 +129,7 @@ export async function createConnection(url) {
    */
   function send(type, payload) {
     return new Promise((resolve, reject) => {
-      if (!ws || ws.readyState !== WebSocket.OPEN) {
+      if (!ws || ws.readyState !== WebSocketCtor.OPEN) {
         reject(new Error('Not connected'));
         return;
       }
@@ -158,7 +188,7 @@ export async function createConnection(url) {
    * @returns {boolean}
    */
   function isConnected() {
-    return ws && ws.readyState === WebSocket.OPEN;
+    return ws && ws.readyState === WebSocketCtor.OPEN;
   }
 
   // Establish connection
